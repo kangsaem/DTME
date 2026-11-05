@@ -314,10 +314,11 @@ class GradePanel(QWidget):
         sc.setFrameShape(QFrame.NoFrame)
         sc.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         sc.viewport().installEventFilter(self)
+        box.installEventFilter(self)              # 내용이 바뀌면(묶음 접기 등) 커브 높이 다시
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.addWidget(sc)
-        self.setMinimumWidth(280)
+        self.setMinimumWidth(320)
 
         self._debounce = QTimer(self)
         self._debounce.setSingleShot(True)
@@ -745,6 +746,8 @@ class GradePanel(QWidget):
     def eventFilter(self, obj, e):
         if e.type() == QEvent.Resize and obj is self._scroll.viewport():
             QTimer.singleShot(0, self._fit_tiles)
+        elif e.type() == QEvent.LayoutRequest and obj is self._scroll.widget():
+            QTimer.singleShot(0, self._fit_curve)
         return False
 
     def resizeEvent(self, e):
@@ -757,15 +760,17 @@ class GradePanel(QWidget):
         box = self._scroll.widget()
         if box is None or not self.curve.isVisible():
             return
-        spare = self._scroll.viewport().height() - box.sizeHint().height()
-        ch = int(max(70, min(240, self.curve.height() + spare)))
+        spare = self._scroll.viewport().height() - box.sizeHint().height() - 4
+        ch = int(max(56, min(240, self.curve.height() + spare)))
         if abs(self.curve.height() - ch) > 2:
             self.curve.setFixedHeight(ch)
 
     def _fit_tiles(self):
         """샘플 폭 = 조절 영역 폭. 좁으면 3열×2줄, 넓으면(360px 이상) 2열×3줄."""
         self._fit_curve()
-        avail = max(160, self._scroll.viewport().width() - 8)
+        from PySide6.QtWidgets import QStyle
+        sb = self.style().pixelMetric(QStyle.PM_ScrollBarExtent)      # 스크롤바 자리 항상 비워 둠(폭이 흔들리지 않게)
+        avail = max(160, self._scroll.width() - sb - 8)
         cols = 2 if avail >= 360 else 3
         tw = (avail - 4 * cols - 4) // cols
         th = tw * 9 // 16

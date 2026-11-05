@@ -1,8 +1,8 @@
 # HANDOFF — DTME (Diving Tour Movie Editor)
 
-다음 대화는 이 문서를 기준으로 이어서 작업한다. **v0.13.0: 화면 개편 1·2·3단계 + 모니터 확대 완료(4-1 참고). 진행: 4단계(타임라인 프리뷰). 사용자는 자는 중 — 묻지 말고 진행, 끝나면 테스트·개선점 정리.**
+다음 대화는 이 문서를 기준으로 이어서 작업한다. **v0.14.0: 화면 개편 1~4단계 + 모니터 확대 모두 완료(4-1 참고). 다음: 사용자 PC 실기 확인 → 4-2 개선 후보 중 선택. 앱 아이콘은 나중에.**
 
-## 1. 현재 상태 — v0.13.0 (2026-11-05)
+## 1. 현재 상태 — v0.14.0 (2026-11-06)
 
 - 저장소: `kangsaem/DTME` (main). push 하면 GitHub Actions 가 Windows 빌드 → Actions → 최신 "Windows build" → Artifacts `DTME-windows`(약 200MB, 30일)
 - Linux 작업 환경에서 엔진·화면(오프스크린) 검증, Actions(Windows)에서 빌드·엔진·exe 실행 점검 통과
@@ -87,7 +87,25 @@
 - **3단계 완료(v0.13.0)**: Project.titles(글자 {text,font,size(1080 기준 px),bold,color,bg none|shadow|band,fade,cx,cy} / 이미지 {img,scale,cx,cy,fade}, t0·t1 = 결과 영상 초), Project.music({path,t0,off,dur,len}), Project.mix({orig None=자동,music,fin,fout}), Project.audios(음악 소스). 타임라인 3줄(SeqTimeline 새로 작성: 겹치는 글자는 줄 나눔(최대 3줄 높이), 끌기·끝 끌기·자석 8px(컷 경계·다른 항목·재생 위치), 우클릭 삭제, 더블클릭 = 글자 창/음악 창, 빈 곳·눈금 클릭 = 재생 위치 빨간 선, 컷 위치는 전환 겹침 반영). 렌더 = [vm][am] 뒤 post_graph: drawtext(글꼴·글자 파일을 cache/lut 로 복사, text_align=C, alpha 페이드) · 이미지 overlay(loop, fade alpha) · 음악 atrim/afade/volume/adelay → amix(normalize=0). 렌더 리스트로(타임라인 전체)일 때만 글자·음악 사본 포함. 글꼴 fonts/(Pretendard·Noto Sans KR·Black Han Sans·Montserrat·Inter, 각 Regular/Bold + 라이선스, ≈15MB) + Windows 맑은 고딕, [글꼴 추가…]. TeX Gyre Heros 는 CTAN 접근 불가, Nimbus Sans 는 AGPL 이라 제외 → Inter(헬베티카 비슷한 OFL)
   - 이미지 목록 우클릭 = 현재 영상에 얹기 · 타임라인에 넣기 · 불러오기, 음악 목록 클릭 = 음악 줄 끝에 붙임
   - 보정 패널 커브 높이 = 남는 높이(70~240)
+- **4단계 완료(v0.14.0)**: 모니터 왼쪽 위 [소스|타임라인]. 타임라인 빈 곳·눈금 클릭 → 타임라인 모드: `_tl_locate(t)` 로 (컷, 원본 프레임) → 그 컷 소스를 선택해 그 프레임으로(`_pending_frame`, `_tl_switching`), 보정 화면은 평소처럼, 타임라인 글자·이미지는 모니터가 직접 그림(Monitor.titles, QFontDatabase 로 fonts/ 파일 등록, 페이드 알파). 모니터에서 글자·이미지 끌기 = 위치, 휠 = 크기(글자 size / 이미지 scale). Space(타임라인 모드) = 컷 배속으로 재생, 컷 끝(fout-1)에서 다음 컷으로 넘김(프록시 교체라 잠깐 끊김), 음악은 별도 QMediaPlayer(재생 시작 위치 기준). 소스 목록을 누르면 소스 모드
+- 보정 패널: 왼쪽 열 최소 330(첫 표시 19%), 샘플 타일 폭은 스크롤바 자리를 항상 빼고 계산(커브 높이와 서로 흔들리던 문제), 커브 최소 56
 - 단계: 1 = 재배치·보정 패널·⚙창·출력 크기·채도/디헤이즈/렌즈·흰색 찍기·반반·프리셋·여러 클립 / 2 = 색 키프레임·★·RGB 파형 / 3 = 글자·이미지 줄·글꼴·음악 / 4 = 타임라인 프리뷰·미리보기 렌더
+
+## 4-2. 개선 후보 / 한계 (v0.14.0 시점, 사용자에게 보고함)
+
+1. 타임라인 재생: 컷 경계에서 프록시를 바꾸느라 잠깐 끊김. 재생 중 화면 전환 효과는 안 보임(정지 화면도 겹침 구간은 들어오는 컷만). 음악은 재생 시작 때 위치만 맞추고, 재생 중 다음 음악 클립으로 넘어가지 않음
+2. 타임라인 모드 모니터의 이미지 레이어 = 소스의 레이어(컷에 복사된 사본 아님). 보낸 뒤 소스 레이어를 바꾸면 렌더와 다를 수 있음
+3. 글자: 모니터(Qt) vs 렌더(ffmpeg drawtext) 줄 간격·위치 몇 px 차이 가능. Bold 파일이 없는 글꼴은 테두리로 가짜 굵게(모양 차이)
+4. 디헤이즈: unsharp 반경 최대 13 → 4K 출력에서 효과 범위가 상대적으로 좁음
+5. 색 키프레임은 빨강·파랑·색조·채도만(커브·노이즈·LUT 는 클립 전체 값)
+6. RGB 창은 채널 히스토그램(파형 모니터·퍼레이드 아님)
+7. 확대 고화질 영역은 반반 보기일 때 생략
+8. 흰색 찍기: 흰·회색 물체가 없으면 부정확, 깊은 곳은 빨강 최대 2.0 한계
+9. 미리보기 렌더: 흔들림 보정 생략, 기본 플레이어로 열림(모니터 안 재생 아님)
+10. Space 재생은 키를 뗄 때(누른 채 끌기 = 이동) → 반응이 조금 늦게 느껴질 수 있음
+11. Enter(구간만 렌더 리스트로)는 타임라인 글자·음악을 넣지 않음(타임라인 → 렌더리스트로 만 포함)
+12. 이 작업 환경에서 못 본 것: 실제 재생 부드러움·소리·음악 동기, NVENC/CUDA 속도, Windows 맑은 고딕, 4K·150% 배율 화면, 한글 IME 로 글자 입력
+13. 앱 아이콘(작업표시줄·exe) — 사용자가 나중에
 
 ## 5. 사용자에게 확인 대기 중
 
@@ -153,6 +171,7 @@ tests/test_ui_gkeys.py   ◆·★ 화면 점검
 tests/test_ui_zoom.py    확대 보기 점검
 tests/test_titles.py     타임라인 글자·이미지·음악 렌더(4K 비율·음량) — CI
 tests/test_ui_titles.py  글자·이미지·음악 화면(자석·우클릭·렌더)
+tests/test_ui_tlpreview.py 타임라인 모드(정지 화면 프레임·글자 표시·모니터 끌기·재생 중 컷 넘김)
 tests/test_ui_grade.py   보정 패널(숫자 입력·프리셋 여러 클립·흰색 찍기·출력 크기·반반)
 app/dtme/ui_trans.py     컷편집 창(SVG 샘플)
 .github/workflows/build.yml  Windows 빌드(PyInstaller onedir + BtbN FFmpeg master GPL) → 엔진 점검 → exe 실행 점검 → Artifact
@@ -210,6 +229,7 @@ DTME_SELFTEST=1 DTME_NO_AUDIO=1 QT_QPA_PLATFORM=offscreen python app/main.py   #
 
 ## 11. 변경 이력
 
+- v0.14.0: 4단계 — 타임라인 프리뷰(정지 화면·재생·컷 넘김·음악), 모니터에서 글자·이미지 위치·크기. 보정 패널 높이·폭 흔들림 수정
 - v0.13.0: 3단계 — 타임라인 글자·이미지·음악, 글꼴 포함, 글자·음악 설정 창
 - v0.12.1: 모니터 확대 보기(휠·[−][비율][+]·가운데/Space 끌기·더블클릭 맞춤·확대 영역 원본 고화질)
 - v0.12.0: 색 키프레임 ◆·★ 장면 표시. 렌더 변수 이름 충돌(lens) 수정 — 화면 전환 있는 렌더가 실패하던 문제

@@ -27,6 +27,9 @@ class Monitor(QWidget):
     cropDragged = Signal(float)        # 세로 크롭 이동량(원본 px)
     whitePicked = Signal(float, float)   # 흰색 찍기: 영상 안 위치(0~1)
     viewChanged = Signal()               # 확대·이동 바뀜(→ 확대 영역 고화질 다시 만들기)
+    titlePressed = Signal(str)           # 타임라인 모드: 글자·이미지를 잡음(실행취소 지점)
+    titleChanged = Signal()
+    modeRequested = Signal(str)          # "source" | "timeline"
 
     HANDLE = 9
 
@@ -61,8 +64,121 @@ class Monitor(QWidget):
         self._pan = None                        # (press pos, center)
         self.patch: QImage | None = None        # 확대 영역 고화질(원본에서 다시 만든 것)
         self.patch_rect = None                  # (x, y, w, h) 영상 기준 0~1
+        self.titles = []                        # 타임라인 모드: [(title, alpha, QImage|None, (w, h) | None)]
+        self.sel_title = ""
+        self._tdrag = None
         self._build_zoom_ui()
+        self._build_mode_ui()
         self.setMouseTracking(True)
+
+    # ---------------------------------------------------------------- [소스 | 타임라인]
+    def _build_mode_ui(self):
+        from PySide6.QtWidgets import QButtonGroup, QHBoxLayout, QPushButton
+        self.mbox = QWidget(self)
+        lay = QHBoxLayout(self.mbox)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        self.mode_grp = QButtonGroup(self)
+        for i, (k, t) in enumerate((("source", "소스"), ("timeline", "타임라인"))):
+            b = QPushButton(t)
+            b.setCheckable(True)
+            b.setFocusPolicy(Qt.NoFocus)
+            b.setFixedHeight(22)
+            b.setProperty("key", k)
+            b.setStyleSheet("QPushButton{background:rgba(25,25,25,210); color:#bbb; border:1px solid #555;"
+                            "border-radius:0; font-size:11px; padding:0 10px;} QPushButton:checked{background:#2f4f78; color:#fff;}")
+            self.mode_grp.addButton(b, i)
+            lay.addWidget(b)
+        self.mode_grp.button(0).setChecked(True)
+        self.mode_grp.buttonClicked.connect(lambda b: self.modeRequested.emit(b.property("key")))
+        self.mbox.adjustSize()
+        self.mbox.move(8, 8)
+
+    def set_mode_button(self, key):
+        for b in self.mode_grp.buttons():
+            b.setChecked(b.property("key") == key)
+
+    def set_titles(self, titles, sel):
+        self.titles, self.sel_title = titles, sel
+        self.update()
+
+    def _title_rect(self, t, img_wh, fm=None) -> QRectF:
+        c = self._out_rect
+        k = c.width() / self.out_wh[0]
+        if t.get("kind") == "image":
+            w, h = img_wh[0] * float(t.get("scale", 1)) * k, img_wh[1] * float(t.get("scale", 1)) * k
+        else:
+            from PySide6.QtGui import QFontMetricsF
+            fm = fm or QFontMetricsF(self._title_font(t, k))
+            lines = (t.get("text") or " ").split("\n")
+            w = max(fm.horizontalAdvance(x) for x in lines) + 4
+            h = fm.lineSpacing() * len(lines) + 8 * k * (len(lines) - 1)
+        return QRectF(c.left() + float(t.get("cx", 0.5)) * c.width() - w / 2,
+                      c.top() + float(t.get("cy", 0.5)) * c.height() - h / 2, w, h)
+
+    _font_ids: dict = {}
+
+    def _title_font(self, t, k):
+        from PySide6.QtGui import QFont, QFontDatabase
+        from .fonts import font_file
+        f, real_bold = font_file(t.get("font", ""), bool(t.get("bold")))
+        fam = None
+        if f:
+            if f not in Monitor._font_ids:
+                fid = QFontDatabase.addApplicationFont(f)
+                fams = QFontDatabase.applicationFontFamilies(fid) if fid >= 0 else []
+                Monitor._font_ids[f] = fams[0] if fams else None
+            fam = Monitor._font_ids[f]
+        font = QFont(fam) if fam else QFont()
+        font.setPixelSize(max(4, int(float(t.get("size", 64)) * k)))
+        font.setBold(bool(t.get("bold")) and not real_bold)
+        return font
+
+    def _paint_titles(self, p: QPainter):
+        if not self.titles or self._out_rect.isEmpty():
+            return
+        from PySide6.QtGui import QFontMetricsF
+        c = self._out_rect
+        k = c.width() / self.out_wh[0]
+        p.save()
+        p.setClipRect(c)
+        for t, alpha, img, wh in self.titles:
+            p.setOpacity(max(0.0, min(1.0, alpha)))
+            if t.get("kind") == "image":
+                if img is not None:
+                    p.drawImage(self._title_rect(t, wh), img)
+                continue
+            font = self._title_font(t, k)
+            fm = QFontMetricsF(font)
+            r = self._title_rect(t, None, fm)
+            p.setFont(font)
+            if t.get("bg") == "band":
+                pad = 16 * k
+                p.fillRect(r.adjusted(-pad, -pad, pad, pad), QColor(0, 0, 0, 115))
+            lines = (t.get("text") or "").split("\n")
+            y = r.top()
+            for line in lines:
+                lw = fm.horizontalAdvance(line)
+                x = r.center().x() - lw / 2
+                if t.get("bg") == "shadow":
+                    p.setPen(QColor(0, 0, 0, 150))
+                    p.drawText(QPointF(x + 3 * k, y + fm.ascent() + 3 * k), line)
+                p.setPen(QColor(t.get("color", "#ffffff")))
+                p.drawText(QPointF(x, y + fm.ascent()), line)
+                y += fm.lineSpacing() + 8 * k
+        p.restore()
+        for t, _a, img, wh in self.titles:
+            if t["id"] == self.sel_title:
+                r = self._title_rect(t, wh)
+                p.setPen(QPen(QColor(255, 255, 255, 200), 1, Qt.DashLine))
+                p.setBrush(Qt.NoBrush)
+                p.drawRect(r)
+
+    def _title_hit(self, pos):
+        for t, _a, img, wh in reversed(self.titles):
+            if self._title_rect(t, wh).contains(pos):
+                return t
+        return None
 
     # ---------------------------------------------------------------- 확대 보기
     def _build_zoom_ui(self):
@@ -260,6 +376,11 @@ class Monitor(QWidget):
         if self.before is not None and not r.isEmpty() and abs(pos.x() - self._split_px()) <= 8:
             self._split_drag = True
             return
+        tt = self._title_hit(pos) if self.titles else None
+        if tt is not None:
+            self.titlePressed.emit(tt["id"])
+            self._tdrag = (tt, pos, float(tt.get("cx", 0.5)), float(tt.get("cy", 0.5)))
+            return
         mode, lay = self._hit(e.position())
         if lay is None:
             if self.sel_layer:
@@ -283,6 +404,14 @@ class Monitor(QWidget):
             return
         if self.space_pan:
             self.setCursor(Qt.OpenHandCursor)
+            return
+        if self._tdrag is not None and (e.buttons() & Qt.LeftButton):
+            t, p0, cx, cy = self._tdrag
+            c = self._out_rect
+            t["cx"] = max(0.0, min(1.0, cx + (pos.x() - p0.x()) / c.width()))
+            t["cy"] = max(0.0, min(1.0, cy + (pos.y() - p0.y()) / c.height()))
+            self.update()
+            self.titleChanged.emit()
             return
         if self._split_drag and (e.buttons() & Qt.LeftButton):
             r = self._img_rect
@@ -333,9 +462,25 @@ class Monitor(QWidget):
             self.viewChanged.emit()
         self._drag = None
         self._split_drag = False
+        self._tdrag = None
 
     def wheelEvent(self, e):
         """레이어 위에서 휠 = 레이어 크기 ±5%, 그 밖 = 마우스 위치 기준 확대·축소"""
+        tt = self._title_hit(e.position()) if self.titles else None
+        if tt is not None:                 # 타임라인 글자·이미지 위 휠 = 크기 ±5%
+            import time
+            now = time.monotonic()
+            if now - self._wheel_t > 1.0:
+                self.titlePressed.emit(tt["id"])
+            self._wheel_t = now
+            f = 1.05 if e.angleDelta().y() > 0 else 1 / 1.05
+            if tt.get("kind") == "image":
+                tt["scale"] = max(0.02, min(20.0, float(tt.get("scale", 1)) * f))
+            else:
+                tt["size"] = int(max(8, min(400, round(float(tt.get("size", 64)) * f))))
+            self.update()
+            self.titleChanged.emit()
+            return
         mode, lay = self._hit(e.position())
         if lay is None:
             if self.img is not None:
@@ -401,6 +546,7 @@ class Monitor(QWidget):
             p.drawRect(c)
             self._out_rect = QRectF(c)
             self._paint_layers(p)
+        self._paint_titles(p)
         self._paint_scope(p)
 
     def _paint_scope(self, p: QPainter):

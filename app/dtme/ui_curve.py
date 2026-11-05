@@ -59,7 +59,7 @@ class CurveEditor(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumSize(180, 90)
+        self.setMinimumSize(180, 56)
         self.setMaximumHeight(260)
         self.pts = [[0.0, 0.0], [1.0, 1.0]]
         self._drag = -1

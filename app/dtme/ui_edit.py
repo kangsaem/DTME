@@ -136,6 +136,14 @@ class EditTab(QWidget):
         self._space_down = False
         self.tl_time = 0.0
         self.sel_ov = ("", "")
+        self.mode = "source"            # 모니터: "source" | "timeline"
+        self._tl_cuts = []              # [(segment, start, length)]
+        self._tl_seg = None             # 타임라인 모드에서 지금 보이는 컷
+        self._pending_frame = None
+        self._tl_switching = False
+        self._tl_play_after = False
+        self._tl_img_cache = {}
+        self._music_player = None
         self.pgen = 0
 
         # ================= 소스
@@ -340,6 +348,9 @@ class EditTab(QWidget):
         self.grade.keysChanged.connect(self._refresh_marks)
         self.sbar.gkeyDeleteRequested.connect(self._delete_gkeys)
         self.player.mon.whitePicked.connect(self._white_picked)
+        self.player.mon.modeRequested.connect(self.set_mode)
+        self.player.mon.titlePressed.connect(self._on_title_pressed)
+        self.player.mon.titleChanged.connect(lambda: (setattr(self.state, "dirty", True), self.timeline.update()))
         self._zoom_timer = QTimer(self)
         self._zoom_timer.setSingleShot(True)
         self._zoom_timer.setInterval(400)
@@ -472,8 +483,15 @@ class EditTab(QWidget):
         if src is None or not src.frames:
             return
         if name == "space":
-            if not p.toggle():
+            if self.mode == "timeline" and self._tl_seg is not None and not p.is_busy():
+                if not p.play(self._tl_seg.speed):
+                    self._say("프록시 준비 중", C_WARN)
+                else:
+                    self._music_play()
+            elif not p.toggle():
                 self._say("프록시 준비 중", C_WARN)
+            elif not p.is_busy():
+                self._music_stop()
         elif name == "j":
             if not p.backward():
                 self._say("프록시 준비 중", C_WARN)
@@ -607,6 +625,8 @@ class EditTab(QWidget):
             return
         self.cur_sid = cur.data(Qt.UserRole)
         self.sel_layer = ""
+        if not self._tl_switching:
+            self.set_mode("source", load=False)
         self.pgen += 1
         self.player.clear("로딩 중…")      # 이전 소스 화면 즉시 지움
         self.state.prioritize(self.cur_sid)
@@ -622,7 +642,12 @@ class EditTab(QWidget):
             self._refresh_sbar()
             return
         proxy = s.proxy if self.state.proxy_ready(s) else None
-        self.player.set_source(s.fps, s.frames, proxy, s.io[0])
+        start = self._pending_frame if self._pending_frame is not None else s.io[0]
+        self._pending_frame = None
+        self.player.set_source(s.fps, s.frames, proxy, start)
+        if self._tl_play_after:
+            self._tl_play_after = False
+            QTimer.singleShot(120, lambda: self.player.play(self._tl_seg.speed if self._tl_seg else 1.0))
         self._refresh_sbar()
         self._sync_speed_buttons()
         self._pv_timer.start()
@@ -638,6 +663,8 @@ class EditTab(QWidget):
     # ================================================================ 모니터 보정 화면
     def _on_frame(self, f):
         s = self._cur()
+        if self.mode == "timeline" and self._tl_seg is not None and s and s.id == self._tl_seg.src:
+            self._tl_follow(f)
         if s:
             self.tc.setText(timecode(f, s.fps))
         self.sbar.set_playhead(f)
@@ -808,7 +835,7 @@ class EditTab(QWidget):
 
     def _init_sizes(self):
         w = max(1200, self._hs.width())
-        left = int(max(300, min(470, w * 0.18)))
+        left = int(max(330, min(480, w * 0.19)))
         right = int(max(220, min(360, w * 0.13)))
         self._hs.setSizes([left, w - left - right, right])
 
@@ -1017,6 +1044,8 @@ class EditTab(QWidget):
             self._refresh_audios()
         if what in ("titles",):
             self._refresh_timeline()
+            if self.mode == "timeline":
+                self._update_tl_titles(self.tl_time)
         if what in ("project", "undo", "images", "sources"):
             self._refresh_layers()
         if what in ("project", "undo", "output"):
@@ -1248,15 +1277,150 @@ class EditTab(QWidget):
     # ================================================================ 타임라인 글자·이미지·음악
     def _on_tl_time(self, t):
         self.tl_time = t
+        self.set_mode("timeline", load=False)
+        self.show_timeline(t)
+
+    # ================================================================ 타임라인 프리뷰
+    def set_mode(self, mode, load=True):
+        if mode == self.mode:
+            self.player.mon.set_mode_button(mode)
+            return
+        self.mode = mode
+        self.player.mon.set_mode_button(mode)
+        if mode == "source":
+            self._tl_seg = None
+            self._music_stop()
+            self.player.mon.set_titles([], "")
+            self.timeline.update()
+        elif load:
+            self.show_timeline(self.tl_time)
+
+    def _tl_locate(self, t):
+        """결과 시간 t → (컷, 원본 프레임). 전환 겹침 구간은 뒤 컷(들어오는 컷)."""
+        cut = None
+        for seg, st, ln in self._tl_cuts:
+            if st <= t + 1e-6:
+                cut = (seg, st, ln)
+        if cut is None:
+            return None
+        seg, st, ln = cut
+        src = self.state.project.source(seg.src)
+        if src is None:
+            return None
+        f = seg.fin + (min(t, st + ln) - st) * float(src.fps) * seg.speed
+        return seg, st, int(max(seg.fin, min(seg.fout - 1, round(f))))
+
+    def show_timeline(self, t, play=False):
+        """그 시점의 컷 소스를 열어 해당 프레임으로(보정 화면은 평소처럼), 글자·이미지는 모니터에 그림."""
+        loc = self._tl_locate(t)
+        self.timeline.set_time(t)
+        self._update_tl_titles(t)
+        if loc is None:
+            return
+        seg, _st, f = loc
+        self._tl_seg = seg
+        if seg.src != self.cur_sid or self.player.frames == 0:
+            self._pending_frame = f
+            self._tl_play_after = play
+            if seg.src != self.cur_sid:
+                self._tl_switching = True
+                self._select_source(seg.src)      # → _on_src_selected → _load_current(이 프레임으로)
+                self._tl_switching = False
+            else:
+                QTimer.singleShot(0, self._load_current)
+        else:
+            if not play:
+                self.player.pause()
+            self.player.seek(f)
+            if play and not self.player.is_busy():
+                self.player.play(seg.speed)
+
+    def _tl_follow(self, f):
+        """타임라인 모드 재생 중: 프레임 → 결과 시간, 컷 끝이면 다음 컷으로."""
+        seg = self._tl_seg
+        st = next((c[1] for c in self._tl_cuts if c[0] is seg), None)
+        src = self.state.project.source(seg.src)
+        if st is None or src is None:
+            return
+        t = st + (f - seg.fin) / float(src.fps) / seg.speed
+        self.tl_time = t
+        self.timeline.set_time(t)
+        self._update_tl_titles(t)
+        if self.player.is_playing() and f >= seg.fout - 1:
+            idx = next((i for i, c in enumerate(self._tl_cuts) if c[0] is seg), -1)
+            if 0 <= idx < len(self._tl_cuts) - 1:
+                nseg, nst, _ln = self._tl_cuts[idx + 1]
+                self.tl_time = max(nst, t)
+                QTimer.singleShot(0, lambda: self.show_timeline(self.tl_time + 1e-3, play=True))
+            else:
+                self.player.pause()
+                self._music_stop()
+
+    def _update_tl_titles(self, t):
+        p = self.state.project
+        out = []
+        for d in p.titles:
+            t0, t1 = float(d["t0"]), float(d["t1"])
+            if not (t0 <= t < t1):
+                continue
+            fd = min(float(d.get("fade", 0.5)), (t1 - t0) / 2)
+            a = 1.0 if fd <= 0.01 else max(0.0, min(1.0, (t - t0) / fd, (t1 - t) / fd))
+            img, wh = None, None
+            if d.get("kind") == "image":
+                m = p.image(d.get("img", ""))
+                if m is None or not m.width:
+                    continue
+                img, wh = self._qimage(m.id), (m.width, m.height)
+            out.append((d, a, img, wh))
+        self.player.mon.set_titles(out, self.sel_ov[1] if self.sel_ov[0] == "title" else "")
+
+    def _on_title_pressed(self, tid):
+        self.state.checkpoint()
+        self.sel_ov = ("title", tid)
+        self._del_target = "ov"
+        self.timeline.set_overlays(self.state.project.titles, self.state.project.music, self.sel_ov)
+        self._update_tl_titles(self.tl_time)
+
+    # ---------------------------------------------------------------- 음악(타임라인 재생 중)
+    def _music_play(self):
+        p = self.state.project
+        if os.environ.get("DTME_NO_AUDIO") or not p.music:
+            return
+        from PySide6.QtCore import QUrl
+        from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
+        from .project import orig_volume
+        m = next((x for x in p.music if float(x["t0"]) <= self.tl_time < float(x["t0"]) + float(x["len"])), None)
+        if m is None:
+            return
+        if self._music_player is None:
+            self._music_player = QMediaPlayer(self)
+            self._music_out = QAudioOutput(self)
+            self._music_player.setAudioOutput(self._music_out)
+        self._music_out.setVolume(min(1.0, float(p.mix.get("music", 1.0))))
+        if self.player.audio:
+            self.player.audio.setVolume(0.6 * min(1.0, orig_volume(p.mix, p.music)))
+        self._music_player.setSource(QUrl.fromLocalFile(m["path"]))
+        self._music_player.setPosition(int((float(m.get("off", 0)) + self.tl_time - float(m["t0"])) * 1000))
+        self._music_player.play()
+
+    def _music_stop(self):
+        if self._music_player is not None:
+            self._music_player.stop()
+        if self.player.audio:
+            self.player.audio.setVolume(0.6)
 
     def _on_ov_selected(self, kind, oid):
         self.sel_ov = (kind, oid)
         self._del_target = "ov"
         self.sel_cut = ""
         self._refresh_timeline()
+        if self.mode == "timeline":
+            self._update_tl_titles(self.tl_time)
 
     def _on_ov_edited(self, kind, oid):
         self.state.dirty = True
+        if self.mode == "timeline":
+            self._update_tl_titles(self.tl_time)
 
     def _ov(self, kind, oid):
         p = self.state.project
@@ -1359,15 +1523,18 @@ class EditTab(QWidget):
         lens = [p.seg_out_seconds(g, p.source(g.src).fps) for g in segs]
         plan = plan_transitions(segs, lens)
         start = 0.0
+        cuts = []
         for i, (g, ln, t) in enumerate(zip(segs, lens, plan)):
             s = p.source(g.src)
             if i > 0 and t:
                 start -= t[1]
             items.append((g.id, ln, short_name(s.path)[-4:], g.speed, self._tag(s.id),
                           (TRANS_NAME[t[0]], t[1]) if t else None, start))
+            cuts.append((g, start, ln))
             start += ln
         if self.sel_cut and not any(i[0] == self.sel_cut for i in items):
             self.sel_cut = ""
+        self._tl_cuts = cuts
         self.timeline.set_items(items, self.sel_cut)
         if self.sel_ov[1] and not any(d["id"] == self.sel_ov[1] for d in p.titles + p.music):
             self.sel_ov = ("", "")
