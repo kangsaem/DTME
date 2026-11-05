@@ -24,18 +24,24 @@ class Job(QRunnable):
         self.signals = JobSignals()
         self.started = False
 
+    def _emit(self, sig, *a):
+        try:
+            sig.emit(*a)
+        except RuntimeError:      # 프로그램 종료 중(신호 객체 삭제됨)
+            pass
+
     def run(self):
         self.started = True
         try:
-            r = self.fn(self.signals.progress.emit, self.cancel) if self.with_progress else self.fn()
-            self.signals.done.emit(r)
+            r = self.fn(lambda v: self._emit(self.signals.progress, v), self.cancel) if self.with_progress else self.fn()
+            self._emit(self.signals.done, r)
         except Exception as e:  # noqa: BLE001
             msg = str(e) or e.__class__.__name__
             if e.__class__.__name__ == "Cancelled":
                 msg = "취소됨"
             else:
                 traceback.print_exc()
-            self.signals.error.emit(msg)
+            self._emit(self.signals.error, msg)
 
 
 _alive: set = set()

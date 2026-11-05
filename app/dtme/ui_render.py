@@ -8,7 +8,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QColor
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QFileDialog, QFormLayout, QListWidget,
                                QListWidgetItem, QStyle, QStyledItemDelegate,
-                               QHBoxLayout, QLabel, QLineEdit, QPushButton, QSpinBox, QVBoxLayout, QWidget)
+                               QHBoxLayout, QLineEdit, QPushButton, QSpinBox, QVBoxLayout, QWidget)
 
 from . import ff, jobs
 from .project import short_name
@@ -155,8 +155,6 @@ class RenderPanel(QWidget):
         self.queue: list = []
         self.running = False
 
-        t = QLabel("렌더 리스트")
-        t.setStyleSheet("font-weight:700; font-size:14px; padding-top:4px;")
         self.table = QListWidget()      # 이름은 table 유지(키 입력 필터에서 사용)
         self.table.setItemDelegate(RenderDelegate(self))
         self.table.setStyleSheet("QListWidget{background:#1a1a1a; border:none;}")
@@ -182,7 +180,6 @@ class RenderPanel(QWidget):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(4, 4, 4, 4)
         lay.addWidget(self.settings)
-        lay.addWidget(t)
         lay.addWidget(self.table, 1)
         brow = QHBoxLayout()
         brow.addStretch(1)
@@ -204,7 +201,8 @@ class RenderPanel(QWidget):
             li.setData(Qt.UserRole, it.id)
             li.setData(Qt.UserRole + 1, f"{ORIENT_TXT.get(it.orientation, '')} {p.segs_seconds(it.segs):.1f}초"
                        + ("" if it.audio else " 무음"))
-            li.setToolTip(st)
+            if st.startswith("실패"):
+                li.setToolTip(st)
             self.table.addItem(li)
             li.setSelected(it.id in sel)
         self.table.blockSignals(False)

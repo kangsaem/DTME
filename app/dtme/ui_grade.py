@@ -43,16 +43,19 @@ class GradePanel(QWidget):
 
         # --- 머리: 보정 + 기본값으로 저장
         head = QHBoxLayout()
-        t = QLabel("보정")
-        t.setStyleSheet("font-weight:700; font-size:14px;")
-        head.addWidget(t)
-        head.addStretch(1)
+        b_reset = QPushButton("리셋")
+        b_reset.setToolTip("이 클립의 조정값을 초기값으로 (LUT 유지)")
+        b_reset.clicked.connect(self._reset_clip)
+        b_base = QPushButton("기본값")
+        b_base.setToolTip("이 클립을 기본값으로 되돌림")
+        b_base.clicked.connect(self._clear_all)
         b_def = QPushButton("기본값으로 저장")
+        b_def.setToolTip("이 클립의 값을 모든 클립의 기본값으로")
         b_def.clicked.connect(self._save_default)
+        for b in (b_reset, b_base):
+            head.addWidget(b)
+        head.addStretch(1)
         head.addWidget(b_def)
-
-        self.tcombo = QComboBox()
-        self.tcombo.activated.connect(self._on_target)
 
         # --- 출력 형태(가로/세로·오디오)
         orow = QHBoxLayout()
@@ -155,8 +158,6 @@ class GradePanel(QWidget):
         add_row("nr_luma", "밝기 노이즈", self.nr_l)
         g.setColumnStretch(1, 1)
 
-        self.b_clear = QPushButton("클립 보정 해제 (기본값으로)")
-        self.b_clear.clicked.connect(self._clear_all)
 
         # --- 샘플 썸네일
         self.samples = QListWidget()
@@ -180,11 +181,9 @@ class GradePanel(QWidget):
         inner = QVBoxLayout()
         inner.setContentsMargins(4, 4, 4, 4)
         inner.addLayout(head)
-        inner.addWidget(self.tcombo)
         inner.addLayout(orow)
         inner.addWidget(self.before)
         inner.addLayout(g)
-        inner.addWidget(self.b_clear)
         inner.addStretch(1)
         inner.addWidget(self.samples)
         box = QWidget()
@@ -211,29 +210,12 @@ class GradePanel(QWidget):
     # ------------------------------------------------------------ 대상
     def set_current_source(self, sid: str):
         self.cur_sid = sid
-        if self.target[0] == "src":
-            self.target = ("src", sid) if sid else BASE
-        self._fill_targets()
+        self.target = ("src", sid) if sid and self.state.project.source(sid) else BASE
+        self._load_controls()
         self.refresh_samples()
 
     def _fill_targets(self):
-        p = self.state.project
-        self.tcombo.blockSignals(True)
-        self.tcombo.clear()
-        self.tcombo.addItem("기본값", BASE)
-        s = p.source(self.cur_sid)
-        if s:
-            self.tcombo.addItem(f"현재 클립: {s.name}" + (" (C)" if s.grade else ""), ("src", s.id))
-        idx = next((i for i in range(self.tcombo.count()) if tuple(self.tcombo.itemData(i)) == tuple(self.target)), 0)
-        if idx == 0:
-            self.target = BASE
-        self.tcombo.setCurrentIndex(idx)
-        self.tcombo.blockSignals(False)
-        self._load_controls()
-
-    def _on_target(self, i):
-        self.target = tuple(self.tcombo.itemData(i))
-        self._load_controls()
+        self.set_current_source(self.cur_sid)
 
     def _target_dict(self) -> dict:
         kind, tid = self.target
@@ -301,7 +283,6 @@ class GradePanel(QWidget):
             w.blockSignals(False)
         self.curve.set_points(e["curve"])
         self._update_labels()
-        self.b_clear.setVisible(kind == "src")
 
     def _update_labels(self):
         e = self._effective()
@@ -333,10 +314,7 @@ class GradePanel(QWidget):
         self.refresh_samples()
 
     def _relabel(self):
-        if self.tcombo.count() > 1:
-            s = self.state.project.source(self.cur_sid)
-            if s:
-                self.tcombo.setItemText(1, f"현재 클립: {s.name}" + (" (C)" if s.grade else ""))
+        pass
 
     def _clear_key(self, key):
         self.state.checkpoint()
@@ -350,9 +328,36 @@ class GradePanel(QWidget):
         self._load_controls()
         self._emit_change()
 
+    def _reset_clip(self):
+        """조정값 초기화(LUT 는 유지)."""
+        from .project import FACTORY_GRADE
+        self.state.checkpoint()
+        d = self._target_dict()
+        lut = self._effective().get("lut", "")
+        if self.target[0] == "src":
+            d.clear()
+            d.update({k: v for k, v in FACTORY_GRADE.items() if k != "lut"})
+            d["nr_chroma"], d["nr_luma"], d["sharpen"] = 0, 0, 0.0
+        else:
+            d.update({k: v for k, v in FACTORY_GRADE.items() if k != "lut"})
+            d["nr_chroma"], d["nr_luma"], d["sharpen"] = 0, 0, 0.0
+        if self.target[0] == "src" and lut != self.state.project.grade.get("lut", ""):
+            d["lut"] = lut
+        self._load_controls()
+        self._emit_change()
+
     def _save_default(self):
-        save_default_grade(self.state.project.grade)
-        QMessageBox.information(self, "저장", "저장됨")
+        """이 클립의 값을 기본값(모든 클립 공통)으로 + 새 프로젝트 기본값으로 저장."""
+        self.state.checkpoint()
+        e = self._effective()
+        p = self.state.project
+        p.grade.update({k: e[k] for k in p.grade if k in e})
+        if self.target[0] == "src":
+            self._target_dict().clear()
+        save_default_grade(p.grade)
+        self._load_controls()
+        self._emit_change()
+        QMessageBox.information(self, "저장", "기본값으로 저장됨")
 
     # ------------------------------------------------------------ 샘플 (PNG)
     def make_samples(self):
