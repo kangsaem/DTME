@@ -77,6 +77,11 @@ def run_progress(cmd: list[str], total_sec: float, on_progress: Callable[[float]
         on_progress(1.0)
 
 
+def _abs(p) -> str:
+    """LUT 때문에 cwd 를 바꾸므로 모든 파일 경로는 절대 경로로."""
+    return os.path.abspath(str(p))
+
+
 def _hw(gpu: bool) -> list[str]:
     return ["-hwaccel", "cuda"] if gpu else []
 
@@ -197,13 +202,13 @@ def make_proxy(src: Source, lut: str, gpu: bool, on_progress=None, cancel=None) 
     if ref:
         vf += ["format=gbrp16le", f"lut3d=file={ref[1]}"]
     vf += [TO_YUV709]
-    cmd = [paths.ffmpeg(), "-y", *_hw(gpu), "-i", src.path, "-map", "0:v:0"]
+    cmd = [paths.ffmpeg(), "-y", *_hw(gpu), "-i", _abs(src.path), "-map", "0:v:0"]
     if src.has_audio:
         cmd += ["-map", "0:a:0?", "-c:a", "aac", "-b:a", "128k"]
     cmd += ["-vf", ",".join(vf), "-fps_mode", "passthrough",
             "-c:v", "libx264", "-preset", "ultrafast", "-tune", "fastdecode",
             "-g", "1", "-crf", "23", "-colorspace", "bt709", "-color_primaries", "bt709",
-            "-color_trc", "bt709", "-color_range", "tv", "-movflags", "+faststart", str(tmp)]
+            "-color_trc", "bt709", "-color_range", "tv", "-movflags", "+faststart", _abs(tmp)]
     try:
         run_progress(cmd, src.frames / float(src.fps), on_progress, cancel, cwd=ref[0] if ref else None)
     except FFError:
@@ -238,7 +243,7 @@ def render_preview(cached: str, g: dict | None) -> bytes:
     else:
         cwd, lut = _lut_for(g)
         vf = grade_chain(g, lut) + ["format=rgb24"]
-    return run([paths.ffmpeg(), "-v", "error", "-i", cached, "-frames:v", "1",
+    return run([paths.ffmpeg(), "-v", "error", "-i", _abs(cached), "-frames:v", "1",
                 "-vf", ",".join(vf), "-f", "image2pipe", "-c:v", "png", "-"], cwd=cwd)
 
 
@@ -276,7 +281,7 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str) -> tu
         seg_src_sec = float(Fraction(seg.frames) / src.fps)
         out_sec = seg_src_sec / seg.speed
         total += out_sec
-        cmd += [*_hw(o.gpu_decode), "-ss", _seek(seg.fin, src.fps), "-t", f"{seg_src_sec + 0.5:.6f}", "-i", src.path]
+        cmd += [*_hw(o.gpu_decode), "-ss", _seek(seg.fin, src.fps), "-t", f"{seg_src_sec + 0.5:.6f}", "-i", _abs(src.path)]
         v = [f"trim=end_frame={seg.frames}", "setpts=PTS-STARTPTS"]
         if seg.speed != 1.0:
             v.append(f"setpts=PTS/{seg.speed}")
@@ -314,7 +319,7 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str) -> tu
                 "-maxrate", f"{int(br * 1.5)}M", "-bufsize", f"{br * 2}M"]
     cmd += ["-pix_fmt", "yuv420p", "-r", f"{OUT_FPS.numerator}/{OUT_FPS.denominator}",
             "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709", "-color_range", "tv",
-            "-map_metadata", "-1", "-write_tmcd", "0", "-movflags", "+faststart", out_file]
+            "-map_metadata", "-1", "-write_tmcd", "0", "-movflags", "+faststart", _abs(out_file)]
     # 모든 LUT 는 같은 캐시 폴더에 있으므로 cwd 하나로 충분
     return cmd, total, cwd
 
@@ -339,9 +344,9 @@ def render_still(project: Project, still: Marker, out_file: str, gpu: bool = Fal
     lead = min(3, still.frame)
     start = still.frame - lead
     vf = grade_chain(g, lut) + ["format=rgb48le"]
-    cmd = [paths.ffmpeg(), "-v", "error", "-y", *_hw(gpu), "-ss", _seek(start, src.fps), "-i", src.path,
+    cmd = [paths.ffmpeg(), "-v", "error", "-y", *_hw(gpu), "-ss", _seek(start, src.fps), "-i", _abs(src.path),
            "-frames:v", str(lead + 1), "-an", "-vf", ",".join(vf), "-update", "1",
-           "-c:v", "tiff", "-compression_algo", "deflate", out_file]
+           "-c:v", "tiff", "-compression_algo", "deflate", _abs(out_file)]
     try:
         run(cmd, cwd=cwd)
     except FFError:

@@ -52,6 +52,16 @@ jobs:
           $env:PATH = "$PWD/dist/DTME/bin;$env:PATH"
           python tests/test_engine_min.py test4k.mp4
 
+      - name: Smoke test (exe 실행)
+        shell: pwsh
+        run: |
+          $env:DTME_SELFTEST = "1"
+          $p = Start-Process dist/DTME/DTME.exe -Wait -PassThru
+          Write-Host "exit code: $($p.ExitCode)"
+          if ($p.ExitCode -ne 0) { exit 1 }
+          Remove-Item -Recurse -Force dist/DTME/cache -ErrorAction SilentlyContinue
+          Remove-Item -Force dist/DTME/luts/_ci_identity.cube -ErrorAction SilentlyContinue
+
       - uses: actions/upload-artifact@v4
         with:
           name: DTME-windows
