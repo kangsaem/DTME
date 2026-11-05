@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from dataclasses import asdict, dataclass, field
 from fractions import Fraction
@@ -137,6 +138,7 @@ class OutputSettings:
     gpu_decode: bool = True
     folder: str = ""
     bitrate_mbps: int = 40
+    prefix: str = ""                  # 렌더 파일명 앞에 붙일 명칭
 
 
 @dataclass
@@ -227,6 +229,13 @@ class Project:
         p = cls.from_dict(json.loads(Path(file).read_text(encoding="utf-8")))
         p.file = file
         return p
+
+
+def short_name(path: str) -> str:
+    """파일명에서 날짜·시간(YYYYMMDDhhmm) 추출. DJI_20261025100118_0148_D → 202610251001"""
+    stem = Path(path).stem
+    m = re.search(r"(?<!\d)(\d{14})(?!\d)", stem) or re.search(r"(?<!\d)(\d{12})", stem)
+    return m.group(1)[:12] if m else stem
 
 
 def speed_label(sp: float) -> str:

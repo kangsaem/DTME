@@ -19,6 +19,7 @@ from .ui_curve import CurveEditor
 
 BASE = ("base", "")
 N_SAMPLES = 6
+TILE_W, TILE_H = 150, 84
 
 
 def sample_dir() -> Path:
@@ -47,12 +48,10 @@ class GradePanel(QWidget):
         head.addWidget(t)
         head.addStretch(1)
         b_def = QPushButton("기본값으로 저장")
-        b_def.setToolTip("지금 ‘기본값’을 새 프로젝트를 만들 때의 기본값으로 저장")
         b_def.clicked.connect(self._save_default)
         head.addWidget(b_def)
 
         self.tcombo = QComboBox()
-        self.tcombo.setToolTip("기본값 = 모든 클립 공통 · 현재 클립 = 이 클립에서 바꾼 항목만 덮어씀")
         self.tcombo.activated.connect(self._on_target)
 
         # --- 출력 형태(가로/세로·오디오)
@@ -66,14 +65,13 @@ class GradePanel(QWidget):
             orow.addWidget(rb)
         self.audio = QCheckBox("오디오")
         self.audio.setFocusPolicy(Qt.NoFocus)
-        self.audio.setToolTip("배속 구간은 음 높이를 유지한 채 속도만 바뀝니다")
         orow.addWidget(self.audio)
         orow.addStretch(1)
         self.orient.buttonClicked.connect(self._on_output)
         self.audio.toggled.connect(self._on_output)
 
         self.before = QCheckBox("보정 전 보기")
-        self.before.setToolTip("단축키 B")
+        self.before.setToolTip("B")
         self.before.setFocusPolicy(Qt.NoFocus)
         self.before.toggled.connect(self.beforeToggled.emit)
 
@@ -96,7 +94,6 @@ class GradePanel(QWidget):
                 g.addWidget(lab, r, 2)
             rb = QToolButton()
             rb.setText("↺")
-            rb.setToolTip("이 항목은 클립에서 바꾼 값 → 누르면 기본값으로")
             rb.clicked.connect(lambda _=False, k=key: self._clear_key(k))
             self.resets[key] = rb
             g.addWidget(rb, r, 3)
@@ -124,32 +121,42 @@ class GradePanel(QWidget):
             s.valueChanged.connect(lambda v, k=key, sc=scale: self._set(k, round(v / sc, 3), slider=True))
             return s
 
-        self.r_gain = slider(70, 150, "r_gain", 100, "빨강 — 수중의 파란 기운을 줄일 때 올림")
+        self.r_gain = slider(70, 150, "r_gain", 100, "")
         add_row("r_gain", "R", self.r_gain)
-        self.b_gain = slider(70, 150, "b_gain", 100, "파랑 — 수중에서는 보통 내림")
+        self.b_gain = slider(70, 150, "b_gain", 100, "")
         add_row("b_gain", "B", self.b_gain)
-        self.hue = slider(-30, 30, "hue", 2, "색조 회전 ±15°")
+        self.hue = slider(-30, 30, "hue", 2, "")
         add_row("hue", "Hue", self.hue)
-        self.sharp = slider(0, 100, "sharpen", 100, "샤픈")
+        self.sharp = slider(0, 100, "sharpen", 100, "")
         add_row("sharpen", "샤픈", self.sharp)
-        self.nr = QComboBox()
-        self.nr.activated.connect(lambda _: self._set("nr", self.nr.currentData()))
-        add_row("nr", "디노이즈", self.nr, False)
         g.addWidget(QLabel("커브"), r, 0, Qt.AlignTop)
         self.curve = CurveEditor()
         self.curve.changed.connect(lambda pts: self._set("curve", pts))
         g.addWidget(self.curve, r, 1, 1, 2)
         rb = QToolButton()
         rb.setText("↺")
-        rb.setToolTip("커브를 기본값으로")
         rb.clicked.connect(lambda: self._clear_key("curve"))
         self.resets["curve"] = rb
         g.addWidget(rb, r, 3, Qt.AlignTop)
         r += 1
-        b3 = QPushButton("리셋")
-        b3.setToolTip("커브를 직선으로")
+        # 디노이즈 + 커브리셋 한 줄
+        nrow = QHBoxLayout()
+        self.nr = QComboBox()
+        self.nr.setFixedWidth(70)
+        self.nr.activated.connect(lambda _: self._set("nr", self.nr.currentData()))
+        nrow.addWidget(self.nr)
+        rbn = QToolButton()
+        rbn.setText("↺")
+        rbn.clicked.connect(lambda: self._clear_key("nr"))
+        self.resets["nr"] = rbn
+        nrow.addWidget(rbn)
+        nrow.addStretch(1)
+        b3 = QPushButton("커브리셋")
+        b3.setFixedWidth(80)
         b3.clicked.connect(self.curve.reset)
-        g.addWidget(b3, r, 1, 1, 2)
+        nrow.addWidget(b3)
+        g.addWidget(QLabel("디노이즈"), r, 0)
+        g.addLayout(nrow, r, 1, 1, 3)
         r += 1
         g.setColumnStretch(1, 1)
 
@@ -159,18 +166,21 @@ class GradePanel(QWidget):
         # --- 샘플 썸네일
         self.samples = QListWidget()
         self.samples.setViewMode(QListWidget.IconMode)
-        self.samples.setIconSize(QSize(150, 84))
-        self.samples.setResizeMode(QListWidget.Adjust)
+        self.samples.setIconSize(QSize(TILE_W, TILE_H))
+        self.samples.setGridSize(QSize(TILE_W + 4, TILE_H + 4))
+        self.samples.setResizeMode(QListWidget.Fixed)
         self.samples.setMovement(QListWidget.Static)
-        self.samples.setSpacing(3)
-        self.samples.setMinimumHeight(300)
+        self.samples.setFlow(QListWidget.LeftToRight)
+        self.samples.setWrapping(True)
+        self.samples.setSpacing(0)
+        self.samples.setUniformItemSizes(True)
+        self.samples.setFixedSize(2 * (TILE_W + 4) + 6, 3 * (TILE_H + 4) + 6)
+        self.samples.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.samples.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.samples.setFocusPolicy(Qt.NoFocus)
-        self.samples.setToolTip("클릭: 모니터에 크게 · 더블클릭: PNG 파일 열기")
+        self.samples.setStyleSheet("QListWidget{background:#151515; border:none;}")
         self.samples.itemClicked.connect(self._on_sample)
         self.samples.itemDoubleClicked.connect(self._open_sample)
-        self.sample_lab = QLabel("샘플 — ‘샘플’ 버튼(G)으로 현재 클립 전체에서 6장 생성")
-        self.sample_lab.setStyleSheet("color:#aaa; font-size:11px;")
-        self.sample_lab.setWordWrap(True)
 
         inner = QVBoxLayout()
         inner.setContentsMargins(4, 4, 4, 4)
@@ -178,13 +188,10 @@ class GradePanel(QWidget):
         inner.addWidget(self.tcombo)
         inner.addLayout(orow)
         inner.addWidget(self.before)
-        line = QFrame()
-        line.setFrameShape(QFrame.HLine)
-        inner.addWidget(line)
         inner.addLayout(g)
         inner.addWidget(self.b_clear)
-        inner.addWidget(self.sample_lab)
-        inner.addWidget(self.samples, 1)
+        inner.addStretch(1)
+        inner.addWidget(self.samples, 0, Qt.AlignRight | Qt.AlignBottom)
         box = QWidget()
         box.setLayout(inner)
         sc = QScrollArea()
@@ -350,7 +357,7 @@ class GradePanel(QWidget):
 
     def _save_default(self):
         save_default_grade(self.state.project.grade)
-        QMessageBox.information(self, "저장", "새 프로젝트를 만들 때 지금 기본값이 들어갑니다.")
+        QMessageBox.information(self, "저장", "저장됨")
 
     # ------------------------------------------------------------ 샘플 (PNG)
     def make_samples(self):
@@ -377,11 +384,11 @@ class GradePanel(QWidget):
         if not s or not s.frames:
             return
         marks = [m for m in p.samples if m.src == s.id]
-        self.sample_lab.setText(f"샘플 {len(marks)}장 — 클릭: 모니터에 크게 · 더블클릭: PNG 열기"
-                                if marks else "샘플 — ‘샘플’ 버튼(G)으로 현재 클립 전체에서 6장 생성")
         grade = None if before else p.grade_for_source(s.id)
         for m in marks:
-            it = QListWidgetItem(timecode(m.frame, s.fps))
+            it = QListWidgetItem("")
+            it.setToolTip(timecode(m.frame, s.fps))
+            it.setSizeHint(QSize(TILE_W + 4, TILE_H + 4))
             it.setData(Qt.UserRole, m.id)
             if m.id in self.pix:
                 it.setIcon(self.pix[m.id])
@@ -405,7 +412,7 @@ class GradePanel(QWidget):
         for i in range(self.samples.count()):
             it = self.samples.item(i)
             if it.data(Qt.UserRole) == mid:
-                it.setIcon(pix.scaled(300, 168, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                it.setIcon(pix.scaled(TILE_W * 2, TILE_H * 2, Qt.KeepAspectRatio, Qt.SmoothTransformation))
                 it.setData(Qt.UserRole + 1, path)
 
     def _on_sample(self, it):

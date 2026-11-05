@@ -46,7 +46,6 @@ class SourceBar(QWidget):
         self.stills: list[int] = []
         self.samples: list[int] = []
         self._drag = False
-        self.setToolTip("현재 클립 전체 길이 · 클릭·드래그로 이동 · 색 구간 = 인/아웃 · E 기본값 / C 클립 보정")
 
     def set_data(self, frames, io, trimmed, speed, tag, stills, samples):
         self.frames, self.io, self.trimmed, self.speed, self.tag = frames, io, trimmed, speed, tag
@@ -63,7 +62,7 @@ class SourceBar(QWidget):
     def paintEvent(self, _):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
-        w, h = self.width(), self.height()
+        h = self.height()
         p.fillRect(self.rect(), QColor("#202020"))
         if not self.frames:
             return
@@ -145,7 +144,7 @@ class SeqTimeline(QWidget):
         return sum(it[1] for it in self.items)
 
     def _resize(self):
-        w = int(max(self.LIMIT_SEC, self.total()) * self.pps + 60)
+        w = int(self.total() * self.pps + 80)
         parent = self.parentWidget()
         if parent is not None:
             w = max(w, parent.width())
@@ -173,10 +172,6 @@ class SeqTimeline(QWidget):
         w, h = self.width(), self.height()
         p.fillRect(self.rect(), QColor("#1b1b1b"))
         rects = self._rects()
-        if not self.items:
-            p.setPen(QColor("#777"))
-            p.drawText(QRectF(0, 0, w, h - self.RULER), Qt.AlignCenter,
-                       "타임라인이 비어 있습니다 — 소스에서 인/아웃을 잡고 ▼ (↓ 키)로 내려 보내세요")
         f = QFont(self.font())
         for i, (it, r) in enumerate(zip(self.items, rects)):
             sid, sec, label, sp, tag = it
@@ -205,10 +200,6 @@ class SeqTimeline(QWidget):
             x = xs[min(j, len(xs) - 1)] - 1
             p.setPen(QPen(QColor("#f2c94c"), 3))
             p.drawLine(QPointF(x, 2), QPointF(x, h - self.RULER - 2))
-        # 30초 한도 선
-        lx = 4 + self.LIMIT_SEC * self.pps
-        p.setPen(QPen(QColor("#e5484d"), 1, Qt.DashLine))
-        p.drawLine(QPointF(lx, 0), QPointF(lx, h - self.RULER))
         # 눈금
         y0 = h - self.RULER
         p.fillRect(QRectF(0, y0, w, self.RULER), QColor("#151515"))

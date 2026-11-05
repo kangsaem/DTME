@@ -22,25 +22,25 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.state = AppState()
-        self.resize(1600, 980)
+        self.resize(1800, 1000)
         self.setAcceptDrops(True)
 
         tb = QToolBar("main")
         tb.setMovable(False)
         tb.setStyleSheet("QToolBar{spacing:6px; padding:3px;} QToolButton{padding:4px 12px;}")
         self.addToolBar(tb)
+        a = QAction("새 프로젝트", self)
+        a.triggered.connect(self.new_project)
+        tb.addAction(a)
+        tb.addSeparator()
         for text, key, fn in (("저장하기", QKeySequence.Save, self.save_project),
                               ("불러오기", QKeySequence.Open, self.open_project),
                               ("실행취소", QKeySequence.Undo, self.undo)):
             a = QAction(text, self)
             a.setShortcut(key)
-            a.setToolTip(f"{text} ({QKeySequence(key).toString()})")
+            a.setToolTip(QKeySequence(key).toString())
             a.triggered.connect(fn)
             tb.addAction(a)
-        tb.addSeparator()
-        a = QAction("새 프로젝트", self)
-        a.triggered.connect(self.new_project)
-        tb.addAction(a)
 
         self.tabs = QTabWidget()
         self.edit = EditTab(self.state)
