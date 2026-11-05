@@ -1,6 +1,7 @@
 """화면들이 공유하는 프로젝트 상태 + 영상 불러오기(비동기)/프록시 관리."""
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
@@ -21,7 +22,28 @@ class AppState(QObject):
         self.status: dict[str, str] = {}      # sid → 상태 문구
         self.proxy_pct: dict[str, float] = {}
         self._proxy_jobs: dict[str, jobs.Job] = {}
+        self._undo: list[dict] = []
         self.dirty = False
+
+    # ------------------------------------------------------------ 실행취소
+    def checkpoint(self):
+        """변경 직전에 호출 → 실행취소 지점."""
+        self._undo.append(copy.deepcopy(self.project.to_dict()))
+        del self._undo[:-80]
+
+    def can_undo(self) -> bool:
+        return bool(self._undo)
+
+    def undo(self) -> bool:
+        if not self._undo:
+            return False
+        file = self.project.file
+        p = Project.from_dict(self._undo.pop())
+        p.file = file
+        self.project = p
+        self.dirty = True
+        self.changed.emit("undo")
+        return True
 
     def touch(self, what: str):
         self.dirty = True
@@ -29,6 +51,7 @@ class AppState(QObject):
 
     def set_project(self, p: Project):
         self.project = p
+        self._undo = []
         self.status, self.proxy_pct, self._proxy_jobs = {}, {}, {}
         self.dirty = False
         for s in p.sources:
@@ -63,6 +86,7 @@ class AppState(QObject):
     def import_files(self, files: list[str]) -> int:
         known = {Path(s.path).resolve() for s in self.project.sources}
         added = 0
+        self.checkpoint()
         for f in files:
             pth = Path(f).resolve()
             if pth in known:
@@ -86,8 +110,9 @@ class AppState(QObject):
         self._set_status(src.id, "분석 대기")
         job = jobs.Job(lambda: ff.probe(src.path))
 
-        def done(info, s=src):
-            if self.project.source(s.id) is None:
+        def done(info, sid=src.id):
+            s = self.project.source(sid)
+            if s is None:
                 return
             for k in ("fps_num", "fps_den", "frames", "width", "height", "has_audio"):
                 setattr(s, k, info[k])
@@ -105,6 +130,7 @@ class AppState(QObject):
         jobs.submit(jobs.ANALYZE_POOL, job)
 
     def remove_source(self, sid: str):
+        self.checkpoint()
         j = self._proxy_jobs.pop(sid, None)
         if j:
             j.cancel.set()
@@ -142,10 +168,12 @@ class AppState(QObject):
             self.sourceStatus.emit(sid)
             self.importProgress.emit()
 
-        def on_done(path, s=src):
-            self._proxy_jobs.pop(s.id, None)
-            s.proxy = path
-            self._set_status(s.id, "준비")
+        def on_done(path, sid=src.id):
+            self._proxy_jobs.pop(sid, None)
+            s = self.project.source(sid)
+            if s:
+                s.proxy = path
+            self._set_status(sid, "준비")
 
         def on_err(msg, s=src):
             self._proxy_jobs.pop(s.id, None)

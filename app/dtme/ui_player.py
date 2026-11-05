@@ -1,5 +1,8 @@
-"""화면: 재생 중에는 프록시 영상, 정지 시에는 원본에서 만든 정확한 보정 미리보기.
-프록시가 없어도 프레임 이동·컷 지정이 가능하다(정지화면만)."""
+"""프리뷰 모니터.
+- 재생 중: 프록시 영상(QMediaPlayer)
+- 정지·이동·드래그·역재생: 프록시에서 한 장씩 뽑아 즉시 표시(검은 화면 없음)
+- 멈춘 뒤: 편집 화면이 원본 기준 보정 화면을 덮어씀(show_image)
+"""
 from __future__ import annotations
 
 import math
@@ -7,10 +10,12 @@ import os
 from fractions import Fraction
 
 from PySide6.QtCore import QSize, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import QLabel, QSizePolicy, QStackedLayout, QWidget
+
+from . import ff, jobs
 
 
 class ImageView(QLabel):
@@ -46,6 +51,8 @@ class Player(QWidget):
     frameChanged = Signal(int)
     playingChanged = Signal(bool)
 
+    SPEED = 2.0     # J/L 배속 고정
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setMinimumSize(480, 270)
@@ -69,13 +76,17 @@ class Player(QWidget):
         self.fps = Fraction(60000, 1001)
         self.frames = 0
         self._frame = 0
+        self.proxy = ""
         self.has_media = False
         self._pending_seek: int | None = None
         self.rate = 1.0
-        self._back_speed = 0
-        self._back_timer = QTimer(self)
-        self._back_timer.setInterval(50)
-        self._back_timer.timeout.connect(self._back_tick)
+        self._back = QTimer(self)
+        self._back.setInterval(50)
+        self._back.timeout.connect(self._back_tick)
+        # 프록시 프레임 뽑기: 동시에 1개만, 밀리면 최신 요청만 처리
+        self._grab_busy = False
+        self._grab_want: int | None = None
+        self.overlay_frame: int | None = None   # 보정 화면/샘플이 덮고 있는 프레임
         self.set_message("왼쪽 ‘영상 추가’로 4K 원본을 불러오세요\n(여러 개 선택 가능 · 창에 끌어다 놓아도 됩니다)")
 
     # ---------------------------------------------------------------- 표시
@@ -84,13 +95,9 @@ class Player(QWidget):
         self._stack.setCurrentWidget(self.image)
 
     def show_image(self, pix: QPixmap):
-        if not self.is_playing():
+        if not self.is_busy():
             self.image.set_pix(pix)
             self._stack.setCurrentWidget(self.image)
-
-    def show_video(self):
-        if self.has_media:
-            self._stack.setCurrentWidget(self.video)
 
     # ---------------------------------------------------------------- 로드
     def set_source(self, fps: Fraction, frames: int, proxy: str | None, frame: int = 0):
@@ -98,10 +105,12 @@ class Player(QWidget):
         self.stop_all()
         self.fps, self.frames = fps, frames
         self._frame = max(0, min(frames - 1, frame)) if frames else 0
+        self.proxy = proxy or ""
         self.has_media = bool(proxy)
         if proxy:
             self._pending_seek = self._frame
             self.player.setSource(QUrl.fromLocalFile(proxy))
+            self._grab(self._frame)
         else:
             self.player.setSource(QUrl())
         self.frameChanged.emit(self._frame)
@@ -110,6 +119,7 @@ class Player(QWidget):
         self.stop_all()
         self.player.setSource(QUrl())
         self.has_media = False
+        self.proxy = ""
         self.frames = 0
         self.set_message(text)
 
@@ -118,6 +128,37 @@ class Player(QWidget):
             f = self._pending_seek
             self._pending_seek = None
             self.player.setPosition(self._ms(f))
+
+    # ---------------------------------------------------------------- 프록시 프레임
+    def _grab(self, frame: int):
+        if not self.proxy:
+            return
+        if self._grab_busy:
+            self._grab_want = frame
+            return
+        self._grab_busy = True
+        proxy, fps = self.proxy, self.fps
+        job = jobs.Job(lambda: ff.grab_proxy_frame(proxy, fps, frame))
+        job.signals.done.connect(lambda data, f=frame, px=proxy: self._on_grab(f, px, data))
+        job.signals.error.connect(lambda _m: self._grab_done())
+        jobs.submit(jobs.GRAB_POOL, job)
+
+    def _on_grab(self, frame, proxy, data):
+        if proxy == self.proxy and frame == self._frame and not self.is_playing() \
+                and self.overlay_frame != frame:
+            img = QImage.fromData(data, "BMP")
+            if not img.isNull():
+                self.image.set_pix(QPixmap.fromImage(img))
+                self._stack.setCurrentWidget(self.image)
+        self._grab_done()
+
+    def _grab_done(self):
+        self._grab_busy = False
+        if self._grab_want is not None:
+            f = self._grab_want
+            self._grab_want = None
+            if f == self._frame:
+                self._grab(f)
 
     # ---------------------------------------------------------------- 위치
     def _ms(self, frame: int) -> int:
@@ -138,22 +179,28 @@ class Player(QWidget):
     def is_playing(self) -> bool:
         return self.player.playbackState() == QMediaPlayer.PlayingState
 
+    def is_busy(self) -> bool:
+        return self.is_playing() or self._back.isActive()
+
     def seek(self, frame: int):
         if not self.frames:
             return
         frame = max(0, min(self.frames - 1, int(frame)))
         self._frame = frame
+        self.overlay_frame = None
         if self.has_media:
             self.player.setPosition(self._ms(frame))
+            if not self.is_playing():
+                self._grab(frame)
         self.frameChanged.emit(frame)
 
     def step(self, d: int):
         self.pause()
         self.seek(self._frame + d)
 
-    # ---------------------------------------------------------------- 재생 (J/K/L)
+    # ---------------------------------------------------------------- 재생
     def toggle(self) -> bool:
-        if self.is_playing() or self._back_timer.isActive():
+        if self.is_busy():
             self.pause()
             return True
         return self.play(1.0)
@@ -161,9 +208,9 @@ class Player(QWidget):
     def play(self, rate: float = 1.0) -> bool:
         if not self.has_media:
             return False   # 프록시 준비 전에는 재생 불가(프레임 이동은 가능)
-        self._back_timer.stop()
-        self._back_speed = 0
+        self._back.stop()
         self.rate = rate
+        self.overlay_frame = None
         self.player.setPlaybackRate(rate)
         if self.audio:
             self.audio.setMuted(rate != 1.0)
@@ -172,40 +219,68 @@ class Player(QWidget):
         self.playingChanged.emit(True)
         return True
 
-    def forward(self) -> bool:  # L
-        if self.is_playing():
-            return self.play(min(8.0, self.rate * 2))
-        return self.play(1.0)
+    def forward(self) -> bool:  # L: 2배속 고정 (다시 누르면 정지)
+        if self.is_playing() and self.rate == self.SPEED:
+            self.pause()
+            return True
+        return self.play(self.SPEED)
 
-    def backward(self) -> bool:  # J — 역재생은 탐색 반복으로 구현
+    def backward(self) -> bool:  # J: 2배속 역재생 고정 (다시 누르면 정지)
         if not self.has_media:
             return False
-        self.player.pause()
-        self._back_speed = min(8, max(1, self._back_speed * 2))
-        self._stack.setCurrentWidget(self.video)
-        self._back_timer.start()
+        if self._back.isActive():
+            self.pause()
+            return True
+        if self.is_playing():
+            self.player.pause()
+        self.overlay_frame = None
+        self._back.start()
         self.playingChanged.emit(True)
         return True
 
     def _back_tick(self):
-        step = max(1, round(float(self.fps) * 0.05 * self._back_speed))
+        step = max(1, round(float(self.fps) * 0.05 * self.SPEED))
         if self._frame <= 0:
             self.pause()
             return
         self._frame = max(0, self._frame - step)
         self.player.setPosition(self._ms(self._frame))
+        self._grab_force(self._frame)
         self.frameChanged.emit(self._frame)
 
-    def pause(self):  # K
-        was = self.is_playing() or self._back_timer.isActive()
-        self._back_timer.stop()
-        self._back_speed = 0
+    def _grab_force(self, frame):
+        """역재생 중 표시용(재생 상태 검사 없이)."""
+        if self._grab_busy:
+            self._grab_want = frame
+            return
+        self._grab_busy = True
+        proxy, fps = self.proxy, self.fps
+        job = jobs.Job(lambda: ff.grab_proxy_frame(proxy, fps, frame))
+
+        def done(data):
+            img = QImage.fromData(data, "BMP")
+            if not img.isNull() and not self.is_playing():
+                self.image.set_pix(QPixmap.fromImage(img))
+                self._stack.setCurrentWidget(self.image)
+            self._grab_busy = False
+            if self._grab_want is not None:
+                f = self._grab_want
+                self._grab_want = None
+                (self._grab_force if self._back.isActive() else self._grab)(f)
+
+        job.signals.done.connect(done)
+        job.signals.error.connect(lambda _m: setattr(self, "_grab_busy", False))
+        jobs.submit(jobs.GRAB_POOL, job)
+
+    def pause(self):
+        was = self.is_busy()
+        self._back.stop()
         if self.is_playing():
             self.player.pause()
         if was:
-            self.seek(self._frame)   # 프레임 경계에 맞춤
+            self.seek(self._frame)   # 프레임 경계에 맞추고 정지화면으로
             self.playingChanged.emit(False)
 
     def stop_all(self):
-        self._back_timer.stop()
+        self._back.stop()
         self.player.stop()

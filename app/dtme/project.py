@@ -72,6 +72,9 @@ class Source:
     has_audio: bool = True
     proxy: str = ""
     grade: dict = field(default_factory=dict)   # 클립별 덮어쓰기(일부 키만)
+    sel_in: int = 0          # 소스 모니터의 인 점(포함)
+    sel_out: int = 0         # 아웃 점(제외). 0 = 끝까지
+    speed: float = 1.0       # 소스 모니터에서 지정한 배속
     id: str = field(default_factory=_id)
 
     @property
@@ -82,12 +85,23 @@ class Source:
     def name(self) -> str:
         return Path(self.path).name
 
+    @property
+    def io(self) -> tuple[int, int]:
+        out = self.sel_out if 0 < self.sel_out <= self.frames else self.frames
+        return max(0, min(self.sel_in, out - 1)), out
+
+    @property
+    def io_trimmed(self) -> bool:
+        a, b = self.io
+        return a > 0 or b < self.frames
+
 
 @dataclass
 class Segment:
+    """타임라인/렌더 리스트의 컷 하나."""
     src: str
-    fin: int          # 컷인 프레임(포함)
-    fout: int         # 컷아웃 프레임(제외)
+    fin: int          # 인 프레임(포함)
+    fout: int         # 아웃 프레임(제외)
     speed: float = 1.0
     id: str = field(default_factory=_id)
 
@@ -98,17 +112,26 @@ class Segment:
 
 @dataclass
 class Marker:
-    """샘플(보정용) 또는 스틸."""
+    """샘플 또는 스틸 위치."""
     src: str
     frame: int
-    grade: dict = field(default_factory=dict)   # 스틸 전용 추가 조정
+    grade: dict = field(default_factory=dict)
+    id: str = field(default_factory=_id)
+
+
+@dataclass
+class RenderItem:
+    """렌더 예정 리스트의 출력 파일 1개."""
+    name: str
+    segs: list = field(default_factory=list)     # Segment 목록(보낼 때의 사본)
+    orientation: str = "horizontal"
+    audio: bool = True
     id: str = field(default_factory=_id)
 
 
 @dataclass
 class OutputSettings:
     orientation: str = "horizontal"   # horizontal | vertical
-    mode: str = "per_source"          # per_source | concat
     audio: bool = True
     encoder: str = "nvenc"            # nvenc | x264
     gpu_decode: bool = True
@@ -119,7 +142,8 @@ class OutputSettings:
 @dataclass
 class Project:
     sources: list[Source] = field(default_factory=list)
-    segments: list[Segment] = field(default_factory=list)
+    segments: list[Segment] = field(default_factory=list)     # 타임라인
+    render_items: list[RenderItem] = field(default_factory=list)
     samples: list[Marker] = field(default_factory=list)
     stills: list[Marker] = field(default_factory=list)
     grade: dict = field(default_factory=load_default_grade)
@@ -133,7 +157,7 @@ class Project:
     def segments_of(self, sid: str) -> list[Segment]:
         return [g for g in self.segments if g.src == sid]
 
-    # ---- 보정값 병합: 기본값 → 클립 → 스틸 ----
+    # ---- 보정값 병합: 기본값 → 클립 → (스틸) ----
     def grade_for_source(self, sid: str) -> dict:
         g = dict(self.grade)
         s = self.source(sid)
@@ -146,32 +170,53 @@ class Project:
         g.update(still.grade)
         return g
 
-    # ---- 결과 길이 ----
+    # ---- 길이 ----
     @staticmethod
     def seg_out_seconds(seg: Segment, fps: Fraction) -> float:
         return float(seg.frames / fps / Fraction(seg.speed))
 
-    def out_seconds(self, sid: str | None = None) -> float:
+    def segs_seconds(self, segs) -> float:
         total = 0.0
-        for seg in self.segments:
-            if sid and seg.src != sid:
-                continue
+        for seg in segs:
             s = self.source(seg.src)
-            if s:
+            if s and s.frames:
                 total += self.seg_out_seconds(seg, s.fps)
         return total
+
+    def out_seconds(self, sid: str | None = None) -> float:
+        return self.segs_seconds([g for g in self.segments if not sid or g.src == sid])
 
     # ---- 저장 ----
     def to_dict(self) -> dict:
         return {
-            "version": 1,
+            "version": 2,
             "sources": [asdict(s) for s in self.sources],
             "segments": [asdict(s) for s in self.segments],
+            "render_items": [asdict(r) for r in self.render_items],
             "samples": [asdict(s) for s in self.samples],
             "stills": [asdict(s) for s in self.stills],
             "grade": self.grade,
             "output": asdict(self.output),
         }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Project":
+        p = cls()
+        p.sources = [Source(**s) for s in d.get("sources", [])]
+        p.segments = [Segment(**s) for s in d.get("segments", [])]
+        p.render_items = []
+        for r in d.get("render_items", []):
+            r = dict(r)
+            r["segs"] = [Segment(**g) if isinstance(g, dict) else g for g in r.get("segs", [])]
+            p.render_items.append(RenderItem(**r))
+        p.samples = [Marker(**s) for s in d.get("samples", [])]
+        p.stills = [Marker(**s) for s in d.get("stills", [])]
+        g = dict(FACTORY_GRADE)
+        g.update(d.get("grade", {}))
+        p.grade = g
+        o = {k: v for k, v in d.get("output", {}).items() if k in OutputSettings.__dataclass_fields__}
+        p.output = OutputSettings(**o)
+        return p
 
     def save(self, file: str) -> None:
         self.file = file
@@ -179,18 +224,13 @@ class Project:
 
     @classmethod
     def load(cls, file: str) -> "Project":
-        d = json.loads(Path(file).read_text(encoding="utf-8"))
-        p = cls()
-        p.sources = [Source(**s) for s in d.get("sources", [])]
-        p.segments = [Segment(**s) for s in d.get("segments", [])]
-        p.samples = [Marker(**s) for s in d.get("samples", [])]
-        p.stills = [Marker(**s) for s in d.get("stills", [])]
-        g = dict(FACTORY_GRADE)
-        g.update(d.get("grade", {}))
-        p.grade = g
-        p.output = OutputSettings(**d.get("output", {}))
+        p = cls.from_dict(json.loads(Path(file).read_text(encoding="utf-8")))
         p.file = file
         return p
+
+
+def speed_label(sp: float) -> str:
+    return {2.0: "x2", 1.0: "x1", 0.5: "x1/2"}.get(sp, f"x{sp:g}")
 
 
 def timecode(frame: int, fps: Fraction) -> str:

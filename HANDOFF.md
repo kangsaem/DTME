@@ -2,7 +2,7 @@
 
 다음 대화에서 이어 작업할 때 이 문서를 기준으로 한다.
 
-## 현재 상태 (v0.2.0, 2026-11-05)
+## 현재 상태 (v0.3.0, 2026-11-05)
 
 1단계 전체 구현 완료. Linux에서 엔진·화면 검증, GitHub Actions(Windows)에서 빌드·엔진·exe 실행 점검 통과. **사용자 PC 실기 테스트 대기.**
 
@@ -10,6 +10,17 @@
 Release zip 이 필요하면 GitHub 웹에서 `v0.1.0` 같은 태그로 Release 를 만들면 자동 빌드됨(Claude 세션에서는 태그 push 가 막혀 있음).
 
 ## 변경 이력
+
+- v0.3.0: 사용자 기준으로 화면 재구성
+  - 작업 방식 변경: 소스마다 인/아웃·배속 1개(소스 바) → ▼(↓) 타임라인 끝에 붙임 / ▶(Enter) 렌더 리스트로 바로
+  - 타임라인: 결과 길이 비례 블록, 드래그 순서 변경, 확대 슬라이더, 결과 시간 눈금, 30초 선, 전체 삭제, 렌더 리스트로
+  - 렌더 탭(인코더·비트레이트·디코딩·저장폴더 + 렌더 리스트 + 렌더 버튼). 기존 출력 탭·구간 표·스틸 보정 대상 삭제
+  - 모니터: 정지·이동·드래그·역재생은 프록시 프레임을 ffmpeg로 한 장씩 뽑아 즉시 표시(검은 화면 해결), J/L 2배속 고정, K 삭제
+  - 스틸 = 즉시 4K 16bit PNG 저장. 샘플 = 현재 클립 전체에서 6장 PNG, 클릭 시 이동·재렌더 없이 모니터에 표시
+  - E/C 코너 표시(소스 바·타임라인 컷), 용어 정리(소스·보정·기본값·R·B·디노이즈·리셋·기본값으로 저장)
+  - 상단 저장하기·불러오기·실행취소(스냅샷 방식, 80단계)
+  - 단축키: [ ] 추가, ↓ / Enter, Ctrl+Z/S/O
+  - 확인 필요: 요청 원문에 Enter 가 ‘타임라인으로’와 ‘렌더 리스트로’ 두 번 나옴 → 버튼 정의대로 ↓=타임라인, Enter=렌더 리스트로 구현
 
 - v0.2.0: 사용자 피드백 반영
   - 영상 추가 즉시 목록 등록(0.002초), 분석(4병렬)·프록시(1개씩)는 백그라운드, 진행 막대, 선택 파일 프록시 우선
@@ -41,9 +52,11 @@ app/dtme/project.py      데이터 구조(JSON 저장), 보정 병합, 결과 �
 app/dtme/ff.py           FFmpeg: probe, 프록시, 필터 체인, 렌더, 스틸, 미리보기, 선명도
 app/dtme/state.py        공유 상태, 불러오기, 프록시 작업
 app/dtme/jobs.py         스레드 풀(프록시 1 / 미리보기 6 / 렌더 1)
-app/dtme/ui_edit.py      편집·보정 화면(소스 | 화면·조작·타임라인·구간 | 보정 패널), 키 입력 필터
-app/dtme/ui_grade.py     보정 패널(GradePanel)
-app/dtme/ui_*.py         출력 탭, 플레이어(프록시 재생 + 정지화면), 타임라인, 커브
+app/dtme/ui_edit.py      편집·보정 화면(소스 | 모니터·소스 바·조작·타임라인 | 보정), 키 입력 필터, 스틸 PNG
+app/dtme/ui_grade.py     보정 패널(GradePanel), 샘플 6장 PNG
+app/dtme/ui_bars.py      SourceBar(현재 클립), SeqTimeline(컷 이어붙이기)
+app/dtme/ui_render.py    렌더 탭
+app/dtme/ui_player.py    모니터(재생=QMediaPlayer, 정지=프록시 프레임 grab)
 tests/test_core.py       실제 샘플로 점검 (python tests/test_core.py 샘플.MP4 LUT.cube)
 tests/test_engine_min.py CI용 합성 4K 점검
 .github/workflows/build.yml  Windows 빌드 → Artifacts "DTME-windows" (v* 태그 시 Release zip)

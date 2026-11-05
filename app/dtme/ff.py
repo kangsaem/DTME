@@ -273,8 +273,11 @@ def sharpness_around(src: Source, frame: int, radius: int = 5) -> list[tuple[int
 
 
 # ------------------------------------------------------------------ 영상 렌더
-def build_render_cmd(project: Project, segs: list[Segment], out_file: str) -> tuple[list[str], float, str | None]:
+def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orientation: str | None = None,
+                     audio: bool | None = None) -> tuple[list[str], float, str | None]:
     o = project.output
+    orientation = orientation or o.orientation
+    audio = o.audio if audio is None else audio
     cmd = [paths.ffmpeg(), "-y"]
     fparts, labels = [], []
     total = 0.0
@@ -292,12 +295,12 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str) -> tu
         if seg.speed != 1.0:
             v.append(f"setpts=PTS/{seg.speed}")
         v.append(f"fps={OUT_FPS.numerator}/{OUT_FPS.denominator}")
-        v += frame_chain(o.orientation)
+        v += frame_chain(orientation)
         v += grade_chain(g, lut)
         v += [TO_YUV709, "setsar=1"]
         fparts.append(f"[{i}:v:0]{','.join(v)}[v{i}]")
         lab = f"[v{i}]"
-        if o.audio:
+        if audio:
             if src.has_audio:
                 a = [f"atrim=duration={seg_src_sec:.6f}", "asetpts=PTS-STARTPTS"]
                 if seg.speed != 1.0:
@@ -309,12 +312,12 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str) -> tu
             lab += f"[a{i}]"
         labels.append(lab)
     n = len(segs)
-    if o.audio:
+    if audio:
         fparts.append(f"{''.join(labels)}concat=n={n}:v=1:a=1[vo][ao]")
     else:
         fparts.append(f"{''.join(labels)}concat=n={n}:v=1:a=0[vo]")
     cmd += ["-filter_complex", ";".join(fparts), "-map", "[vo]"]
-    if o.audio:
+    if audio:
         cmd += ["-map", "[ao]", "-c:a", "aac", "-b:a", "192k"]
     br = int(o.bitrate_mbps)
     if o.encoder == "nvenc":
@@ -330,8 +333,9 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str) -> tu
     return cmd, total, cwd
 
 
-def render_video(project: Project, segs: list[Segment], out_file: str, on_progress=None, cancel=None) -> None:
-    cmd, total, cwd = build_render_cmd(project, segs, out_file)
+def render_video(project: Project, segs: list[Segment], out_file: str, on_progress=None, cancel=None,
+                 orientation: str | None = None, audio: bool | None = None) -> None:
+    cmd, total, cwd = build_render_cmd(project, segs, out_file, orientation, audio)
     try:
         run_progress(cmd, total, on_progress, cancel, cwd=cwd)
     except FFError:
@@ -342,20 +346,31 @@ def render_video(project: Project, segs: list[Segment], out_file: str, on_progre
 
 
 # ------------------------------------------------------------------ 스틸 (4K 원본)
-def render_still(project: Project, still: Marker, out_file: str, gpu: bool = False) -> None:
-    """앞 3프레임을 함께 넣어 시간축 노이즈 제거가 동작하게 하고 마지막 프레임만 저장."""
-    src = project.source(still.src)
-    g = project.grade_for_still(still)
+def export_still(src: Source, frame: int, g: dict, out_file: str, gpu: bool = False) -> None:
+    """원본 4K 프레임에 보정 적용 → 16bit PNG(.png) 또는 TIFF(.tif).
+    앞 3프레임을 함께 넣어 시간축 노이즈 제거가 동작하게 하고 마지막 프레임만 저장."""
     cwd, lut = _lut_for(g)
-    lead = min(3, still.frame)
-    start = still.frame - lead
-    vf = grade_chain(g, lut) + ["format=rgb48le"]
+    lead = min(3, frame)
+    start = frame - lead
+    is_png = str(out_file).lower().endswith(".png")
+    vf = grade_chain(g, lut) + ["format=rgb48be" if is_png else "format=rgb48le"]
+    codec = ["-c:v", "png", "-compression_level", "3"] if is_png else ["-c:v", "tiff", "-compression_algo", "deflate"]
     cmd = [paths.ffmpeg(), "-v", "error", "-y", *_hw(gpu), "-ss", _seek(start, src.fps), "-i", _abs(src.path),
-           "-frames:v", str(lead + 1), "-an", "-vf", ",".join(vf), "-update", "1",
-           "-c:v", "tiff", "-compression_algo", "deflate", _abs(out_file)]
+           "-frames:v", str(lead + 1), "-an", "-vf", ",".join(vf), "-update", "1", *codec, _abs(out_file)]
     try:
         run(cmd, cwd=cwd)
     except FFError:
         if not gpu:
             raise
         run([c for c in cmd if c not in ("-hwaccel", "cuda")], cwd=cwd)
+
+
+def render_still(project: Project, still: Marker, out_file: str, gpu: bool = False) -> None:
+    export_still(project.source(still.src), still.frame, project.grade_for_still(still), out_file, gpu)
+
+
+# ------------------------------------------------------------------ 프록시 프레임 (드래그·이동 시 즉시 표시)
+def grab_proxy_frame(proxy: str, fps: Fraction, frame: int) -> bytes:
+    """전 프레임 키프레임 프록시라 한 장 디코딩이 빠름(수십 ms)."""
+    return run([paths.ffmpeg(), "-v", "error", "-ss", _seek(frame, fps), "-i", _abs(proxy), "-frames:v", "1",
+                "-an", "-f", "image2pipe", "-c:v", "bmp", "-pix_fmt", "bgr24", "-"])
