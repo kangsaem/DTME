@@ -530,6 +530,25 @@ def render_preview(cached: CachedFrame, g: dict | None) -> bytes:
                 "-vf", ",".join(vf), "-f", "image2pipe", "-c:v", "png", "-"], cwd=cwd, data=cached.data)
 
 
+def render_region(src: Source, frame: int, g: dict | None, rect, max_w: int = 2560) -> bytes:
+    """확대 보기: 원본(4K)에서 보이는 영역만 잘라 보정 → PNG. rect = (x, y, w, h) 0~1."""
+    x, y, w, h = rect
+    W, H = src.width or 3840, src.height or 2160
+    cw, ch = max(16, int(w * W)) // 2 * 2, max(16, int(h * H)) // 2 * 2
+    cx, cy = min(W - cw, int(x * W)) // 2 * 2, min(H - ch, int(y * H)) // 2 * 2
+    lead = min(PREVIEW_LEAD, frame)
+    cwd, lut = (None, None)
+    vf = (lens_chain(g) if g else []) + [f"crop={cw}:{ch}:{cx}:{cy}"]
+    if cw > max_w:
+        vf.append(f"scale={max_w}:-2:flags=lanczos")
+    if g is not None:
+        cwd, lut = _lut_for(g)
+        vf += grade_chain(g, lut, 3840)
+    vf += [f"select=gte(n\\,{lead})", "format=rgb24"]
+    return run([paths.ffmpeg(), "-v", "error", "-ss", _seek(frame - lead, src.fps), "-i", _abs(src.path),
+                "-frames:v", str(lead + 1), "-an", "-vf", ",".join(vf), "-f", "image2pipe", "-c:v", "png", "-"], cwd=cwd)
+
+
 # ------------------------------------------------------------------ 선명도
 def sharpness_around(src: Source, frame: int, radius: int = 5) -> list[tuple[int, float]]:
     import numpy as np

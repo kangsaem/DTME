@@ -130,6 +130,7 @@ class EditTab(QWidget):
         self._last_list = "src"         # [삭제](소스) 대상: "src" | "img"
         self._img_cache: dict[str, QImage] = {}
         self._text_key = None
+        self._space_down = False
         self.pgen = 0
 
         # ================= 소스
@@ -137,6 +138,7 @@ class EditTab(QWidget):
         self.src_list.setFocusPolicy(Qt.NoFocus)
         self.src_list.setItemDelegate(SourceDelegate(self))
         self.src_list.setSelectionMode(QListWidget.ExtendedSelection)      # Ctrl·Shift = 여러 클립(프리셋 적용)
+        self.src_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.src_list.setStyleSheet("QListWidget{background:#1a1a1a; border:none;}")
         self.src_list.currentItemChanged.connect(self._on_src_selected)
         self.src_list.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -316,6 +318,12 @@ class EditTab(QWidget):
         self.grade.keysChanged.connect(self._refresh_marks)
         self.sbar.gkeyDeleteRequested.connect(self._delete_gkeys)
         self.player.mon.whitePicked.connect(self._white_picked)
+        self._zoom_timer = QTimer(self)
+        self._zoom_timer.setSingleShot(True)
+        self._zoom_timer.setInterval(400)
+        self._zoom_timer.timeout.connect(self.request_zoom_patch)
+        self.player.mon.viewChanged.connect(self._zoom_timer.start)
+        self.zgen = 0
         self.render_panel = RenderPanel(state)
 
         # 3열: 보정 | 모니터·타임라인 | 소스·렌더
@@ -361,6 +369,15 @@ class EditTab(QWidget):
         if e.type() == QEvent.Resize and obj in (self.player, self.lbar):
             QTimer.singleShot(0, self._sync_right)
             return False
+        if e.type() == QEvent.KeyRelease and not e.isAutoRepeat() and self._space_down and self._is_space(e):
+            # Space 를 뗄 때: 누르는 동안 화면을 끌었으면 이동만, 아니면 재생/정지
+            self._space_down = False
+            mon = self.player.mon
+            mon.space_pan = False
+            mon.setCursor(Qt.ArrowCursor)
+            if not mon.space_moved:
+                self._key("space")
+            return True
         if e.type() != QEvent.KeyPress or not self.isVisible() or not self.window().isActiveWindow():
             return False
         fw = QApplication.focusWidget()
@@ -400,8 +417,18 @@ class EditTab(QWidget):
             return False
         if e.isAutoRepeat() and name not in ("left", "right"):
             return True
+        if name == "space":                  # 재생은 뗄 때(누른 채 끌면 화면 이동)
+            self._space_down = True
+            self.player.mon.space_pan = True
+            self.player.mon.space_moved = False
+            return True
         self._key(name, shift=bool(e.modifiers() & Qt.ShiftModifier))
         return True
+
+    def _is_space(self, e):
+        if os.name == "nt" and e.nativeScanCode():
+            return (e.nativeScanCode() & 0xFF) == 0x39
+        return e.key() == Qt.Key_Space
 
     def _key(self, name, shift=False):
         p = self.player
@@ -639,6 +666,32 @@ class EditTab(QWidget):
         p.overlay_frame = frame
         p.mon.set_before(QImage.fromData(before, "PNG") if before else None)
         p.show_image(QImage.fromData(img, "PNG"))
+        if p.mon.zoom > 1:
+            self._zoom_timer.start()
+
+    # ================================================================ 확대 보기: 보이는 부분만 원본에서 고화질
+    def request_zoom_patch(self):
+        s = self._cur()
+        p, mon = self.player, self.player.mon
+        if not s or not s.frames or p.is_busy() or mon.zoom <= 1.0001 or self.grade.view_mode() == "split":
+            return
+        r = mon._view_rect()
+        if r.width() * mon.devicePixelRatioF() < 1280 * 1.3:      # 미리보기(1280)로 충분
+            return
+        rect = mon.visible_norm()
+        if not rect:
+            return
+        self.zgen += 1
+        gen, frame, tok = self.zgen, p.frame, p._token
+        g = None if self.grade.view_mode() == "raw" else self.state.project.grade_for_source(s.id, frame)
+        job = jobs.Job(lambda: ff.render_region(s, frame, g, rect))
+
+        def done(data):
+            if gen == self.zgen and frame == p.frame and tok == p._token and not p.is_busy():
+                mon.set_patch(QImage.fromData(data, "PNG"), rect)
+        job.signals.done.connect(done)
+        job.signals.error.connect(lambda m: ff.log_error("확대 영역", m))
+        jobs.submit(jobs.PREVIEW_POOL, job, priority=6)
 
     # ================================================================ 흰색 찍기
     def _white_mode(self, on):

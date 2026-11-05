@@ -26,6 +26,7 @@ class Monitor(QWidget):
     cropPressed = Signal()
     cropDragged = Signal(float)        # 세로 크롭 이동량(원본 px)
     whitePicked = Signal(float, float)   # 흰색 찍기: 영상 안 위치(0~1)
+    viewChanged = Signal()               # 확대·이동 바뀜(→ 확대 영역 고화질 다시 만들기)
 
     HANDLE = 9
 
@@ -52,7 +53,123 @@ class Monitor(QWidget):
         self.pick_mode = False                  # 흰색 찍기
         self.scope = False                      # RGB 파형
         self._scope_data = None
+        # 확대 보기: zoom 1 = 맞춤, center = 화면 가운데에 오는 영상 위치(0~1)
+        self.zoom = 1.0
+        self.center = [0.5, 0.5]
+        self.space_pan = False                  # Space 누르고 있음 → 왼쪽 끌기 = 이동
+        self.space_moved = False
+        self._pan = None                        # (press pos, center)
+        self.patch: QImage | None = None        # 확대 영역 고화질(원본에서 다시 만든 것)
+        self.patch_rect = None                  # (x, y, w, h) 영상 기준 0~1
+        self._build_zoom_ui()
         self.setMouseTracking(True)
+
+    # ---------------------------------------------------------------- 확대 보기
+    def _build_zoom_ui(self):
+        from PySide6.QtWidgets import QHBoxLayout, QMenu, QPushButton
+        self.zbox = QWidget(self)
+        lay = QHBoxLayout(self.zbox)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(2)
+        css = ("QPushButton{background:rgba(25,25,25,210); color:#ddd; border:1px solid #555; border-radius:3px;"
+               "font-size:11px; padding:0 6px;}")
+        self.b_zm = QPushButton("−")
+        self.b_zl = QPushButton("맞춤")
+        self.b_zp = QPushButton("+")
+        for b, w in ((self.b_zm, 24), (self.b_zl, 52), (self.b_zp, 24)):
+            b.setFixedSize(w, 22)
+            b.setStyleSheet(css)
+            b.setFocusPolicy(Qt.NoFocus)
+            lay.addWidget(b)
+        self.b_zm.setToolTip("축소")
+        self.b_zp.setToolTip("확대 (휠)")
+        self.b_zl.setToolTip("맞춤 · 100% · 200% · 400%")
+        self.b_zm.clicked.connect(lambda: self.zoom_by(1 / 1.25))
+        self.b_zp.clicked.connect(lambda: self.zoom_by(1.25))
+        menu = QMenu(self)
+        for label, pct in (("맞춤", 0), ("100%", 100), ("200%", 200), ("400%", 400)):
+            menu.addAction(label).triggered.connect(lambda _=False, v=pct: self.set_percent(v))
+        self.b_zl.clicked.connect(lambda: menu.exec(self.b_zl.mapToGlobal(self.b_zl.rect().topLeft())
+                                                    - QPointF(0, menu.sizeHint().height()).toPoint()))
+        self.zbox.adjustSize()
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self.zbox.move(self.width() - self.zbox.width() - 8, self.height() - self.zbox.height() - 8)
+
+    def _fit_rect(self):
+        if self.img is None or self.img.isNull():
+            return QRectF()
+        iw, ih = self.img.width(), self.img.height()
+        k = min(self.width() / iw, self.height() / ih)
+        return QRectF((self.width() - iw * k) / 2, (self.height() - ih * k) / 2, iw * k, ih * k)
+
+    def _view_rect(self):
+        """확대·이동을 반영한 영상 사각형(화면 좌표)."""
+        r0 = self._fit_rect()
+        if r0.isEmpty() or self.zoom <= 1.0001:
+            return r0
+        w, h = r0.width() * self.zoom, r0.height() * self.zoom
+        cx = max(0.5 * self.width() / w, min(1 - 0.5 * self.width() / w, self.center[0])) if w > self.width() else 0.5
+        cy = max(0.5 * self.height() / h, min(1 - 0.5 * self.height() / h, self.center[1])) if h > self.height() else 0.5
+        self.center = [cx, cy]
+        return QRectF(self.width() / 2 - cx * w, self.height() / 2 - cy * h, w, h)
+
+    def percent(self) -> float:
+        r = self._view_rect()
+        return r.width() / max(1, self.src_w) * 100 * self.devicePixelRatioF() if not r.isEmpty() else 0
+
+    def _zoom_label(self):
+        self.b_zl.setText("맞춤" if self.zoom <= 1.0001 else f"{self.percent():.0f}%")
+
+    def set_zoom(self, z, anchor=None):
+        """anchor = 화면 좌표: 그 점의 영상 위치가 그대로 남게."""
+        r = self._view_rect()
+        z = max(1.0, min(40.0, z))
+        if anchor is not None and not r.isEmpty():
+            nx = (anchor.x() - r.left()) / r.width()
+            ny = (anchor.y() - r.top()) / r.height()
+            r0 = self._fit_rect()
+            w, h = r0.width() * z, r0.height() * z
+            self.center = [nx - (anchor.x() - self.width() / 2) / w, ny - (anchor.y() - self.height() / 2) / h]
+        self.zoom = z
+        if z <= 1.0001:
+            self.center = [0.5, 0.5]
+        self.patch = None
+        self._zoom_label()
+        self.update()
+        self.viewChanged.emit()
+
+    def zoom_by(self, f, anchor=None):
+        self.set_zoom(self.zoom * f, anchor if anchor is not None else QPointF(self.width() / 2, self.height() / 2))
+
+    def set_percent(self, pct):
+        if pct <= 0:
+            self.set_zoom(1.0)
+            return
+        r0 = self._fit_rect()
+        if r0.isEmpty():
+            return
+        self.set_zoom(pct / 100 * self.src_w / self.devicePixelRatioF() / r0.width(), QPointF(self.width() / 2, self.height() / 2))
+
+    def visible_norm(self):
+        """보이는 영상 영역 (x, y, w, h) 0~1."""
+        r = self._view_rect()
+        if r.isEmpty():
+            return None
+        x0 = max(0.0, -r.left() / r.width())
+        y0 = max(0.0, -r.top() / r.height())
+        x1 = min(1.0, (self.width() - r.left()) / r.width())
+        y1 = min(1.0, (self.height() - r.top()) / r.height())
+        return x0, y0, x1 - x0, y1 - y0
+
+    def set_patch(self, img, rect):
+        self.patch, self.patch_rect = img, rect
+        self.update()
+
+    def mouseDoubleClickEvent(self, e):
+        if self.zoom > 1.0001:
+            self.set_zoom(1.0)
 
     def set_before(self, img):
         self.before = img
@@ -80,6 +197,7 @@ class Monitor(QWidget):
     def set_image(self, img: QImage | None, smooth=True):
         self.img = img
         self._scope_data = None
+        self.patch = None
         self.text = ""
         self.smooth = smooth
         self.update()
@@ -127,9 +245,14 @@ class Monitor(QWidget):
         return r.left() + r.width() * self.split_x
 
     def mousePressEvent(self, e):
+        pos = e.position()
+        if e.button() == Qt.MiddleButton or (e.button() == Qt.LeftButton and self.space_pan):
+            self._pan = (pos, list(self.center))
+            self.space_moved = self.space_pan or self.space_moved
+            self.setCursor(Qt.ClosedHandCursor)
+            return
         if e.button() != Qt.LeftButton:
             return
-        pos = e.position()
         r = self._img_rect
         if self.pick_mode and not r.isEmpty() and r.contains(pos):
             self.whitePicked.emit((pos.x() - r.left()) / r.width(), (pos.y() - r.top()) / r.height())
@@ -150,6 +273,17 @@ class Monitor(QWidget):
 
     def mouseMoveEvent(self, e):
         pos = e.position()
+        if self._pan is not None:
+            p0, c0 = self._pan
+            r = self._view_rect()
+            if not r.isEmpty():
+                self.center = [c0[0] - (pos.x() - p0.x()) / r.width(), c0[1] - (pos.y() - p0.y()) / r.height()]
+                self.patch = None
+                self.update()
+            return
+        if self.space_pan:
+            self.setCursor(Qt.OpenHandCursor)
+            return
         if self._split_drag and (e.buttons() & Qt.LeftButton):
             r = self._img_rect
             self.split_x = max(0.02, min(0.98, (pos.x() - r.left()) / max(1.0, r.width())))
@@ -193,13 +327,19 @@ class Monitor(QWidget):
             self.setCursor(Qt.SizeHorCursor if self._crop_mode() and self._out_rect.contains(pos) else Qt.ArrowCursor)
 
     def mouseReleaseEvent(self, _):
+        if self._pan is not None:
+            self._pan = None
+            self.setCursor(Qt.OpenHandCursor if self.space_pan else Qt.ArrowCursor)
+            self.viewChanged.emit()
         self._drag = None
         self._split_drag = False
 
     def wheelEvent(self, e):
-        """레이어 위에서 휠 = 크기 ±5%"""
+        """레이어 위에서 휠 = 레이어 크기 ±5%, 그 밖 = 마우스 위치 기준 확대·축소"""
         mode, lay = self._hit(e.position())
         if lay is None:
+            if self.img is not None:
+                self.zoom_by(1.2 if e.angleDelta().y() > 0 else 1 / 1.2, e.position())
             return
         import time
         now = time.monotonic()
@@ -220,11 +360,12 @@ class Monitor(QWidget):
                 p.setPen(QColor("#9a9a9a"))
                 p.drawText(self.rect(), Qt.AlignCenter, self.text)
             return
-        iw, ih = self.img.width(), self.img.height()
-        k = min(self.width() / iw, self.height() / ih)
-        r = QRectF((self.width() - iw * k) / 2, (self.height() - ih * k) / 2, iw * k, ih * k)
-        p.setRenderHint(QPainter.SmoothPixmapTransform, self.smooth)
+        r = self._view_rect()
+        p.setRenderHint(QPainter.SmoothPixmapTransform, self.smooth or self.zoom > 1)
         p.drawImage(r, self.img)
+        if self.patch is not None and self.patch_rect and not self.patch.isNull():     # 확대 영역 고화질
+            x, y, w, h = self.patch_rect
+            p.drawImage(QRectF(r.left() + x * r.width(), r.top() + y * r.height(), w * r.width(), h * r.height()), self.patch)
         if self.before is not None and not self.before.isNull():      # 반반: 왼쪽 = 원본
             sx = r.width() * self.split_x
             src = QRectF(0, 0, self.before.width() * self.split_x, self.before.height())
