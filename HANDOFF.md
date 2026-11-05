@@ -4,7 +4,9 @@
 
 ## 현재 상태 (v0.1.0, 2026-11-05)
 
-1단계 전체 구현 완료. Linux 작업 환경에서 엔진·화면 동작 검증, Windows 실기 테스트는 **아직 안 함**.
+1단계 전체 구현 완료. Linux에서 엔진·화면 검증, GitHub Actions(Windows)에서 빌드·엔진·exe 실행 점검 통과. **사용자 PC 실기 테스트 대기.**
+
+다운로드: Releases 의 `DTME-v0.1.0-windows.zip` 또는 Actions → Artifacts `DTME-windows` (약 200MB)
 
 ## 확정된 요구사항
 
@@ -53,7 +55,7 @@ tests/test_engine_min.py CI용 합성 4K 점검
 
 ## 미검증 (Windows 실기에서 확인 필요)
 
-- [ ] Actions 빌드 성공 여부, exe 실행
+- [x] Actions 빌드 성공, exe 실행 점검 통과(창 생성 + Qt 멀티미디어 로드), Windows에서 엔진 점검 통과 (FFmpeg master 2026-11-04)
 - [ ] QMediaPlayer 재생·프레임 이동·J/K/L 체감 (오프스크린이라 영상 표시 미확인)
 - [ ] NVENC / CUDA 디코딩 동작과 속도
 - [ ] 실제 4K 장시간 파일에서 프록시 생성 시간
