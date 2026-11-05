@@ -6,7 +6,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QColor
-from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QFileDialog, QFormLayout, QGroupBox,
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QFileDialog, QFormLayout,
                                QHBoxLayout, QHeaderView, QLabel, QLineEdit, QPushButton, QSpinBox, QTableWidget,
                                QTableWidgetItem, QVBoxLayout, QWidget)
 
@@ -14,6 +14,15 @@ from . import ff, jobs
 from .project import short_name
 
 ORIENT_TXT = {"horizontal": "가로", "vertical": "세로"}
+
+
+def add_shadow(w):
+    from PySide6.QtWidgets import QGraphicsDropShadowEffect
+    e = QGraphicsDropShadowEffect(w)
+    e.setBlurRadius(10)
+    e.setOffset(0, 2)
+    e.setColor(QColor(0, 0, 0, 170))
+    w.setGraphicsEffect(e)
 
 
 def out_dir(project) -> Path:
@@ -61,7 +70,7 @@ class RenderPanel(QWidget):
         self.running = False
 
         t = QLabel("렌더 리스트")
-        t.setStyleSheet("font-weight:700; font-size:14px;")
+        t.setStyleSheet("font-weight:700; font-size:14px; padding-top:4px;")
         self.table = QTableWidget(0, 5)
         self.table.setHorizontalHeaderLabels(["파일명", "길이", "화면", "오디오", "상태"])
         hh = self.table.horizontalHeader()
@@ -82,18 +91,25 @@ class RenderPanel(QWidget):
         self.table.addAction(a_re)
 
         self.b_render = QPushButton("렌더")
-        self.b_render.setMinimumHeight(40)
+        self.b_render.setFixedSize(64, 28)
         self.b_render.setFocusPolicy(Qt.NoFocus)
-        self.b_render.setStyleSheet("QPushButton{font-size:15px; font-weight:700; color:white; background:#c0392b;"
-                                    "border:none; border-radius:4px;} QPushButton:hover{background:#d64535;}"
+        self.b_render.setStyleSheet("QPushButton{font-weight:700; color:white; background:#c0392b;"
+                                    "border:none; border-radius:3px;} QPushButton:hover{background:#d64535;}"
                                     "QPushButton:disabled{background:#7a2a22; color:#ddd;}")
+        add_shadow(self.b_render)
         self.b_render.clicked.connect(self.render)
+        self.settings = RenderSettings(state)
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(4, 4, 4, 4)
+        lay.addWidget(self.settings)
         lay.addWidget(t)
         lay.addWidget(self.table, 1)
-        lay.addWidget(self.b_render)
+        brow = QHBoxLayout()
+        brow.addStretch(1)
+        brow.addWidget(self.b_render)
+        brow.addStretch(1)
+        lay.addLayout(brow)
         self.setMinimumWidth(300)
         state.changed.connect(lambda w: w in ("render", "sources", "project", "undo", "output") and self.refresh())
 
@@ -182,17 +198,17 @@ class RenderPanel(QWidget):
         jobs.submit(jobs.RENDER_POOL, job)
 
 
-class RenderTab(QWidget):
-    """렌더 설정."""
+class RenderSettings(QWidget):
+    """렌더 설정(렌더 리스트 맨 위)."""
 
     def __init__(self, state, parent=None):
         super().__init__(parent)
         self.state = state
-        box = QGroupBox("렌더 설정")
-        box.setMaximumWidth(760)
-        f = QFormLayout(box)
+        f = QFormLayout(self)
+        f.setContentsMargins(0, 0, 0, 6)
+        f.setVerticalSpacing(4)
         self.prefix = QLineEdit()
-        self.prefix.setPlaceholderText("예: 보홀  →  보홀_202610251001.mp4")
+        self.prefix.setPlaceholderText("예: 보홀")
         f.addRow("명칭", self.prefix)
         self.encoder = QComboBox()
         self.encoder.addItem("NVENC (GPU)", "nvenc")
@@ -206,7 +222,7 @@ class RenderTab(QWidget):
         f.addRow("디코딩", self.gpu)
         frow = QHBoxLayout()
         self.folder = QLineEdit()
-        self.folder.setPlaceholderText("비우면 소스 폴더/DTME_출력")
+        self.folder.setPlaceholderText("소스 폴더/DTME_출력")
         b = QPushButton("선택…")
         b.clicked.connect(self._pick_folder)
         frow.addWidget(self.folder, 1)
@@ -217,9 +233,6 @@ class RenderTab(QWidget):
         self.bitrate.valueChanged.connect(self._save)
         self.gpu.toggled.connect(self._save)
         self.folder.editingFinished.connect(self._save)
-        lay = QVBoxLayout(self)
-        lay.addWidget(box)
-        lay.addStretch(1)
         state.changed.connect(lambda w: w in ("project", "undo") and self._load())
         self._load()
 

@@ -1,4 +1,4 @@
-"""메인 창: 상단(저장·불러오기·실행취소), 탭(편집·보정 / 렌더), 드래그 앤 드롭."""
+"""메인 창: 상단(새 프로젝트·저장·불러오기·실행취소) + 편집·보정·렌더 한 화면, 드래그 앤 드롭."""
 from __future__ import annotations
 
 import json
@@ -6,13 +6,12 @@ from pathlib import Path
 
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QAction, QKeySequence
-from PySide6.QtWidgets import QFileDialog, QMainWindow, QMessageBox, QTabWidget, QToolBar
+from PySide6.QtWidgets import QFileDialog, QMainWindow, QMessageBox, QToolBar
 
 from . import __version__, paths
 from .project import Project
 from .state import AppState
 from .ui_edit import EditTab
-from .ui_render import RenderTab
 
 PROJ_FILTER = "DTME 프로젝트 (*.dtme.json *.json)"
 VIDEO_EXT = {".mp4", ".mov"}
@@ -42,12 +41,8 @@ class MainWindow(QMainWindow):
             a.triggered.connect(fn)
             tb.addAction(a)
 
-        self.tabs = QTabWidget()
         self.edit = EditTab(self.state)
-        self.render = RenderTab(self.state)
-        self.tabs.addTab(self.edit, "편집 · 보정")
-        self.tabs.addTab(self.render, "렌더")
-        self.setCentralWidget(self.tabs)
+        self.setCentralWidget(self.edit)
 
         self.state.message.connect(lambda t: self.statusBar().showMessage(t, 15000))
         self.state.changed.connect(lambda *_: self._title())
@@ -140,7 +135,6 @@ class MainWindow(QMainWindow):
         vids = [f for f in files if Path(f).suffix.lower() in VIDEO_EXT]
         projs = [f for f in files if f.endswith(".json")]
         if vids:
-            self.tabs.setCurrentIndex(0)
             self.edit.import_files(vids)
         elif projs and self._confirm_discard():
             self._load(projs[0])

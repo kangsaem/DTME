@@ -21,6 +21,7 @@ class AppState(QObject):
         self.project = Project()
         self.status: dict[str, str] = {}      # sid → 상태 문구
         self.proxy_pct: dict[str, float] = {}
+        self.errors: dict[str, str] = {}      # sid → 마지막 오류 내용
         self._proxy_jobs: dict[str, jobs.Job] = {}
         self._undo: list[dict] = []
         self.dirty = False
@@ -122,6 +123,8 @@ class AppState(QObject):
             self._queue_proxy(s)
 
         def err(msg, s=src):
+            self.errors[s.id] = msg
+            ff.log_error(f"분석 {s.path}", msg)
             self._set_status(s.id, "읽기 오류")
             self.message.emit(f"{s.name}: 읽을 수 없음 ({msg[-120:]})")
 
@@ -145,7 +148,11 @@ class AppState(QObject):
 
     # ------------------------------------------------------------ 프록시
     def prioritize(self, sid: str):
-        """선택한 파일의 프록시를 먼저 만든다."""
+        """선택한 파일의 프록시를 먼저 만든다. 오류였으면 다시 시도."""
+        s = self.project.source(sid)
+        if s and self.status.get(sid) in ("프록시 오류", "읽기 오류") and Path(s.path).exists():
+            self.errors.pop(sid, None)
+            (self._queue_proxy if s.frames else self._queue_analyze)(s)
         j = self._proxy_jobs.get(sid)
         if j:
             jobs.bump(jobs.PROXY_POOL, j)
@@ -179,6 +186,8 @@ class AppState(QObject):
             self._proxy_jobs.pop(s.id, None)
             if msg == "취소됨":
                 return
+            self.errors[s.id] = msg
+            ff.log_error(f"프록시 {s.path}", msg)
             self._set_status(s.id, "프록시 오류")
             self.message.emit(f"{s.name} 프록시 생성 실패: {msg[-300:]}")
 

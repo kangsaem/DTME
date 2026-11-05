@@ -166,6 +166,7 @@ class GradePanel(QWidget):
         # --- 샘플 썸네일
         self.samples = QListWidget()
         self.samples.setViewMode(QListWidget.IconMode)
+        self.tile = (TILE_W, TILE_H)
         self.samples.setIconSize(QSize(TILE_W, TILE_H))
         self.samples.setGridSize(QSize(TILE_W + 4, TILE_H + 4))
         self.samples.setResizeMode(QListWidget.Fixed)
@@ -174,7 +175,6 @@ class GradePanel(QWidget):
         self.samples.setWrapping(True)
         self.samples.setSpacing(0)
         self.samples.setUniformItemSizes(True)
-        self.samples.setFixedSize(2 * (TILE_W + 4) + 6, 3 * (TILE_H + 4) + 6)
         self.samples.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.samples.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.samples.setFocusPolicy(Qt.NoFocus)
@@ -191,7 +191,7 @@ class GradePanel(QWidget):
         inner.addLayout(g)
         inner.addWidget(self.b_clear)
         inner.addStretch(1)
-        inner.addWidget(self.samples, 0, Qt.AlignRight | Qt.AlignBottom)
+        inner.addWidget(self.samples)
         box = QWidget()
         box.setLayout(inner)
         sc = QScrollArea()
@@ -388,7 +388,7 @@ class GradePanel(QWidget):
         for m in marks:
             it = QListWidgetItem("")
             it.setToolTip(timecode(m.frame, s.fps))
-            it.setSizeHint(QSize(TILE_W + 4, TILE_H + 4))
+            it.setSizeHint(QSize(self.tile[0] + 4, self.tile[1] + 4))
             it.setData(Qt.UserRole, m.id)
             if m.id in self.pix:
                 it.setIcon(self.pix[m.id])
@@ -397,23 +397,55 @@ class GradePanel(QWidget):
 
             def work(s=s, fr=m.frame, out=out, grade=grade):
                 data = ff.render_preview(ff.cached_frame(s, fr), grade)
-                out.write_bytes(data)
-                return str(out)
+                tmp = out.with_suffix(f".{gen}.part")
+                tmp.write_bytes(data)
+                try:
+                    ff.replace_retry(tmp, out, tries=10)
+                except PermissionError:      # 열려 있으면(뷰어 등) 이번 PNG 저장만 건너뜀
+                    tmp.unlink(missing_ok=True)
+                return data, str(out)
 
             job = jobs.Job(work)
-            job.signals.done.connect(lambda path, mid=m.id, gn=gen: self._on_png(gn, mid, path))
+            job.signals.done.connect(lambda r, mid=m.id, gn=gen: self._on_png(gn, mid, r))
             jobs.submit(jobs.PREVIEW_POOL, job, priority=-1)
 
-    def _on_png(self, gen, mid, path):
+    def _on_png(self, gen, mid, result):
         if gen != self.gen:
             return
-        pix = QPixmap(path)
+        data, path = result
+        pix = QPixmap()
+        pix.loadFromData(data, "PNG")      # 파일을 다시 열지 않음(쓰기와 충돌 방지)
         self.pix[mid] = pix
         for i in range(self.samples.count()):
             it = self.samples.item(i)
             if it.data(Qt.UserRole) == mid:
-                it.setIcon(pix.scaled(TILE_W * 2, TILE_H * 2, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                it.setIcon(self._icon(pix))
                 it.setData(Qt.UserRole + 1, path)
+
+    # ------------------------------------------------------------ 샘플 타일 크기 = 패널 폭에 맞춤
+    def _icon(self, pix):
+        return pix.scaled(self.tile[0] * 2, self.tile[1] * 2, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._fit_tiles()
+
+    def _fit_tiles(self):
+        avail = max(160, self.width() - 22)
+        tw = (avail - 8) // 2
+        th = tw * 9 // 16
+        if (tw, th) == self.tile and self.samples.width() == avail:
+            return
+        self.tile = (tw, th)
+        self.samples.setIconSize(QSize(tw, th))
+        self.samples.setGridSize(QSize(tw + 4, th + 4))
+        self.samples.setFixedSize(2 * (tw + 4) + 4, 3 * (th + 4) + 4)
+        for i in range(self.samples.count()):
+            it = self.samples.item(i)
+            it.setSizeHint(QSize(tw + 4, th + 4))
+            pix = self.pix.get(it.data(Qt.UserRole))
+            if pix:
+                it.setIcon(self._icon(pix))
 
     def _on_sample(self, it):
         mid = it.data(Qt.UserRole)

@@ -17,7 +17,7 @@ from .state import AppState
 from .ui_bars import SeqTimeline, SourceBar
 from .ui_grade import GradePanel
 from .ui_player import Player
-from .ui_render import RenderPanel, item_base, out_dir, unique
+from .ui_render import RenderPanel, add_shadow, item_base, out_dir, unique
 
 VIDEO_FILTER = "영상 (*.mp4 *.MP4 *.mov *.MOV)"
 
@@ -202,6 +202,8 @@ class EditTab(QWidget):
         lbox.addWidget(self.tl_len)
         b_down = _btn("▼", "↓", lambda: self._key("down"), 64, 28)
         b_down.setStyleSheet("QPushButton{font-size:15px; background:#2f3b4d;}")
+        b_down.setFixedSize(64, 28)
+        add_shadow(b_down)
         self.zoom = QSlider(Qt.Horizontal)
         self.zoom.setRange(5, 200)
         self.zoom.setValue(30)
@@ -209,7 +211,6 @@ class EditTab(QWidget):
         self.zoom.setFocusPolicy(Qt.NoFocus)
         self.zoom.valueChanged.connect(lambda v: self.timeline.set_zoom(float(v)))
         rbox = QHBoxLayout()
-        rbox.addWidget(QLabel("확대"))
         rbox.addWidget(self.zoom)
         rbox.addWidget(_btn("전체 삭제", "", self.clear_timeline))
         rbox.addWidget(_btn("렌더리스트로", "", self.timeline_to_render))
@@ -255,7 +256,7 @@ class EditTab(QWidget):
         for i in (0, 2, 3):
             hs.setCollapsible(i, False)
         hs.setStretchFactor(1, 1)
-        hs.setSizes([190, 900, 350, 320])
+        hs.setSizes([190, 880, 350, 340])
         lay = QVBoxLayout(self)
         lay.setContentsMargins(6, 6, 6, 6)
         lay.addWidget(hs)
@@ -400,6 +401,15 @@ class EditTab(QWidget):
 
     def _on_source_status(self, sid):
         self.src_list.viewport().update()
+        for i in range(self.src_list.count()):
+            it = self.src_list.item(i)
+            if it.data(Qt.UserRole) == sid:
+                s = self.state.project.source(sid)
+                err = self.state.errors.get(sid, "")
+                tip = s.path if s else ""
+                if err:
+                    tip += f"\n{self.state.status.get(sid, '')} — 클릭하면 다시 시도\n{err[-400:]}"
+                it.setToolTip(tip)
         if sid != self.cur_sid:
             return
         s = self._cur()
@@ -478,7 +488,7 @@ class EditTab(QWidget):
         grade = None if self.grade.before.isChecked() else self.state.project.grade_for_source(s.id)
         job = jobs.Job(lambda: ff.render_preview(ff.cached_frame(s, frame), grade))
         job.signals.done.connect(lambda data, g=gen, fr=frame, t=tok: self._on_preview(g, fr, t, data))
-        job.signals.error.connect(lambda msg: self._say(f"미리보기 오류: {msg[-160:]}", C_WARN))
+        job.signals.error.connect(lambda msg: (ff.log_error("미리보기", msg), self._say(f"미리보기 오류: {msg[-160:]}", C_WARN)))
         jobs.submit(jobs.PREVIEW_POOL, job, priority=5)
 
     def _on_preview(self, gen, frame, tok, data):

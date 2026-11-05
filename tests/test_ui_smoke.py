@@ -54,4 +54,11 @@ e.render_panel.render(); wait(300, lambda: not e.render_panel.running)
 for r in st.project.render_items: print(" ", e.render_panel.status.get(r.id)[:60])
 print(sorted(os.path.basename(x) for x in glob.glob(OUT+"/*")))
 w.grab().save(""+WORK+"/shot_after.png")
-w.tabs.setCurrentIndex(1); wait(0.3); w.grab().save(""+WORK+"/shot_settings.png")
+
+# 패널 폭 변경 → 샘플 타일 크기 연동
+w0 = e.grade.tile; e.grade.resize(e.grade.width()+120, e.grade.height()); e.grade._fit_tiles(); wait(0.3)
+print("샘플 타일:", w0, "→", e.grade.tile)
+# 쓰기 충돌 재시도
+from dtme import ff
+import tempfile, pathlib
+d=pathlib.Path(tempfile.mkdtemp()); a=d/"a"; b=d/"b"; a.write_text("x"); ff.replace_retry(a,b); print("replace_retry:", b.exists())

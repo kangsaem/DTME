@@ -77,6 +77,28 @@ def run_progress(cmd: list[str], total_sec: float, on_progress: Callable[[float]
         on_progress(1.0)
 
 
+def replace_retry(src, dst, tries: int = 60) -> None:
+    """Windows 에서 백신·색인 등이 방금 만든 파일을 잠깐 잡고 있으면 이름 바꾸기가 WinError 32 로 실패한다 → 재시도."""
+    import time
+    for i in range(tries):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if i == tries - 1:
+                raise
+            time.sleep(0.1 if i < 20 else 0.3)
+
+
+def log_error(where: str, msg: str) -> None:
+    try:
+        import time
+        with open(paths.cache_dir() / "dtme.log", "a", encoding="utf-8") as f:
+            f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {where}: {msg}\n")
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _abs(p) -> str:
     """LUT 때문에 cwd 를 바꾸므로 모든 파일 경로는 절대 경로로."""
     return os.path.abspath(str(p))
@@ -217,7 +239,7 @@ def make_proxy(src: Source, lut: str, gpu: bool, on_progress=None, cancel=None) 
         # GPU 디코딩 실패 시 CPU 로 재시도
         cmd = [c for c in cmd if c not in ("-hwaccel", "cuda")]
         run_progress(cmd, src.frames / float(src.fps), on_progress, cancel, cwd=ref[0] if ref else None)
-    tmp.replace(out)
+    replace_retry(tmp, out)
     return str(out)
 
 
@@ -234,7 +256,7 @@ def cached_frame(src: Source, frame: int, gpu: bool = False) -> str:
         run([paths.ffmpeg(), "-v", "error", "-y", *_hw(gpu), "-ss", _seek(frame, src.fps), "-i", _abs(src.path),
              "-frames:v", "1", "-an", "-vf", "scale=1280:-2:flags=lanczos,format=yuv420p10le",
              "-c:v", "ffv1", str(tmp)])
-        os.replace(tmp, out)
+        replace_retry(tmp, out)
     return str(out)
 
 
