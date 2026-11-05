@@ -24,7 +24,7 @@ def main(sample: str, lut: str, out_dir: str):
     src = Source(path=sample, **{k: info[k] for k in ("fps_num", "fps_den", "frames", "width", "height", "has_audio")})
     p.sources.append(src)
     p.grade.update(lut=Path(lut).name, r_gain=1.25, b_gain=0.88, hue=3,
-                   curve=[[0, 0], [0.25, 0.22], [0.75, 0.8], [1, 1]], nr="weak", sharpen=0.4)
+                   curve=[[0, 0], [0.25, 0.22], [0.75, 0.8], [1, 1]], nr_chroma=60, nr_luma=25, sharpen=0.4)
 
     t = time.time()
     src.proxy = ff.make_proxy(src, p.grade["lut"], gpu=False)
@@ -57,7 +57,7 @@ def main(sample: str, lut: str, out_dir: str):
     (out / "preview_before.png").write_bytes(ff.render_preview(c, None))
 
     # 스틸
-    st = Marker(src.id, 150, grade={"nr": "strong", "sharpen": 0.6})
+    st = Marker(src.id, 150, grade={"nr_chroma": 100, "nr_luma": 70, "sharpen": 0.6})
     p.stills.append(st)
     ff.render_still(p, st, str(out / "still.tif"))
     s = ff.probe(str(out / "still.tif"))

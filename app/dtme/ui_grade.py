@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QFileDialog, 
                                QScrollArea, QSlider, QToolButton, QVBoxLayout, QWidget)
 
 from . import ff, jobs, paths
-from .project import NR_LABELS, save_default_grade, timecode
+from .project import save_default_grade, timecode
 from .state import AppState
 from .ui_curve import CurveEditor
 
@@ -118,7 +118,8 @@ class GradePanel(QWidget):
             s.setFocusPolicy(Qt.NoFocus)
             s.setToolTip(tip)
             s.sliderPressed.connect(self.state.checkpoint)
-            s.valueChanged.connect(lambda v, k=key, sc=scale: self._set(k, round(v / sc, 3), slider=True))
+            s.valueChanged.connect(lambda v, k=key, sc=scale: self._set(k, v if sc == 1 else round(v / sc, 3),
+                                                                        slider=True))
             return s
 
         self.r_gain = slider(70, 150, "r_gain", 100, "")
@@ -139,25 +140,19 @@ class GradePanel(QWidget):
         self.resets["curve"] = rb
         g.addWidget(rb, r, 3, Qt.AlignTop)
         r += 1
-        # 디노이즈 + 커브리셋 한 줄
-        nrow = QHBoxLayout()
-        self.nr = QComboBox()
-        self.nr.setFixedWidth(70)
-        self.nr.activated.connect(lambda _: self._set("nr", self.nr.currentData()))
-        nrow.addWidget(self.nr)
-        rbn = QToolButton()
-        rbn.setText("↺")
-        rbn.clicked.connect(lambda: self._clear_key("nr"))
-        self.resets["nr"] = rbn
-        nrow.addWidget(rbn)
-        nrow.addStretch(1)
+        crow = QHBoxLayout()
+        crow.addStretch(1)
         b3 = QPushButton("커브리셋")
         b3.setFixedWidth(80)
         b3.clicked.connect(self.curve.reset)
-        nrow.addWidget(b3)
-        g.addWidget(QLabel("디노이즈"), r, 0)
-        g.addLayout(nrow, r, 1, 1, 3)
+        crow.addWidget(b3)
+        g.addLayout(crow, r, 1, 1, 2)
         r += 1
+        # 디노이즈: 색 노이즈 / 밝기 노이즈
+        self.nr_c = slider(0, 100, "nr_chroma", 1, "")
+        add_row("nr_chroma", "색 노이즈", self.nr_c)
+        self.nr_l = slider(0, 100, "nr_luma", 1, "")
+        add_row("nr_luma", "밝기 노이즈", self.nr_l)
         g.setColumnStretch(1, 1)
 
         self.b_clear = QPushButton("클립 보정 해제 (기본값으로)")
@@ -290,7 +285,7 @@ class GradePanel(QWidget):
     def _load_controls(self):
         kind = self.target[0]
         e = self._effective()
-        widgets = [self.lut, self.r_gain, self.b_gain, self.hue, self.nr, self.sharp]
+        widgets = [self.lut, self.r_gain, self.b_gain, self.hue, self.nr_c, self.nr_l, self.sharp]
         for w in widgets:
             w.blockSignals(True)
         if e["lut"] and self.lut.findData(e["lut"]) < 0:
@@ -300,10 +295,8 @@ class GradePanel(QWidget):
         self.b_gain.setValue(round(e["b_gain"] * 100))
         self.hue.setValue(round(e["hue"] * 2))
         self.sharp.setValue(round(e["sharpen"] * 100))
-        self.nr.clear()
-        for lv in ("off", "weak", "mid", "strong"):
-            self.nr.addItem(NR_LABELS[lv].replace("(스틸)", ""), lv)
-        self.nr.setCurrentIndex(max(0, self.nr.findData(e["nr"])))
+        self.nr_c.setValue(int(round(e.get("nr_chroma", 0))))
+        self.nr_l.setValue(int(round(e.get("nr_luma", 0))))
         for w in widgets:
             w.blockSignals(False)
         self.curve.set_points(e["curve"])
@@ -317,6 +310,8 @@ class GradePanel(QWidget):
         self.vals["b_gain"].setText(f"{e['b_gain']:.2f}")
         self.vals["hue"].setText(f"{e['hue']:+.1f}°")
         self.vals["sharpen"].setText(f"{e['sharpen']:.2f}")
+        self.vals["nr_chroma"].setText(f"{int(e.get('nr_chroma', 0))}")
+        self.vals["nr_luma"].setText(f"{int(e.get('nr_luma', 0))}")
         for k, b in self.resets.items():
             b.setVisible(k in over)
 

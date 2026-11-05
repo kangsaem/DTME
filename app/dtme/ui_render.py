@@ -6,9 +6,9 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QColor
-from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QFileDialog, QFormLayout,
-                               QHBoxLayout, QHeaderView, QLabel, QLineEdit, QPushButton, QSpinBox, QTableWidget,
-                               QTableWidgetItem, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QFileDialog, QFormLayout, QListWidget,
+                               QListWidgetItem, QStyle, QStyledItemDelegate,
+                               QHBoxLayout, QLabel, QLineEdit, QPushButton, QSpinBox, QVBoxLayout, QWidget)
 
 from . import ff, jobs
 from .project import short_name
@@ -100,27 +100,67 @@ def file_name(project, item) -> str:
     return f"{pre}{item.name}"
 
 
+class RenderDelegate(QStyledItemDelegate):
+    """렌더 항목 = 바. 대기 진한 회색 · 진행 중 막대 · 완료 연한 회색 · 실패 빨강."""
+
+    def __init__(self, panel):
+        super().__init__(panel)
+        self.panel = panel
+
+    def sizeHint(self, option, index):
+        from PySide6.QtCore import QSize
+        return QSize(option.rect.width(), 30)
+
+    def paint(self, p, option, index):
+        from PySide6.QtCore import QRectF
+        from PySide6.QtGui import QPainter, QPen
+        iid = index.data(Qt.UserRole)
+        st = self.panel.status.get(iid, "")
+        frac = self.panel.progress.get(iid, 0.0)
+        done, failed = st.startswith("완료"), st.startswith("실패")
+        r = QRectF(option.rect).adjusted(2, 2, -2, -2)
+        p.save()
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor("#c9c9c9") if done else QColor("#7a2a22") if failed else QColor("#3c3c3c"))
+        p.drawRoundedRect(r, 3, 3)
+        if not done and not failed and frac > 0:
+            pr = QRectF(r)
+            pr.setWidth(r.width() * frac)
+            p.setBrush(QColor("#c0392b"))
+            p.drawRoundedRect(pr, 3, 3)
+        if option.state & QStyle.State_Selected:
+            p.setPen(QPen(QColor("#4a8fe0"), 2))
+            p.setBrush(Qt.NoBrush)
+            p.drawRoundedRect(r.adjusted(1, 1, -1, -1), 3, 3)
+        p.setPen(QColor("#111") if done else QColor("#e6e6e6"))
+        f = p.font()
+        f.setBold(True)
+        p.setFont(f)
+        p.drawText(r.adjusted(10, 0, -6, 0), Qt.AlignVCenter | Qt.AlignLeft, index.data(Qt.DisplayRole))
+        f.setBold(False)
+        p.setFont(f)
+        p.drawText(r.adjusted(10, 0, -8, 0), Qt.AlignVCenter | Qt.AlignRight, index.data(Qt.UserRole + 1) or "")
+        p.restore()
+
+
 class RenderPanel(QWidget):
-    """렌더 리스트 + 빨간 렌더 버튼."""
+    """렌더 설정 + 렌더 리스트(바) + 빨간 렌더 버튼."""
 
     def __init__(self, state, parent=None):
         super().__init__(parent)
         self.state = state
         self.status: dict[str, str] = {}
+        self.progress: dict[str, float] = {}
         self.queue: list = []
         self.running = False
 
         t = QLabel("렌더 리스트")
         t.setStyleSheet("font-weight:700; font-size:14px; padding-top:4px;")
-        self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["파일명", "길이", "화면", "오디오", "상태"])
-        hh = self.table.horizontalHeader()
-        hh.setSectionResizeMode(0, QHeaderView.Stretch)
-        for c in range(1, 5):
-            hh.setSectionResizeMode(c, QHeaderView.ResizeToContents)
-        self.table.verticalHeader().setVisible(False)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table = QListWidget()      # 이름은 table 유지(키 입력 필터에서 사용)
+        self.table.setItemDelegate(RenderDelegate(self))
+        self.table.setStyleSheet("QListWidget{background:#1a1a1a; border:none;}")
+        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.table.setContextMenuPolicy(Qt.ActionsContextMenu)
         a_del = QAction("삭제", self.table)
         a_del.setShortcut(Qt.Key_Delete)
@@ -154,26 +194,26 @@ class RenderPanel(QWidget):
 
     def refresh(self):
         p = self.state.project
-        self.table.setRowCount(len(p.render_items))
-        for r, it in enumerate(p.render_items):
+        sel = set(self._selected_ids())
+        self.table.blockSignals(True)
+        self.table.clear()
+        for it in p.render_items:
             ok = all(p.source(g.src) for g in it.segs)
-            st = self.status.get(it.id, "대기" if ok else "소스 없음")
-            vals = [file_name(p, it), f"{p.segs_seconds(it.segs):.1f}초", ORIENT_TXT.get(it.orientation, ""),
-                    "켬" if it.audio else "끔", st.split(" → ")[0]]
-            for c, v in enumerate(vals):
-                cell = QTableWidgetItem(v)
-                if c:
-                    cell.setTextAlignment(Qt.AlignCenter)
-                if c == 4:
-                    cell.setForeground(QColor("#7fd18b" if st.startswith("완료") else
-                                              "#e5484d" if st.startswith("실패") else "#ddd"))
-                    cell.setToolTip(st)
-                self.table.setItem(r, c, cell)
+            st = self.status.get(it.id, "" if ok else "실패: 소스 없음")
+            li = QListWidgetItem(file_name(p, it))
+            li.setData(Qt.UserRole, it.id)
+            li.setData(Qt.UserRole + 1, f"{ORIENT_TXT.get(it.orientation, '')} {p.segs_seconds(it.segs):.1f}초"
+                       + ("" if it.audio else " 무음"))
+            li.setToolTip(st)
+            self.table.addItem(li)
+            li.setSelected(it.id in sel)
+        self.table.blockSignals(False)
+
+    def _repaint(self):
+        self.table.viewport().update()
 
     def _selected_ids(self):
-        rows = sorted({i.row() for i in self.table.selectedIndexes()})
-        items = self.state.project.render_items
-        return [items[r].id for r in rows if r < len(items)]
+        return [i.data(Qt.UserRole) for i in self.table.selectedItems()]
 
     def delete_selected(self):
         ids = set(self._selected_ids())
@@ -186,6 +226,7 @@ class RenderPanel(QWidget):
     def _requeue(self):
         for i in self._selected_ids():
             self.status.pop(i, None)
+            self.progress.pop(i, None)
         self.refresh()
 
     def render(self):
@@ -205,20 +246,19 @@ class RenderPanel(QWidget):
         if not self.queue:
             self.running = False
             self.b_render.setEnabled(True)
-            self.b_render.setText("렌더")
             return
         it = self.queue.pop(0)
         path = unique(out_dir(p) / f"{file_name(p, it)}.mp4")
-        self.b_render.setText(f"렌더 중… ({len(self.queue) + 1})")
         t0 = time.time()
-        self.status[it.id] = "0%"
+        self.status[it.id] = "진행"
+        self.progress[it.id] = 0.0
         self.refresh()
         job = jobs.Job(lambda prog, cancel: ff.render_video(p, it.segs, str(path), prog, cancel,
                                                             it.orientation, it.audio), with_progress=True)
 
         def prog(v, iid=it.id):
-            self.status[iid] = f"{int(v * 100)}%"
-            self.refresh()
+            self.progress[iid] = v
+            self._repaint()
 
         def done(_r, iid=it.id):
             self.status[iid] = f"완료 {time.time() - t0:.0f}초 → {path}"

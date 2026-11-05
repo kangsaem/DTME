@@ -31,8 +31,14 @@ def draw_tag(p: QPainter, r: QRectF, tag: str, size=16):
 
 
 class SourceBar(QWidget):
-    """현재 클립의 전체 길이. 인/아웃 구간을 배속 색으로, 배속 글자, E/C 표시."""
+    """현재 클립의 전체 길이. 인/아웃 구간을 배속 색으로, 배속 글자, E/C 표시.
+    구간 양 끝을 드래그하면 인/아웃 이동, 그 밖은 클릭·드래그로 재생 위치 이동."""
     seekRequested = Signal(int)
+    ioDragStarted = Signal()
+    ioDragged = Signal(str, int)      # "in" | "out", frame
+    ioDragFinished = Signal()
+
+    GRAB = 7   # 끝 잡는 범위(px)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -46,6 +52,8 @@ class SourceBar(QWidget):
         self.stills: list[int] = []
         self.samples: list[int] = []
         self._drag = False
+        self._edge = ""
+        self.setMouseTracking(True)
 
     def set_data(self, frames, io, trimmed, speed, tag, stills, samples):
         self.frames, self.io, self.trimmed, self.speed, self.tag = frames, io, trimmed, speed, tag
@@ -72,10 +80,9 @@ class SourceBar(QWidget):
         if not self.trimmed:
             c.setAlpha(150)
         p.fillRect(r, c)
-        if self.trimmed:
-            p.setPen(QPen(QColor("#f2f2f2"), 2))
-            p.drawLine(QPointF(r.left() + 1, 0), QPointF(r.left() + 1, h))
-            p.drawLine(QPointF(r.right() - 1, 0), QPointF(r.right() - 1, h))
+        p.setPen(QPen(QColor("#f2f2f2") if self.trimmed else QColor(240, 240, 240, 110), 3))
+        p.drawLine(QPointF(r.left() + 1.5, 0), QPointF(r.left() + 1.5, h))
+        p.drawLine(QPointF(r.right() - 1.5, 0), QPointF(r.right() - 1.5, h))
         p.setPen(QColor("white"))
         f = QFont(self.font())
         f.setBold(True)
@@ -95,20 +102,47 @@ class SourceBar(QWidget):
         p.setPen(QPen(QColor("#e5484d"), 2))
         p.drawLine(QPointF(x, 0), QPointF(x, h))
 
+    def _frame_at(self, x):
+        return int(max(0, min(self.frames, round(x / max(1, self.width()) * self.frames))))
+
     def _seek(self, x):
         if self.frames:
-            self.seekRequested.emit(int(max(0, min(self.frames - 1, x / max(1, self.width()) * self.frames))))
+            self.seekRequested.emit(min(self.frames - 1, self._frame_at(x)))
+
+    def _edge_at(self, x):
+        if not self.frames:
+            return ""
+        a, b = self.io
+        da, db = abs(x - self._x(a)), abs(x - self._x(b))
+        if min(da, db) > self.GRAB:
+            return ""
+        return "in" if da < db or (da == db and x < self._x(a)) else "out"
 
     def mousePressEvent(self, e):
+        x = e.position().x()
+        self._edge = self._edge_at(x)
         self._drag = True
-        self._seek(e.position().x())
+        if self._edge:
+            self.ioDragStarted.emit()
+            self.ioDragged.emit(self._edge, self._frame_at(x))
+        else:
+            self._seek(x)
 
     def mouseMoveEvent(self, e):
+        x = e.position().x()
         if self._drag:
-            self._seek(e.position().x())
+            if self._edge:
+                self.ioDragged.emit(self._edge, self._frame_at(x))
+            else:
+                self._seek(x)
+        else:
+            self.setCursor(Qt.SizeHorCursor if self._edge_at(x) else Qt.ArrowCursor)
 
     def mouseReleaseEvent(self, _):
+        if self._edge:
+            self.ioDragFinished.emit()
         self._drag = False
+        self._edge = ""
 
 
 class SeqTimeline(QWidget):

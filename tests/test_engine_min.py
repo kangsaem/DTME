@@ -26,7 +26,7 @@ def main(sample):
     p = Project()
     p.sources.append(src)
     p.grade.update(lut="_ci_identity.cube", r_gain=1.1, b_gain=0.9, hue=5,
-                   curve=[[0, 0], [0.5, 0.55], [1, 1]], nr="weak", sharpen=0.3)
+                   curve=[[0, 0], [0.5, 0.55], [1, 1]], nr_chroma=60, nr_luma=25, sharpen=0.3)
     src.proxy = ff.make_proxy(src, p.grade["lut"], gpu=False)
     assert ff.probe(src.proxy)["frames"] == info["frames"]
     p.segments = [Segment(src.id, 0, 40, 2.0), Segment(src.id, 40, 80, 1.0), Segment(src.id, 80, 110, 0.5)]
@@ -40,7 +40,7 @@ def main(sample):
         r = ff.probe(str(f))
         print(o, r["width"], r["height"], r["frames"])
         assert r["frames"] == expect, (r["frames"], expect)
-    st = Marker(src.id, 60, grade={"nr": "strong"})
+    st = Marker(src.id, 60, grade={"nr_chroma": 100, "nr_luma": 70})
     ff.render_still(p, st, str(out / "s.tif"))
     assert ff.probe(str(out / "s.tif"))["width"] == 3840
     assert ff.render_preview(ff.cached_frame(src, 30), p.grade)[:4] == b"\x89PNG"

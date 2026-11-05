@@ -18,9 +18,10 @@ OUT_FPS = Fraction(30000, 1001)  # 59.94 원본 → 29.97 출력
 SPEEDS = [2.0, 1.0, 0.5]
 
 NR_LEVELS = ["off", "weak", "mid", "strong"]   # strong 은 스틸 전용
-NR_LABELS = {"off": "끔", "weak": "약", "mid": "중", "strong": "강(스틸)"}
+# 옛 디노이즈 단계 → (색 노이즈, 밝기 노이즈) 0~100
+NR_LEGACY = {"off": (0, 0), "weak": (60, 25), "mid": (80, 45), "strong": (100, 70)}
 
-GRADE_KEYS = ["lut", "r_gain", "b_gain", "hue", "curve", "nr", "sharpen"]
+GRADE_KEYS = ["lut", "r_gain", "b_gain", "hue", "curve", "nr_chroma", "nr_luma", "sharpen"]
 
 FACTORY_GRADE = {
     "lut": "",
@@ -28,9 +29,19 @@ FACTORY_GRADE = {
     "b_gain": 1.0,
     "hue": 0.0,
     "curve": [[0.0, 0.0], [1.0, 1.0]],
-    "nr": "weak",
-    "sharpen": 0.3,
+    "nr_chroma": 60,     # 색 노이즈(푸른 물속의 보라·빨강 점) 0~100
+    "nr_luma": 25,       # 밝기 노이즈 0~100
+    "sharpen": 0.3,      # 밝기에만 적용
 }
+
+
+def upgrade_grade(g: dict) -> dict:
+    """옛 'nr'(끔/약/중/강) → nr_chroma/nr_luma."""
+    if "nr" in g:
+        c, l = NR_LEGACY.get(g.pop("nr"), (60, 25))
+        g.setdefault("nr_chroma", c)
+        g.setdefault("nr_luma", l)
+    return g
 
 
 def load_default_grade() -> dict:
@@ -40,7 +51,7 @@ def load_default_grade() -> dict:
     if p.exists():
         try:
             s = json.loads(p.read_text(encoding="utf-8"))
-            g.update({k: v for k, v in s.get("default_grade", {}).items() if k in GRADE_KEYS})
+            g.update({k: v for k, v in upgrade_grade(dict(s.get("default_grade", {}))).items() if k in GRADE_KEYS})
         except Exception:
             pass
     return g
@@ -205,6 +216,8 @@ class Project:
     def from_dict(cls, d: dict) -> "Project":
         p = cls()
         p.sources = [Source(**s) for s in d.get("sources", [])]
+        for s in p.sources:
+            upgrade_grade(s.grade)
         p.segments = [Segment(**s) for s in d.get("segments", [])]
         p.render_items = []
         for r in d.get("render_items", []):
@@ -214,7 +227,7 @@ class Project:
         p.samples = [Marker(**s) for s in d.get("samples", [])]
         p.stills = [Marker(**s) for s in d.get("stills", [])]
         g = dict(FACTORY_GRADE)
-        g.update(d.get("grade", {}))
+        g.update(upgrade_grade(dict(d.get("grade", {}))))
         p.grade = g
         o = {k: v for k, v in d.get("output", {}).items() if k in OutputSettings.__dataclass_fields__}
         p.output = OutputSettings(**o)
@@ -236,6 +249,12 @@ def short_name(path: str) -> str:
     stem = Path(path).stem
     m = re.search(r"(?<!\d)(\d{14})(?!\d)", stem) or re.search(r"(?<!\d)(\d{12})", stem)
     return m.group(1)[:12] if m else stem
+
+
+def display_name(path: str) -> str:
+    """목록 표시용: 202610251207 → 2026 1025 1207"""
+    n = short_name(path)
+    return " ".join(n[i:i + 4] for i in range(0, len(n), 4)) if n.isdigit() else n
 
 
 def speed_label(sp: float) -> str:

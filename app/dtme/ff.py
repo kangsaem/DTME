@@ -17,11 +17,25 @@ from .project import OUT_FPS, Marker, Project, Segment, Source
 
 NO_WINDOW = 0x08000000 if os.name == "nt" else 0   # Windows 콘솔창 숨김
 
-NR_PARAMS = {
-    "weak": "hqdn3d=1.5:1.5:3:3",
-    "mid": "hqdn3d=3:2.5:5:4",
-    "strong": "hqdn3d=4.5:3.5:7:6",
-}
+def denoise_chain(g: dict) -> list[str]:
+    """F안: 밝기·색을 따로. 색은 시간축 평균을 강하게 + 색 채널만 미디언(튀는 점 제거).
+    hqdn3d 는 0 을 '기본값(4)'으로 처리하므로 0 대신 아주 작은 값."""
+    c = max(0.0, min(100.0, float(g.get("nr_chroma", 0))))
+    lu = max(0.0, min(100.0, float(g.get("nr_luma", 0))))
+    f = []
+    if c > 0 or lu > 0:
+        ls, lt = max(0.01, lu * 0.04), max(0.01, lu * 0.08)
+        cs, ct = max(0.01, c * 0.05), max(0.01, c * 0.133)
+        f.append(f"hqdn3d={ls:.2f}:{cs:.2f}:{lt:.2f}:{ct:.2f}")
+    if c >= 40:
+        f.append(f"median=radius={2 if c >= 85 else 1}:planes=6")
+    return f
+
+
+def sharpen_chain(g: dict) -> list[str]:
+    """밝기(Y)에만 언샤프 → 색 노이즈를 날카롭게 만들지 않음."""
+    s = float(g.get("sharpen", 0))
+    return [f"unsharp=5:5:{min(2.0, s * 2):.3f}:5:5:0"] if s > 1e-3 else []
 
 
 # RGB → YUV 변환 시 BT.709 를 명시하지 않으면 BT.601 로 변환돼 색이 틀어진다(실측 평균 4.8 → 2.5 차이).
@@ -164,11 +178,8 @@ def curve_is_identity(curve) -> bool:
 
 
 def grade_chain(g: dict, lut_file: str | None) -> list[str]:
-    """노이즈 → (RGB 16bit) LUT → R/B 게인 → 커브 → Hue → 샤픈"""
-    f = []
-    nr = g.get("nr", "off")
-    if nr in NR_PARAMS:
-        f.append(NR_PARAMS[nr])
+    """(YUV) 노이즈 → 밝기 샤픈 → (RGB 16bit) LUT → R/B 게인 → 커브 → Hue"""
+    f = denoise_chain(g) + sharpen_chain(g)
     f.append("format=gbrp16le")
     if lut_file:
         f.append(f"lut3d=file={lut_file}:interp=tetrahedral")
@@ -182,9 +193,6 @@ def grade_chain(g: dict, lut_file: str | None) -> list[str]:
     hue = float(g.get("hue", 0))
     if abs(hue) > 1e-3:
         f.append(f"huesaturation=hue={hue:.2f}")
-    s = float(g.get("sharpen", 0))
-    if s > 1e-3:
-        f.append(f"cas=strength={min(1.0, s):.3f}")
     return f
 
 

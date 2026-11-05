@@ -62,3 +62,9 @@ print("샘플 타일:", w0, "→", e.grade.tile)
 from dtme import ff
 import tempfile, pathlib
 d=pathlib.Path(tempfile.mkdtemp()); a=d/"a"; b=d/"b"; a.write_text("x"); ff.replace_retry(a,b); print("replace_retry:", b.exists())
+# 인/아웃 드래그 + I◀ ▶I
+e._select_source(src.id); wait(2)
+e._io_drag_start(); e._io_drag("in", 40); e._io_drag("out", 150); e._after_io()
+print("드래그 IO:", src.io)
+e._key("goto_out"); wait(0.2); print("▶I →", e.player.frame); e._key("goto_in"); wait(0.2); print("I◀ →", e.player.frame)
+print("표시 이름:", [e.src_list.item(i).text() for i in range(e.src_list.count())])

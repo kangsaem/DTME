@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (QAbstractSpinBox, QApplication, QButtonGroup, QCh
                                QSplitter, QStyle, QStyledItemDelegate, QTextEdit, QVBoxLayout, QWidget)
 
 from . import ff, jobs
-from .project import Marker, RenderItem, Segment, short_name, speed_label, timecode
+from .project import Marker, RenderItem, Segment, display_name, short_name, speed_label, timecode
 from .state import AppState
 from .ui_bars import SeqTimeline, SourceBar
 from .ui_grade import GradePanel
@@ -132,6 +132,9 @@ class EditTab(QWidget):
         self.player.playingChanged.connect(self._on_playing)
         self.sbar = SourceBar()
         self.sbar.seekRequested.connect(lambda f: (self.player.pause(), self.player.seek(f)))
+        self.sbar.ioDragStarted.connect(self._io_drag_start)
+        self.sbar.ioDragged.connect(self._io_drag)
+        self.sbar.ioDragFinished.connect(self._after_io)
         mon = QVBoxLayout()
         mon.setSpacing(0)
         mon.setContentsMargins(0, 0, 0, 0)
@@ -150,9 +153,10 @@ class EditTab(QWidget):
                               "padding:2px 10px; border-radius:2px;")
         tbar = QHBoxLayout()
         tbar.setSpacing(4)
-        for text, tip, k in (("◀◀", "J", "j"), ("◀|", "←  (Shift: 1초)", "left"), ("▶ / ❚❚", "Space", "space"),
-                             ("|▶", "→  (Shift: 1초)", "right"), ("▶▶", "L", "l")):
-            tbar.addWidget(_btn(text, tip, lambda _=False, k=k: self._key(k), 64, 30))
+        for text, tip, k in (("I◀", "인 점으로 (Shift+I)", "goto_in"), ("◀◀", "J", "j"), ("◀|", "←  (Shift: 1초)", "left"),
+                             ("▶ / ❚❚", "Space", "space"), ("|▶", "→  (Shift: 1초)", "right"), ("▶▶", "L", "l"),
+                             ("▶I", "아웃 점으로 (Shift+O)", "goto_out")):
+            tbar.addWidget(_btn(text, tip, lambda _=False, k=k: self._key(k), 56 if k.startswith("goto") else 64, 30))
         r1 = QGridLayout()
         r1.addWidget(self.chk_preview, 0, 0, Qt.AlignLeft)
         r1.addLayout(tbar, 0, 1)
@@ -330,6 +334,12 @@ class EditTab(QWidget):
         elif name in ("left", "right"):
             d = round(float(p.fps)) if shift else 1
             p.step(-d if name == "left" else d)
+        elif name == "goto_in" or (name == "i" and shift):
+            p.pause()
+            p.seek(src.io[0])
+        elif name == "goto_out" or (name == "o" and shift):
+            p.pause()
+            p.seek(src.io[1] - 1)
         elif name == "i":
             self.mark_in()
         elif name == "o":
@@ -375,7 +385,7 @@ class EditTab(QWidget):
         s = self._cur()
         if not s:
             return
-        if QMessageBox.question(self, "제거", f"{short_name(s.path)} 제거?") == QMessageBox.Yes:
+        if QMessageBox.question(self, "제거", f"{display_name(s.path)} 제거?") == QMessageBox.Yes:
             self.cur_sid = ""
             self.state.remove_source(s.id)
 
@@ -385,7 +395,7 @@ class EditTab(QWidget):
         self.src_list.clear()
         sel = None
         for s in p.sources:
-            it = QListWidgetItem(short_name(s.path))
+            it = QListWidgetItem(display_name(s.path))
             it.setData(Qt.UserRole, s.id)
             it.setToolTip(s.path)
             self.src_list.addItem(it)
@@ -527,6 +537,25 @@ class EditTab(QWidget):
             s.sel_in = 0
         self._after_io()
 
+    def _io_drag_start(self):
+        if self._cur():
+            self.state.checkpoint()
+            self.player.pause()
+
+    def _io_drag(self, which, f):
+        s = self._cur()
+        if not s or not s.frames:
+            return
+        a, b = s.io
+        if which == "in":
+            s.sel_in = max(0, min(f, b - 2))
+            show = s.sel_in
+        else:
+            s.sel_out = max(a + 2, min(s.frames, f))
+            show = s.sel_out - 1
+        self._refresh_sbar()
+        self.player.seek(show)        # 끝을 옮기는 동안 그 프레임을 보여줌
+
     def clear_io(self):
         s = self._cur()
         self.state.checkpoint()
@@ -625,7 +654,7 @@ class EditTab(QWidget):
         s = self._cur()
         frame = self.player.frame
         g = self.state.project.grade_for_source(s.id)
-        path = unique(out_dir(self.state.project) / f"{short_name(s.path)}_f{frame}.png")
+        path = unique(out_dir(self.state.project) / f"{short_name(s.path)}.png")
         self.state.project.stills.append(Marker(s.id, frame))
         self._refresh_sbar()
         self._say(f"스틸 저장 중… {path.name}", C_INFO)
