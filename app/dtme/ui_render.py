@@ -16,6 +16,47 @@ from .project import short_name
 ORIENT_TXT = {"horizontal": "가로", "vertical": "세로"}
 
 
+RED_BTN = ("QPushButton{color:white; background:#c0392b; border:none; border-radius:3px; font-weight:700;}"
+           "QPushButton:hover{background:#d64535;} QPushButton:disabled{background:#7a2a22; color:#ddd;}")
+BTN_W, BTN_H = 72, 28          # ▼ · 렌더리스트로 · 전체 삭제 공통 크기
+ADD_W, ADD_H = 90, 30          # 영상 추가 · 렌더 공통 크기
+
+
+def arrow_icon(w=34, h=18, color="#ffffff"):
+    """두께 있는 오른쪽 화살표(블록 화살표)."""
+    from PySide6.QtCore import QPointF
+    from PySide6.QtGui import QIcon, QPainter, QPixmap, QPolygonF
+    pm = QPixmap(w * 2, h * 2)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor(color))
+    W, H = w * 2, h * 2
+    shaft_h, head_w = H * 0.46, W * 0.42
+    p.drawPolygon(QPolygonF([QPointF(0, (H - shaft_h) / 2), QPointF(W - head_w, (H - shaft_h) / 2),
+                             QPointF(W - head_w, 0), QPointF(W, H / 2), QPointF(W - head_w, H),
+                             QPointF(W - head_w, (H + shaft_h) / 2), QPointF(0, (H + shaft_h) / 2)]))
+    p.end()
+    pm.setDevicePixelRatio(2)
+    return QIcon(pm)
+
+
+def render_list_button(fn, tip=""):
+    from PySide6.QtCore import QSize
+    b = QPushButton()
+    b.setIcon(arrow_icon())
+    b.setIconSize(QSize(30, 16))
+    b.setFixedSize(BTN_W, BTN_H)
+    b.setFocusPolicy(Qt.NoFocus)
+    b.setStyleSheet(RED_BTN)
+    if tip:
+        b.setToolTip(tip)
+    add_shadow(b)
+    b.clicked.connect(fn)
+    return b
+
+
 def add_shadow(w):
     from PySide6.QtWidgets import QGraphicsDropShadowEffect
     e = QGraphicsDropShadowEffect(w)
@@ -91,11 +132,9 @@ class RenderPanel(QWidget):
         self.table.addAction(a_re)
 
         self.b_render = QPushButton("렌더")
-        self.b_render.setFixedSize(64, 28)
+        self.b_render.setFixedSize(ADD_W, ADD_H)
         self.b_render.setFocusPolicy(Qt.NoFocus)
-        self.b_render.setStyleSheet("QPushButton{font-weight:700; color:white; background:#c0392b;"
-                                    "border:none; border-radius:3px;} QPushButton:hover{background:#d64535;}"
-                                    "QPushButton:disabled{background:#7a2a22; color:#ddd;}")
+        self.b_render.setStyleSheet(RED_BTN)
         add_shadow(self.b_render)
         self.b_render.clicked.connect(self.render)
         self.settings = RenderSettings(state)

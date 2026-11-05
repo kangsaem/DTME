@@ -2,7 +2,7 @@
 
 다음 대화는 이 문서를 기준으로 이어서 작업한다.
 
-## 1. 현재 상태 — v0.4.1 (2026-11-05)
+## 1. 현재 상태 — v0.4.2 (2026-11-05)
 
 - 저장소: `kangsaem/DTME` (main). push 하면 GitHub Actions 가 Windows 빌드 → Actions → 최신 "Windows build" → Artifacts `DTME-windows`(약 200MB, 30일)
 - Linux 작업 환경에서 엔진·화면(오프스크린) 검증, Actions(Windows)에서 빌드·엔진·exe 실행 점검 통과
@@ -120,6 +120,9 @@ DTME_SELFTEST=1 DTME_NO_AUDIO=1 QT_QPA_PLATFORM=offscreen python app/main.py   #
 - 보정 프리셋 저장/불러오기
 
 ## 11. 변경 이력
+
+- v0.4.2: 렌더리스트로 버튼 2개 = 빨간 버튼 + 굵은 오른쪽 화살표 아이콘(QPainter), ▼·렌더리스트로·전체 삭제 72×28 통일, 렌더 = 영상 추가와 같은 90×30, 스틸 저장 완료 표시
+  - 디노이즈·샤픈 개선안 비교 중(F안 추천: hqdn3d 색 위주 시간축 + 색 채널 median + 밝기만 unsharp). 사용자 결정 대기
 
 - v0.4.1: Windows WinError 32(파일 사용 중) 대응 — 프록시·미리보기 이름 바꾸기 재시도, 샘플 PNG 는 메모리에서 읽기, 오류 내용 툴팁·로그, 오류 소스 클릭 시 재시도. 렌더 설정을 렌더 리스트 위로 합치고 탭 제거(한 화면), 렌더 버튼 작게+그림자, ▼ 그림자, ‘확대’ 글자 삭제, 샘플 타일 폭 연동
 

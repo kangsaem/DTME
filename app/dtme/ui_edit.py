@@ -17,7 +17,8 @@ from .state import AppState
 from .ui_bars import SeqTimeline, SourceBar
 from .ui_grade import GradePanel
 from .ui_player import Player
-from .ui_render import RenderPanel, add_shadow, item_base, out_dir, unique
+from .ui_render import (ADD_H, ADD_W, BTN_H, BTN_W, RenderPanel, add_shadow, item_base, out_dir,
+                        render_list_button, unique)
 
 VIDEO_FILTER = "영상 (*.mp4 *.MP4 *.mov *.MOV)"
 
@@ -116,8 +117,10 @@ class EditTab(QWidget):
         left.addWidget(self.src_list, 1)
         left.addWidget(self.load_bar)
         row = QHBoxLayout()
-        row.addWidget(_btn("영상 추가", "", self.add_files))
-        row.addWidget(_btn("제거", "", self._remove_source))
+        for text, fn in (("영상 추가", self.add_files), ("제거", self._remove_source)):
+            b = _btn(text, "", fn)
+            b.setFixedSize(ADD_W, ADD_H)
+            row.addWidget(b)
         left.addLayout(row)
         lw = QWidget()
         lw.setLayout(left)
@@ -184,9 +187,7 @@ class EditTab(QWidget):
         cut.addWidget(_btn("스틸", "S", lambda: self._key("s")))
         cut.addWidget(_btn("샘플", "G", lambda: self._key("g")))
         cut.addSpacing(12)
-        b_r = _btn("렌더리스트로", "Enter", lambda: self._key("enter"))
-        b_r.setStyleSheet("QPushButton{background:#2f3b4d;}")
-        cut.addWidget(b_r)
+        cut.addWidget(render_list_button(lambda: self._key("enter"), "렌더리스트로 (Enter)"))
         cut.addStretch(1)
 
         self.status = QLabel("")
@@ -202,7 +203,7 @@ class EditTab(QWidget):
         lbox.addWidget(self.tl_len)
         b_down = _btn("▼", "↓", lambda: self._key("down"), 64, 28)
         b_down.setStyleSheet("QPushButton{font-size:15px; background:#2f3b4d;}")
-        b_down.setFixedSize(64, 28)
+        b_down.setFixedSize(BTN_W, BTN_H)
         add_shadow(b_down)
         self.zoom = QSlider(Qt.Horizontal)
         self.zoom.setRange(5, 200)
@@ -212,8 +213,10 @@ class EditTab(QWidget):
         self.zoom.valueChanged.connect(lambda v: self.timeline.set_zoom(float(v)))
         rbox = QHBoxLayout()
         rbox.addWidget(self.zoom)
-        rbox.addWidget(_btn("전체 삭제", "", self.clear_timeline))
-        rbox.addWidget(_btn("렌더리스트로", "", self.timeline_to_render))
+        b_clr = _btn("전체 삭제", "", self.clear_timeline)
+        b_clr.setFixedSize(BTN_W, BTN_H)
+        rbox.addWidget(b_clr)
+        rbox.addWidget(render_list_button(self.timeline_to_render, "타임라인 전체를 렌더리스트로"))
         th = QGridLayout()
         th.addLayout(lbox, 0, 0, Qt.AlignLeft)
         th.addWidget(b_down, 0, 1)
@@ -628,7 +631,11 @@ class EditTab(QWidget):
         self._say(f"스틸 저장 중… {path.name}", C_INFO)
         gpu = self.state.project.output.gpu_decode
         job = jobs.Job(lambda: ff.export_still(s, frame, g, str(path), gpu))
-        job.signals.done.connect(lambda _r: self._say(f"스틸 저장: {path}", C_OK))
+        def still_done(_r):
+            self._say(f"스틸 저장 완료 ✓  {path.name}", C_OK)
+            self.window().statusBar().showMessage(f"스틸 저장 완료: {path}", 8000)
+
+        job.signals.done.connect(still_done)
         job.signals.error.connect(lambda m: self._say(f"스틸 실패: {m[-200:]}", C_WARN))
         jobs.submit(jobs.PREVIEW_POOL, job, priority=8)
 
