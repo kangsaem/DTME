@@ -18,8 +18,14 @@ ORIENT_TXT = {"horizontal": "가로", "vertical": "세로"}
 
 RED_BTN = ("QPushButton{color:white; background:#c0392b; border:none; border-radius:3px; font-weight:700;}"
            "QPushButton:hover{background:#d64535;} QPushButton:disabled{background:#7a2a22; color:#ddd;}")
-BTN_W, BTN_H = 72, 28          # ▼ · 렌더리스트로 · 전체 삭제 공통 크기
-ADD_W, ADD_H = 90, 30          # 영상 추가 · 렌더 공통 크기
+BTN_W, BTN_H = 76, 28          # 모든 일반 버튼
+MAIN_W, MAIN_H = 88, 32        # 주요 버튼: ▶/❚❚ · ▼ · 렌더리스트로 · 렌더
+ADD_W, ADD_H = BTN_W, BTN_H    # 영상 추가 · 삭제(소스)
+
+
+def fix_size(b, main=False):
+    b.setFixedSize(MAIN_W if main else BTN_W, MAIN_H if main else BTN_H)
+    return b
 
 
 def arrow_icon(w=34, h=18, color="#ffffff"):
@@ -47,7 +53,7 @@ def render_list_button(fn, tip=""):
     b = QPushButton()
     b.setIcon(arrow_icon())
     b.setIconSize(QSize(24, 13))      # 화살표 20% 축소
-    b.setFixedSize(BTN_W, BTN_H)
+    b.setFixedSize(MAIN_W, MAIN_H)
     b.setFocusPolicy(Qt.NoFocus)
     b.setStyleSheet(RED_BTN)
     if tip:
@@ -170,7 +176,7 @@ class RenderPanel(QWidget):
         self.table.addAction(a_re)
 
         self.b_render = QPushButton("렌더")
-        self.b_render.setFixedSize(ADD_W, ADD_H)
+        self.b_render.setFixedSize(MAIN_W, MAIN_H)
         self.b_render.setFocusPolicy(Qt.NoFocus)
         self.b_render.setStyleSheet(RED_BTN)
         add_shadow(self.b_render)
@@ -301,6 +307,7 @@ class RenderSettings(QWidget):
         self.folder = QLineEdit()
         self.folder.setPlaceholderText("소스 폴더/DTME_출력")
         b = QPushButton("선택…")
+        fix_size(b)
         b.clicked.connect(self._pick_folder)
         frow.addWidget(self.folder, 1)
         frow.addWidget(b)

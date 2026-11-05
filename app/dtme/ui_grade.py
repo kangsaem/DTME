@@ -16,6 +16,7 @@ from . import ff, jobs, paths
 from .project import save_default_grade, timecode
 from .state import AppState
 from .ui_curve import CurveEditor
+from .ui_render import fix_size
 
 BASE = ("base", "")
 N_SAMPLES = 6
@@ -44,12 +45,15 @@ class GradePanel(QWidget):
         # --- 머리: 보정 + 기본값으로 저장
         head = QHBoxLayout()
         b_reset = QPushButton("리셋")
+        fix_size(b_reset)
         b_reset.setToolTip("이 클립의 조정값을 초기값으로 (LUT 유지)")
         b_reset.clicked.connect(self._reset_clip)
         b_base = QPushButton("기본값")
+        fix_size(b_base)
         b_base.setToolTip("이 클립을 기본값으로 되돌림")
         b_base.clicked.connect(self._clear_all)
         b_def = QPushButton("기본값으로 저장")
+        b_def.setFixedSize(2 * 76 - 40, 28)     # 글자가 길어 유일하게 넓음(일반 높이)
         b_def.setToolTip("이 클립의 값을 모든 클립의 기본값으로")
         b_def.clicked.connect(self._save_default)
         for b in (b_reset, b_base):
@@ -107,8 +111,10 @@ class GradePanel(QWidget):
         add_row("lut", "LUT", self.lut, False)
         lb = QHBoxLayout()
         b1 = QPushButton("LUT 추가…")
+        fix_size(b1)
         b1.clicked.connect(self._add_lut)
         b2 = QPushButton("새로고침")
+        fix_size(b2)
         b2.clicked.connect(self._fill_luts)
         lb.addWidget(b1)
         lb.addWidget(b2)
@@ -146,7 +152,7 @@ class GradePanel(QWidget):
         crow = QHBoxLayout()
         crow.addStretch(1)
         b3 = QPushButton("커브리셋")
-        b3.setFixedWidth(80)
+        fix_size(b3)
         b3.clicked.connect(self.curve.reset)
         crow.addWidget(b3)
         g.addLayout(crow, r, 1, 1, 2)

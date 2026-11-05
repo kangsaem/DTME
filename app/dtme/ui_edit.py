@@ -19,7 +19,7 @@ from .state import AppState
 from .ui_bars import LayerBar, SeqTimeline, SourceBar
 from .ui_grade import GradePanel
 from .ui_player import Player
-from .ui_render import (ADD_H, ADD_W, BTN_H, BTN_W, RenderPanel, add_shadow, item_base, out_dir,
+from .ui_render import (ADD_H, ADD_W, RenderPanel, add_shadow, fix_size, item_base, out_dir,
                         render_list_button, unique)
 
 MEDIA_FILTER = "영상·이미지 (*.mp4 *.MP4 *.mov *.MOV *.jpg *.JPG *.jpeg *.JPEG *.png *.PNG)"
@@ -39,17 +39,14 @@ TEXT_INPUTS = (QLineEdit, QAbstractSpinBox, QTextEdit, QPlainTextEdit)
 C_INFO, C_OK, C_WARN = "#cfd8e3", "#7fd18b", "#f2c94c"
 
 
-def _btn(text, tip, fn, w=None, h=None):
+def _btn(text, tip, fn, main=False):
+    """버튼 크기 통일: 일반 BTN_W×BTN_H, 주요 MAIN_W×MAIN_H."""
     b = QPushButton(text)
     if tip:
         b.setToolTip(tip)
     b.setFocusPolicy(Qt.NoFocus)
     b.clicked.connect(fn)
-    if w:
-        b.setMinimumWidth(w)
-    if h:
-        b.setMinimumHeight(h)
-    return b
+    return fix_size(b, main)
 
 
 class SourceDelegate(QStyledItemDelegate):
@@ -130,7 +127,7 @@ class EditTab(QWidget):
         self.sel_cut = ""
         self.sel_layer = ""
         self._del_target = "cut"        # Del 키 대상: "cut" | "layer"
-        self._last_list = "src"         # [제거] 대상: "src" | "img"
+        self._last_list = "src"         # [삭제](소스) 대상: "src" | "img"
         self._img_cache: dict[str, QImage] = {}
         self.pgen = 0
 
@@ -161,7 +158,7 @@ class EditTab(QWidget):
         left.addWidget(self.img_list, 1)
         left.addWidget(self.load_bar)
         row = QHBoxLayout()
-        for text, fn in (("영상 추가", self.add_files), ("제거", self._remove_selected)):
+        for text, fn in (("영상 추가", self.add_files), ("삭제", self._remove_selected)):
             b = _btn(text, "", fn)
             b.setFixedSize(ADD_W, ADD_H)
             row.addWidget(b)
@@ -214,7 +211,7 @@ class EditTab(QWidget):
         for text, tip, k in (("I◀", "인 점으로 (Shift+I)", "goto_in"), ("◀◀", "J", "j"), ("◀|", "←  (Shift: 1초)", "left"),
                              ("▶ / ❚❚", "Space", "space"), ("|▶", "→  (Shift: 1초)", "right"), ("▶▶", "L", "l"),
                              ("▶I", "아웃 점으로 (Shift+O)", "goto_out")):
-            tbar.addWidget(_btn(text, tip, lambda _=False, k=k: self._key(k), 56 if k.startswith("goto") else 64, 30))
+            tbar.addWidget(_btn(text, tip, lambda _=False, k=k: self._key(k), main=(k == "space")))
         r1 = QGridLayout()
         r1.addWidget(self.chk_preview, 0, 0, Qt.AlignLeft)
         r1.addLayout(tbar, 0, 1)
@@ -226,8 +223,8 @@ class EditTab(QWidget):
         cut = QHBoxLayout()
         cut.setSpacing(4)
         cut.addStretch(1)
-        b_in = _btn("[ 컷인", "I  또는  [", lambda: self._key("i"), 70)
-        b_out = _btn("컷아웃 ]", "O  또는  ]", lambda: self._key("o"), 70)
+        b_in = _btn("[ 컷인", "I  또는  [", lambda: self._key("i"))
+        b_out = _btn("컷아웃 ]", "O  또는  ]", lambda: self._key("o"))
         for b in (b_in, b_out):
             b.setStyleSheet("QPushButton{background:#3a3a26;}")
             cut.addWidget(b)
@@ -239,7 +236,7 @@ class EditTab(QWidget):
             b = QPushButton(speed_label(sp))
             b.setCheckable(True)
             b.setFocusPolicy(Qt.NoFocus)
-            b.setMinimumWidth(52)
+            fix_size(b)
             b.setToolTip(key)
             b.clicked.connect(lambda _=False, k=key: self._key(k))
             self.speed_group.addButton(b, i)
@@ -259,13 +256,11 @@ class EditTab(QWidget):
         self.tl_len = QLabel("")
         self.tl_len.setStyleSheet("color:#aaa;")
         b_trans = _btn("컷편집", "선택한 컷 앞 경계의 화면 전환", self.edit_transition)
-        b_trans.setFixedSize(BTN_W, BTN_H)
         lbox = QHBoxLayout()
         lbox.addWidget(b_trans)
         lbox.addWidget(self.tl_len)
-        b_down = _btn("▼", "↓", lambda: self._key("down"), 64, 28)
+        b_down = _btn("▼", "↓", lambda: self._key("down"), main=True)
         b_down.setStyleSheet("QPushButton{font-size:15px; background:#2f3b4d;}")
-        b_down.setFixedSize(BTN_W, BTN_H)
         add_shadow(b_down)
         self.zoom = QSlider(Qt.Horizontal)
         self.zoom.setRange(5, 200)
@@ -276,7 +271,6 @@ class EditTab(QWidget):
         rbox = QHBoxLayout()
         rbox.addWidget(self.zoom)
         b_clr = _btn("전체 삭제", "", self.clear_timeline)
-        b_clr.setFixedSize(BTN_W, BTN_H)
         rbox.addWidget(b_clr)
         rbox.addWidget(render_list_button(self.timeline_to_render, "타임라인 전체를 렌더리스트로"))
         th = QGridLayout()
@@ -448,7 +442,7 @@ class EditTab(QWidget):
         if self._last_list == "img" and self.img_list.currentItem() is not None:
             iid = self.img_list.currentItem().data(Qt.UserRole)
             m = self.state.project.image(iid)
-            if m and QMessageBox.question(self, "제거", f"{Path(m.path).name} 제거?") == QMessageBox.Yes:
+            if m and QMessageBox.question(self, "삭제", f"{Path(m.path).name} 삭제?") == QMessageBox.Yes:
                 self.state.remove_image(iid)
                 self._img_cache.pop(iid, None)
             return
@@ -458,7 +452,7 @@ class EditTab(QWidget):
         s = self._cur()
         if not s:
             return
-        if QMessageBox.question(self, "제거", f"{display_name(s.path)} 제거?") == QMessageBox.Yes:
+        if QMessageBox.question(self, "삭제", f"{display_name(s.path)} 삭제?") == QMessageBox.Yes:
             self.cur_sid = ""
             self.state.remove_source(s.id)
 
