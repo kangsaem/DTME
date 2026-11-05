@@ -124,13 +124,43 @@ class Segment:
     speed: float = 1.0
     id: str = field(default_factory=_id)
     layers: list = field(default_factory=list)  # 보낼 때 소스 레이어의 사본
+    trans: dict = field(default_factory=dict)   # 이 컷 '앞 경계'의 화면 전환 {"type", "dur"}
 
     @property
     def frames(self) -> int:
         return max(0, self.fout - self.fin)
 
     def copy(self) -> "Segment":
-        return Segment(self.src, self.fin, self.fout, self.speed, layers=copy.deepcopy(self.layers))
+        return Segment(self.src, self.fin, self.fout, self.speed, layers=copy.deepcopy(self.layers),
+                       trans=dict(self.trans))
+
+
+# 화면 전환: (종류, 이름). 첫 컷에는 페이드(검정·흰색)만 = 검정/흰 화면에서 들어옴
+TRANSITIONS = [("none", "없음"), ("dissolve", "디졸브"),
+               ("wipeleft", "커튼 ←"), ("wiperight", "커튼 →"), ("wipeup", "커튼 ↑"), ("wipedown", "커튼 ↓"),
+               ("zoomin", "빠른 줌인"), ("zoomout", "빠른 줌아웃"),
+               ("rotzoomin", "회전 줌인"), ("rotzoomout", "회전 줌아웃"),
+               ("fadeblack", "페이드아웃·인"), ("fadewhite", "화이트아웃·인")]
+TRANS_NAME = dict(TRANSITIONS)
+FIRST_OK = {"fadeblack", "fadewhite"}
+TRANS_DEFAULT_SEC = 0.5
+TRANS_RANGE = (0.2, 2.0)
+
+
+def plan_transitions(segs, lengths) -> list:
+    """컷마다 (종류, 실제 길이 초) 또는 None. 길이는 앞뒤 컷 길이의 절반을 넘지 않게 줄임(겹침이 서로 침범하지 않음)."""
+    out = []
+    for i, seg in enumerate(segs):
+        t = getattr(seg, "trans", None) or {}
+        typ = t.get("type", "")
+        if typ not in TRANS_NAME or typ == "none" or (i == 0 and typ not in FIRST_OK):
+            out.append(None)
+            continue
+        d = max(TRANS_RANGE[0], min(TRANS_RANGE[1], float(t.get("dur", TRANS_DEFAULT_SEC))))
+        lim = lengths[i] * 0.5 if i == 0 else min(lengths[i - 1], lengths[i]) * 0.5
+        d = min(d, lim)
+        out.append((typ, d) if d >= 0.07 else None)
+    return out
 
 
 @dataclass
@@ -231,12 +261,11 @@ class Project:
         return float(seg.frames / fps / Fraction(seg.speed))
 
     def segs_seconds(self, segs) -> float:
-        total = 0.0
-        for seg in segs:
-            s = self.source(seg.src)
-            if s and s.frames:
-                total += self.seg_out_seconds(seg, s.fps)
-        return total
+        """결과 길이(화면 전환 겹침만큼 줄어듦)."""
+        segs = [g for g in segs if self.source(g.src) and self.source(g.src).frames]
+        lens = [self.seg_out_seconds(g, self.source(g.src).fps) for g in segs]
+        overlap = sum(t[1] for i, t in enumerate(plan_transitions(segs, lens)) if t and i > 0)
+        return sum(lens) - overlap
 
     def out_seconds(self, sid: str | None = None) -> float:
         return self.segs_seconds([g for g in self.segments if not sid or g.src == sid])

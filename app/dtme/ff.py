@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import paths
-from .project import OUT_FPS, ImageSource, Marker, Project, Segment, Source, layer_box
+from .project import OUT_FPS, ImageSource, Marker, Project, Segment, Source, layer_box, plan_transitions
 
 NO_WINDOW = 0x08000000 if os.name == "nt" else 0   # Windows 콘솔창 숨김
 
@@ -404,6 +404,82 @@ def sharpness_around(src: Source, frame: int, radius: int = 5) -> list[tuple[int
     return res
 
 
+# ------------------------------------------------------------------ 화면 전환
+XFADE = {"dissolve": "fade", "wipeleft": "wipeleft", "wiperight": "wiperight", "wipeup": "wipeup",
+         "wipedown": "wipedown", "zoomin": "fade", "zoomout": "fade", "rotzoomin": "fade", "rotzoomout": "fade",
+         "fadeblack": "fadeblack", "fadewhite": "fadewhite"}
+ROT_MAX = 0.5236     # 회전 최대 30°
+
+
+def zoom_filter(kind: str, start: float, dur: float, head: bool) -> str:
+    """빠른 줌·회전 줌: perspective(프레임마다 계산, 3차 보간, 크기 고정).
+    u = 0→1 가속(제곱). 배율 s = 1+2u, 각도 = u·30° → 확대가 항상 회전보다 커서 화면 밖(검은 모서리)이 보이지 않음.
+    tail(앞 컷 끝): start~start+dur 동안 확대(회전). head(뒷 컷 시작): 0~dur 동안 확대 상태에서 원래로."""
+    fps = float(OUT_FPS)
+    if head:
+        u = f"pow(1-clip(in/{fps:.5f}/{dur:.5f},0,1),2)"
+        en = f"lte(t,{dur + 0.5 / fps:.5f})"
+        sign = -1
+    else:
+        u = f"pow(clip((in/{fps:.5f}-{start:.5f})/{dur:.5f},0,1),2)"
+        en = f"gte(t,{start - 0.5 / fps:.5f})"
+        sign = 1
+    sc = f"(1+2*{u})"
+    th = f"({sign}*{u}*{ROT_MAX})" if kind.startswith("rot") else "0"
+
+    def pt(dx, dy):     # 출력 모서리 ← 원본 좌표: 중심 + R(θ)(모서리-중심)/s
+        return (f"W/2+(({dx})*cos({th})-({dy})*sin({th}))/{sc}",
+                f"H/2+(({dx})*sin({th})+({dy})*cos({th}))/{sc}")
+    xy = [pt(dx, dy) for dx, dy in (("-W/2", "-H/2"), ("W/2", "-H/2"), ("-W/2", "H/2"), ("W/2", "H/2"))]
+    opts = ":".join(f"x{i}='{x}':y{i}='{y}'" for i, (x, y) in enumerate(xy))
+    return f"perspective={opts}:interpolation=cubic:eval=frame:enable='{en}'"
+
+
+def transition_graph(fparts: list, plan: list, lens: list, audio: bool) -> float:
+    """[v0][a0]… 를 화면 전환(xfade/acrossfade)과 이어붙이기(concat)로 연결 → [vo][ao]. 결과 길이(초) 반환."""
+    n = len(lens)
+    vl = [f"[v{i}]" for i in range(n)]
+    al = [f"[a{i}]" for i in range(n)]
+    for i in range(n):                       # 컷 자체에 들어가는 효과(줌·첫 컷 페이드)
+        f = []
+        nxt = plan[i + 1] if i + 1 < n else None
+        if nxt and nxt[0] in ("zoomin", "rotzoomin"):
+            f.append(zoom_filter(nxt[0], lens[i] - nxt[1], nxt[1], head=False))
+        cur = plan[i]
+        if cur and i > 0 and cur[0] in ("zoomout", "rotzoomout"):
+            f.append(zoom_filter(cur[0], 0, cur[1], head=True))
+        if cur and i == 0:
+            f.append(f"fade=t=in:st=0:d={cur[1]:.5f}:color={'white' if cur[0] == 'fadewhite' else 'black'}")
+            if audio:
+                fparts.append(f"[a0]afade=t=in:st=0:d={cur[1]:.5f}[a0f]")
+                al[0] = "[a0f]"
+        f.append("settb=AVTB")
+        fparts.append(f"{vl[i]}{','.join(f)}[w{i}]")
+        vl[i] = f"[w{i}]"
+    acc_v, acc_a, acc = vl[0], al[0], lens[0]
+    for i in range(1, n):
+        last = i == n - 1
+        ov, oa = ("[vo]", "[ao]") if last else (f"[xv{i}]", f"[xa{i}]")
+        t = plan[i]
+        if t:
+            d = t[1]
+            fparts.append(f"{acc_v}{vl[i]}xfade=transition={XFADE[t[0]]}:duration={d:.5f}:offset={acc - d:.5f}{ov}")
+            if audio:
+                fparts.append(f"{acc_a}{al[i]}acrossfade=d={d:.5f}{oa}")
+            acc += lens[i] - d
+        else:
+            fparts.append(f"{acc_v}{vl[i]}concat=n=2:v=1:a=0{ov}")
+            if audio:
+                fparts.append(f"{acc_a}{al[i]}concat=n=2:v=0:a=1{oa}")
+            acc += lens[i]
+        acc_v, acc_a = ov, oa
+    if n == 1:
+        fparts.append(f"{acc_v}null[vo]")
+        if audio:
+            fparts.append(f"{acc_a}anull[ao]")
+    return acc
+
+
 # ------------------------------------------------------------------ 영상 렌더
 YUV444_709 = "scale=out_color_matrix=bt709:out_range=tv,format=yuv444p10le"
 OV_CONVERT = "out_color_matrix=bt709:out_range=tv"
@@ -432,6 +508,7 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orien
     total = 0.0
     cwd = None
     img_inputs: list[str] = []          # 이미지 입력은 영상 입력 뒤에 붙임(번호 = len(segs) + k)
+    lens: list[float] = []
     for i, seg in enumerate(segs):
         src = project.source(seg.src)
         g = project.grade_for_source(src.id)
@@ -490,13 +567,18 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orien
                 fparts.append(f"anullsrc=r=48000:cl=stereo,atrim=duration={out_sec:.6f}[a{i}]")
             lab += f"[a{i}]"
         labels.append(lab)
+        lens.append(out_sec)
     for f in img_inputs:
         cmd += ["-noautorotate", "-i", f]      # EXIF 회전은 ORIENT_FILTER 로 직접(ffmpeg 버전마다 자동 적용 여부가 다름)
     n = len(segs)
-    if audio:
-        fparts.append(f"{''.join(labels)}concat=n={n}:v=1:a=1[vo][ao]")
+    plan = plan_transitions(segs, lens)
+    if not any(plan):
+        if audio:
+            fparts.append(f"{''.join(labels)}concat=n={n}:v=1:a=1[vo][ao]")
+        else:
+            fparts.append(f"{''.join(labels)}concat=n={n}:v=1:a=0[vo]")
     else:
-        fparts.append(f"{''.join(labels)}concat=n={n}:v=1:a=0[vo]")
+        total = transition_graph(fparts, plan, lens, audio)
     cmd += ["-filter_complex", ";".join(fparts), "-map", "[vo]"]
     if audio:
         cmd += ["-map", "[ao]", "-c:a", "aac", "-b:a", "192k"]
@@ -544,6 +626,11 @@ def render_video(project: Project, segs: list[Segment], out_file: str, on_progre
 
 
 # ------------------------------------------------------------------ 스틸 (4K 원본)
+# 스틸 파일 색 태그 = sRGB. 그대로 두면 BT.709 전달 특성(cICP·gAMA 1/1.96)이 기록되어
+# Windows 사진 앱 등 색 관리 뷰어가 더 어둡고 진하게 표시한다(픽셀 값은 프리뷰와 같음, 실측 평균 차 1.4/255).
+SRGB_TAG = "setparams=color_trc=iec61966-2-1:color_primaries=bt709:colorspace=gbr"
+
+
 def export_still(src: Source, frame: int, g: dict, out_file: str, gpu: bool = False) -> None:
     """원본 4K 프레임에 보정 적용 → 16bit PNG(.png) 또는 TIFF(.tif).
     앞 3프레임을 함께 넣어 시간축 노이즈 제거가 동작하게 하고 마지막 프레임만 저장."""
@@ -551,7 +638,7 @@ def export_still(src: Source, frame: int, g: dict, out_file: str, gpu: bool = Fa
     lead = min(3, frame)
     start = frame - lead
     is_png = str(out_file).lower().endswith(".png")
-    vf = grade_chain(g, lut) + ["format=rgb48be" if is_png else "format=rgb48le"]
+    vf = grade_chain(g, lut) + [SRGB_TAG, "format=rgb48be" if is_png else "format=rgb48le"]
     codec = ["-c:v", "png", "-compression_level", "3"] if is_png else ["-c:v", "tiff", "-compression_algo", "deflate"]
     cmd = [paths.ffmpeg(), "-v", "error", "-y", *_hw(gpu), "-ss", _seek(start, src.fps), "-i", _abs(src.path),
            "-frames:v", str(lead + 1), "-an", "-vf", ",".join(vf), "-update", "1", *codec, _abs(out_file)]
