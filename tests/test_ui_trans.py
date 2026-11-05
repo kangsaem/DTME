@@ -30,7 +30,7 @@ def click():
     dlg = next(x for x in app.topLevelWidgets() if isinstance(x, TransitionDialog) and x.isVisible())
     dlg.grab().save(os.path.join(WORK, "shot_trans_dialog.png"))
     print("첫 컷 아님 → 모두 사용 가능:", all(b.isEnabled() for b in dlg.buttons.values()))
-    dlg.buttons["rotzoomin"].click()
+    dlg.buttons["rotzoomin"].clicked.emit("rotzoomin")
 QTimer.singleShot(300, click); e.edit_transition()
 print("전환:", segs[1].trans, "길이", round(before, 3), "→", round(st.project.segs_seconds(segs), 3))
 assert segs[1].trans["type"] == "rotzoomin"
@@ -39,7 +39,7 @@ e._on_cut_selected(segs[0].id)
 def click0():
     dlg = next(x for x in app.topLevelWidgets() if isinstance(x, TransitionDialog) and x.isVisible())
     en = [k for k, b in dlg.buttons.items() if b.isEnabled()]; print("첫 컷 사용 가능:", en)
-    dlg.buttons["fadewhite"].click()
+    dlg.buttons["fadewhite"].clicked.emit("fadewhite")
 QTimer.singleShot(300, click0); e.edit_transition()
 w.undo(); wait(0.2); print("실행취소 후 첫 컷:", st.project.segments[0].trans)
 e.zoom.setValue(120); wait(0.3)

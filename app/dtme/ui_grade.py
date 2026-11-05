@@ -10,7 +10,7 @@ from PySide6.QtCore import QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
                                QLabel, QListWidget, QListWidgetItem, QMessageBox, QPushButton, QRadioButton,
-                               QScrollArea, QSlider, QToolButton, QVBoxLayout, QWidget)
+                               QScrollArea, QSlider, QVBoxLayout, QWidget)
 
 from . import ff, jobs, paths
 from .project import save_default_grade, timecode
@@ -19,6 +19,18 @@ from .ui_curve import CurveEditor
 from .ui_render import fix_size
 
 BASE = ("base", "")
+
+
+class LutCombo(QComboBox):
+    """열 때마다 luts 폴더를 다시 읽음(새로고침 버튼 대신)."""
+
+    def __init__(self, refill, parent=None):
+        super().__init__(parent)
+        self._refill = refill
+
+    def showPopup(self):
+        self._refill()
+        super().showPopup()
 N_SAMPLES = 6
 TILE_W, TILE_H = 150, 84
 
@@ -64,7 +76,7 @@ class GradePanel(QWidget):
         # --- 출력 형태(가로/세로·오디오)
         orow = QHBoxLayout()
         self.orient = QButtonGroup(self)
-        for i, (k, txt) in enumerate((("horizontal", "가로 1920×1080"), ("vertical", "세로 1080×1920"))):
+        for i, (k, txt) in enumerate((("horizontal", "1920×1080"), ("vertical", "1080×1920"))):
             rb = QRadioButton(txt)
             rb.setProperty("key", k)
             rb.setFocusPolicy(Qt.NoFocus)
@@ -92,32 +104,26 @@ class GradePanel(QWidget):
         def add_row(key, title, widget, val=True):
             nonlocal r
             g.addWidget(QLabel(title), r, 0)
-            g.addWidget(widget, r, 1)
             if val:
+                g.addWidget(widget, r, 1)
                 lab = QLabel("")
                 lab.setMinimumWidth(44)
                 lab.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 self.vals[key] = lab
                 g.addWidget(lab, r, 2)
-            rb = QToolButton()
-            rb.setText("↺")
-            rb.clicked.connect(lambda _=False, k=key: self._clear_key(k))
-            self.resets[key] = rb
-            g.addWidget(rb, r, 3)
+            else:
+                g.addWidget(widget, r, 1, 1, 2)     # 커브와 같은 폭
             r += 1
 
-        self.lut = QComboBox()
+        self.lut = LutCombo(self._fill_luts)
         self.lut.activated.connect(lambda _: self._set("lut", self.lut.currentData()))
         add_row("lut", "LUT", self.lut, False)
         lb = QHBoxLayout()
         b1 = QPushButton("LUT 추가…")
         fix_size(b1)
         b1.clicked.connect(self._add_lut)
-        b2 = QPushButton("새로고침")
-        fix_size(b2)
-        b2.clicked.connect(self._fill_luts)
+        lb.addStretch(1)
         lb.addWidget(b1)
-        lb.addWidget(b2)
         g.addLayout(lb, r, 1, 1, 2)
         r += 1
 
@@ -126,7 +132,7 @@ class GradePanel(QWidget):
             s.setRange(lo, hi)
             s.setFocusPolicy(Qt.NoFocus)
             s.setToolTip(tip)
-            s.sliderPressed.connect(self.state.checkpoint)
+            s.sliderPressed.connect(lambda k=key: self.state.checkpoint(f"slider:{k}"))
             s.valueChanged.connect(lambda v, k=key, sc=scale: self._set(k, v if sc == 1 else round(v / sc, 3),
                                                                         slider=True))
             return s
@@ -143,11 +149,6 @@ class GradePanel(QWidget):
         self.curve = CurveEditor()
         self.curve.changed.connect(lambda pts: self._set("curve", pts))
         g.addWidget(self.curve, r, 1, 1, 2)
-        rb = QToolButton()
-        rb.setText("↺")
-        rb.clicked.connect(lambda: self._clear_key("curve"))
-        self.resets["curve"] = rb
-        g.addWidget(rb, r, 3, Qt.AlignTop)
         r += 1
         crow = QHBoxLayout()
         crow.addStretch(1)
@@ -188,6 +189,7 @@ class GradePanel(QWidget):
 
         inner = QVBoxLayout()
         inner.setContentsMargins(4, 4, 4, 4)
+        self._inner = inner
         inner.addLayout(head)
         inner.addLayout(orow)
         inner.addWidget(self.before)
@@ -196,8 +198,9 @@ class GradePanel(QWidget):
         inner.addWidget(self.samples)
         box = QWidget()
         box.setLayout(inner)
-        sc = QScrollArea()
+        sc = self._scroll = QScrollArea()
         sc.setWidgetResizable(True)
+        sc.viewport().installEventFilter(self)     # 보이는 폭이 바뀌면 샘플 폭도
         sc.setWidget(box)
         sc.setFrameShape(QFrame.NoFrame)
         lay = QVBoxLayout(self)
@@ -303,12 +306,11 @@ class GradePanel(QWidget):
         self.vals["nr_chroma"].setText(f"{int(e.get('nr_chroma', 0))}")
         self.vals["nr_luma"].setText(f"{int(e.get('nr_luma', 0))}")
         self.vals["stab"].setText(f"{int(e.get('stab', 0))}" if e.get("stab", 0) else "끔")
-        for k, b in self.resets.items():
-            b.setVisible(k in over)
+        _ = over
 
     def _set(self, key, value, slider=False):
-        if not slider:
-            self.state.checkpoint()
+        # 슬라이더: 손잡이·홈 클릭·휠 어느 쪽이든 실행취소 지점(연속 조작은 1번으로 합침)
+        self.state.checkpoint(f"slider:{key}" if slider else "")
         self._target_dict()[key] = value
         self.state.dirty = True
         self._update_labels()
@@ -436,13 +438,21 @@ class GradePanel(QWidget):
     def _icon(self, pix):
         return pix.scaled(self.tile[0] * 2, self.tile[1] * 2, Qt.KeepAspectRatio, Qt.SmoothTransformation)
 
+    def eventFilter(self, obj, e):
+        from PySide6.QtCore import QEvent
+        if e.type() == QEvent.Resize and obj is self._scroll.viewport():
+            QTimer.singleShot(0, self._fit_tiles)
+        return False
+
     def resizeEvent(self, e):
         super().resizeEvent(e)
         self._fit_tiles()
+        QTimer.singleShot(0, self._fit_tiles)       # 스크롤 영역 폭이 확정된 뒤 한 번 더
 
     def _fit_tiles(self):
-        avail = max(160, self.width() - 22)
-        tw = (avail - 8) // 2
+        """샘플 2열 폭 = 조절 영역 폭(오른쪽 여백 없음)."""
+        avail = max(160, self._scroll.viewport().width() - 8)
+        tw = (avail - 12) // 2
         th = tw * 9 // 16
         if (tw, th) == self.tile and self.samples.width() == avail:
             return

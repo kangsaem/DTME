@@ -8,6 +8,7 @@ build/
 settings.json
 luts/*
 !luts/README.txt
+!luts/DJI_OSMO_Action_4_D-Log_M_to_Rec.709_V1.cube
 test_out/
 *.MP4
 *.mp4

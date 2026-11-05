@@ -175,3 +175,32 @@ d = st.project.to_dict()
 p2 = Project.from_dict(d)
 assert p2.sources[0].layers[0]["id"] == "x"
 print("UI LAYERS OK")
+
+# ---- 자석·통째 이동·인아웃 제한·Del
+src = st.project.sources[0]
+img2 = st.import_images([PNG]) if not st.project.images else None
+wait(0.5)
+im = st.project.images[0]
+src.sel_in, src.sel_out = 20, 180; e._after_io()
+src.layers = []; e.add_layer(im.id); e.add_layer(im.id)
+l1, l2 = src.layers
+e._layer_drag(l1["id"], "out", 100)
+tol = e.SNAP_PX * src.frames / max(1, e.lbar.width())
+e._layer_drag(l2["id"], "in", 100 + int(tol) - 1)          # 자석 → 100
+print("자석(인→다른 레이어 아웃):", l2["fin"], "허용", round(tol, 1)); assert l2["fin"] == 100
+e._layer_drag(l1["id"], "in", 5); print("인아웃 밖으로:", l1["fin"]); assert l1["fin"] == 20
+e._layer_drag(l1["id"], "move", 150); print("통째 이동 끝 제한:", l1["fin"], l1["fout"]); assert l1["fout"] == 180 and l1["fout"] - l1["fin"] == 80
+e._layer_drag(l1["id"], "move", 21)          # 시작 21 → 소스 인(20)에 붙음
+print("통째 이동 자석(소스 인):", l1["fin"], l1["fout"]); assert l1["fin"] == 20
+e._layer_drag(l1["id"], "move", 40 - 80 + 61)   # 끝 101 → 다른 레이어 시작(100)에 붙음
+print("통째 이동 자석(다른 레이어):", l1["fin"], l1["fout"]); assert l1["fout"] == 100
+src.sel_in, src.sel_out = 40, 120; e._after_io()
+print("IO 줄이면 레이어도:", [(l["fin"], l["fout"]) for l in src.layers]); assert all(40 <= l["fin"] < l["fout"] <= 120 for l in src.layers)
+e._select_layer(l2["id"]); e._key("del"); print("Del 레이어 →", len(src.layers)); assert len(src.layers) == 1
+from PySide6.QtWidgets import QMessageBox
+QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
+e._set_target("img"); e.img_list.setCurrentRow(0); e._key("del"); wait(0.2)
+print("Del 이미지 →", len(st.project.images)); assert not st.project.images
+e._set_target("src"); e._key("del"); wait(0.3)
+print("Del 소스 →", len(st.project.sources)); assert not st.project.sources
+print("UI MAGNET OK")

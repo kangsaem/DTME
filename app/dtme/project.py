@@ -28,13 +28,16 @@ NR_LEGACY = {"off": (0, 0), "weak": (60, 25), "mid": (80, 45), "strong": (100, 7
 
 GRADE_KEYS = ["lut", "r_gain", "b_gain", "hue", "curve", "nr_chroma", "nr_luma", "sharpen", "stab"]
 
+DEFAULT_LUT = "DJI_OSMO_Action_4_D-Log_M_to_Rec.709_V1.cube"   # DJI 공개 LUT, 프로그램에 포함
+DEFAULTS_REV = 2      # 공장 기본값을 바꾸면 올림 → 이전에 저장한 '새 프로젝트 기본값'은 한 번 무시
+
 FACTORY_GRADE = {
-    "lut": "",
+    "lut": DEFAULT_LUT,
     "r_gain": 1.0,
-    "b_gain": 1.0,
-    "hue": 0.0,
+    "b_gain": 1.05,
+    "hue": 5.0,
     "curve": [[0.0, 0.0], [1.0, 1.0]],
-    "nr_chroma": 60,     # 색 노이즈(푸른 물속의 보라·빨강 점) 0~100
+    "nr_chroma": 25,     # 색 노이즈(푸른 물속의 보라·빨강 점) 0~100
     "nr_luma": 25,       # 밝기 노이즈 0~100
     "sharpen": 0.3,      # 밝기에만 적용
     "stab": 0,           # 흔들림 보정 0(끔)~100, 렌더에만 적용
@@ -54,9 +57,13 @@ def load_default_grade() -> dict:
     """사용자가 '새 프로젝트 기본값'으로 저장한 값. 없으면 공장값."""
     p = paths.settings_path()
     g = dict(FACTORY_GRADE)
+    if not (paths.lut_dir() / DEFAULT_LUT).exists():
+        g["lut"] = ""
     if p.exists():
         try:
             s = json.loads(p.read_text(encoding="utf-8"))
+            if int(s.get("defaults_rev", 0)) < DEFAULTS_REV:
+                return g
             g.update({k: v for k, v in upgrade_grade(dict(s.get("default_grade", {}))).items() if k in GRADE_KEYS})
         except Exception:
             pass
@@ -72,6 +79,7 @@ def save_default_grade(grade: dict) -> None:
         except Exception:
             s = {}
     s["default_grade"] = {k: grade[k] for k in GRADE_KEYS}
+    s["defaults_rev"] = DEFAULTS_REV
     p.write_text(json.dumps(s, ensure_ascii=False, indent=2), encoding="utf-8")
 
 

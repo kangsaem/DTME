@@ -173,7 +173,8 @@ class SourceBar(QWidget):
 
 class LayerBar(QWidget):
     """소스 바 위 얇은 스틸 바(이미지 레이어마다 한 줄, 아래 줄 = 먼저 그려지는 레이어).
-    끝 드래그 = 레이어 인/아웃, 클릭 = 선택, 우클릭 = 레이어 삭제. 소스 바와 같은 가로 비율."""
+    끝 드래그 = 레이어 인/아웃, 가운데 드래그 = 통째 이동, 클릭 = 선택, 우클릭 = 레이어 삭제. 소스 바와 같은 가로 비율.
+    dragged(id, "in"|"out"|"move", frame) — move 의 frame = 새 시작 프레임."""
     selected = Signal(str)
     dragStarted = Signal(str)
     dragged = Signal(str, str, int)       # layer id, "in" | "out", frame
@@ -190,6 +191,7 @@ class LayerBar(QWidget):
         self.sel = ""
         self.playhead = 0
         self._edge = None       # (id, which)
+        self._grab_off = 0
         self.setMouseTracking(True)
         self.setFixedHeight(0)
 
@@ -251,16 +253,19 @@ class LayerBar(QWidget):
             self.removeRequested.emit(lid)
             return
         self.selected.emit(lid)
-        if edge:
-            self._edge = (lid, edge)
-            self.dragStarted.emit(lid)
+        self._edge = (lid, edge or "move")
+        self._grab_off = self._frame_at(e.position().x()) - self.rows[i][1]
+        self.dragStarted.emit(lid)
 
     def mouseMoveEvent(self, e):
         if self._edge and (e.buttons() & Qt.LeftButton):
-            self.dragged.emit(self._edge[0], self._edge[1], self._frame_at(e.position().x()))
+            f = self._frame_at(e.position().x())
+            if self._edge[1] == "move":
+                f -= self._grab_off
+            self.dragged.emit(self._edge[0], self._edge[1], f)
             return
         i, edge = self._hit(e.position())
-        self.setCursor(Qt.SizeHorCursor if edge else Qt.ArrowCursor)
+        self.setCursor(Qt.SizeHorCursor if edge else Qt.OpenHandCursor if i >= 0 else Qt.ArrowCursor)
         self.setToolTip(self.rows[i][3] if i >= 0 else "")
 
     def mouseReleaseEvent(self, _):
@@ -293,6 +298,10 @@ class SeqTimeline(QWidget):
         self._resize()
         self.update()
 
+    def fit(self):
+        self._resize()
+        self.update()
+
     def set_zoom(self, pps):
         self.pps = pps
         self._resize()
@@ -303,11 +312,13 @@ class SeqTimeline(QWidget):
 
     def _resize(self):
         w = int(self.total() * self.pps + 80)
+        h = self.height()
         parent = self.parentWidget()
-        if parent is not None:
+        if parent is not None:          # 스크롤 영역(뷰포트)을 항상 가득 채움
             w = max(w, parent.width())
+            h = max(self.minimumHeight(), parent.height())
         self.setMinimumWidth(w)
-        self.resize(w, self.height())
+        self.resize(w, h)
 
     def _rects(self):
         out, x = [], 4.0

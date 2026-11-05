@@ -99,8 +99,36 @@ def item_base(project, segs) -> str:
     return short_name(s.path) if s else "DTME"
 
 
+def ensure_folder(parent, state) -> bool:
+    """저장폴더가 비어 있으면 먼저 물어봄(취소하면 False). 고른 폴더는 다음 프로젝트에서도 처음 위치로."""
+    o = state.project.output
+    if o.folder.strip():
+        return True
+    import json
+    from . import paths
+    sp = paths.settings_path()
+    try:
+        last = json.loads(sp.read_text(encoding="utf-8")).get("last_folder", "") if sp.exists() else ""
+    except Exception:  # noqa: BLE001
+        last = ""
+    start = last or (str(Path(state.project.sources[0].path).parent) if state.project.sources else "")
+    d = QFileDialog.getExistingDirectory(parent, "저장폴더", start)
+    if not d:
+        return False
+    o.folder = d
+    state.dirty = True
+    try:
+        st = json.loads(sp.read_text(encoding="utf-8")) if sp.exists() else {}
+        st["last_folder"] = d
+        sp.write_text(json.dumps(st, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
+    state.changed.emit("output")
+    return True
+
+
 def file_name(project, item) -> str:
-    pre = project.output.prefix.strip()
+    pre = project.output.prefix.strip() or "DTME"
     if pre and not pre.endswith(("_", "-", " ")):
         pre += "_"
     return f"{pre}{item.name}"
@@ -236,6 +264,9 @@ class RenderPanel(QWidget):
     def render(self):
         if self.running:
             return
+        if not ensure_folder(self, self.state):
+            return
+        self.settings._load()
         p = self.state.project
         self.queue = [it for it in p.render_items
                       if not self.status.get(it.id, "").startswith("완료") and all(p.source(g.src) for g in it.segs)]
@@ -291,7 +322,7 @@ class RenderSettings(QWidget):
         f.setContentsMargins(0, 0, 0, 6)
         f.setVerticalSpacing(4)
         self.prefix = QLineEdit()
-        self.prefix.setPlaceholderText("예: 보홀")
+        self.prefix.setPlaceholderText("DTME")
         f.addRow("명칭", self.prefix)
         self.encoder = QComboBox()
         self.encoder.addItem("NVENC (GPU)", "nvenc")
@@ -305,7 +336,7 @@ class RenderSettings(QWidget):
         f.addRow("디코딩", self.gpu)
         frow = QHBoxLayout()
         self.folder = QLineEdit()
-        self.folder.setPlaceholderText("소스 폴더/DTME_출력")
+        self.folder.setPlaceholderText("렌더할 때 물어봄")
         b = QPushButton("선택…")
         fix_size(b)
         b.clicked.connect(self._pick_folder)
@@ -317,7 +348,9 @@ class RenderSettings(QWidget):
         self.bitrate.valueChanged.connect(self._save)
         self.gpu.toggled.connect(self._save)
         self.folder.editingFinished.connect(self._save)
-        state.changed.connect(lambda w: w in ("project", "undo") and self._load())
+        for w in (self.prefix, self.folder):
+            w.returnPressed.connect(w.clearFocus)
+        state.changed.connect(lambda w: w in ("project", "undo", "output") and self._load())
         self._load()
 
     def _load(self):

@@ -42,6 +42,7 @@ jobs:
           Copy-Item (Join-Path $bin.DirectoryName "ffprobe.exe") dist/DTME/bin/
           New-Item -ItemType Directory -Force dist/DTME/luts | Out-Null
           Copy-Item luts/README.txt dist/DTME/luts/
+          Copy-Item luts/*.cube dist/DTME/luts/
           Copy-Item README.md dist/DTME/사용법.md
           & dist/DTME/bin/ffmpeg.exe -hide_banner -version | Select-Object -First 1
 

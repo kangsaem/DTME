@@ -53,12 +53,23 @@ class FFError(Exception):
 
 # ------------------------------------------------------------------ 실행
 def _popen(cmd, **kw):
+    """ffmpeg 이 키 입력(stdin)을 기다리며 멈추는 일 방지(Windows GUI 에서 렌더가 멈추던 원인): -nostdin + 입력 차단."""
+    cmd = list(cmd)
+    if Path(cmd[0]).stem.lower() == "ffmpeg" and "-nostdin" not in cmd:
+        cmd.insert(1, "-nostdin")
+    kw.setdefault("stdin", subprocess.DEVNULL)
     return subprocess.Popen(cmd, creationflags=NO_WINDOW, **kw)
 
 
-def run(cmd: list[str], cwd: str | None = None) -> bytes:
-    p = _popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    out, err = p.communicate()
+def run(cmd: list[str], cwd: str | None = None, data: bytes | None = None) -> bytes:
+    """data 가 있으면 stdin 으로 넘김(미리보기: 디스크 파일 없이)."""
+    if data is not None:
+        cmd = [c for c in cmd]
+        p = _popen(cmd, cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        out, err = p.communicate(data)
+    else:
+        p = _popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        out, err = p.communicate()
     if p.returncode != 0:
         raise FFError(err.decode("utf-8", "replace")[-2000:])
     return out
@@ -401,36 +412,55 @@ def make_proxy(src: Source, lut: str, gpu: bool, on_progress=None, cancel=None) 
     return str(out)
 
 
-# ------------------------------------------------------------------ 미리보기용 프레임 캐시
-def cached_frame(src: Source, frame: int, gpu: bool = False) -> str:
-    """원본에서 해당 프레임을 1280 폭 10bit 무손실(ffv1)로 저장 → 보정 미리보기 입력."""
-    d = paths.cache_dir() / "frames"
-    d.mkdir(exist_ok=True)
-    out = d / f"{src.id}_{frame}.mkv"
-    with _frame_locks.setdefault(out.name, threading.Lock()):   # 같은 프레임 동시 생성 방지
-        if out.exists():
-            return str(out)
-        tmp = d / f"{src.id}_{frame}.{threading.get_ident()}.part.mkv"
-        run([paths.ffmpeg(), "-v", "error", "-y", *_hw(gpu), "-ss", _seek(frame, src.fps), "-i", _abs(src.path),
-             "-frames:v", "1", "-an", "-vf", "scale=1280:-2:flags=lanczos,format=yuv420p10le",
-             "-c:v", "ffv1", str(tmp)])
-        replace_retry(tmp, out)
-    return str(out)
+# ------------------------------------------------------------------ 미리보기용 프레임 캐시 (메모리)
+# 디스크에 임시 파일을 쓰지 않음 → Windows 에서 백신·색인이 파일을 잡아 생기던 '다른 프로세스가 사용 중' 오류 제거.
+# 앞 프레임(PREVIEW_LEAD)을 함께 넣어 시간축 노이즈 제거(hqdn3d)가 미리보기에도 보이게 함.
+PREVIEW_LEAD = 4
+_FRAME_CACHE_MAX = 48
 
 
+class CachedFrame:
+    def __init__(self, data: bytes, lead: int):
+        self.data, self.lead = data, lead
+
+
+_frame_cache: "dict[str, CachedFrame]" = {}
 _frame_locks: dict[str, threading.Lock] = {}
+_cache_lock = threading.Lock()
 
 
-def render_preview(cached: str, g: dict | None) -> bytes:
-    """보정 적용 결과를 PNG 바이트로. g=None 이면 보정 전(원본 Log)."""
+def cached_frame(src: Source, frame: int, gpu: bool = False) -> CachedFrame:
+    """원본의 (앞 프레임 + 해당 프레임)을 1280 폭 10bit 무손실(ffv1, nut)로 메모리에 보관."""
+    key = f"{os.path.abspath(src.path)}|{frame}"
+    with _cache_lock:
+        lk = _frame_locks.setdefault(key, threading.Lock())
+    with lk:                                   # 같은 프레임 동시 생성 방지
+        c = _frame_cache.get(key)
+        if c is not None:
+            return c
+        lead = min(PREVIEW_LEAD, frame)
+        data = run([paths.ffmpeg(), "-v", "error", *_hw(gpu), "-ss", _seek(frame - lead, src.fps), "-i", _abs(src.path),
+                    "-frames:v", str(lead + 1), "-an", "-vf", "scale=1280:-2:flags=lanczos,format=yuv420p10le",
+                    "-c:v", "ffv1", "-f", "nut", "-"])
+        c = CachedFrame(data, lead)
+        with _cache_lock:
+            _frame_cache[key] = c
+            while len(_frame_cache) > _FRAME_CACHE_MAX:
+                _frame_cache.pop(next(iter(_frame_cache)))
+        return c
+
+
+def render_preview(cached: CachedFrame, g: dict | None) -> bytes:
+    """보정 적용 결과(마지막 프레임)를 PNG 바이트로. g=None 이면 보정 전(원본 Log)."""
     cwd, lut = (None, None)
     if g is None:
-        vf = ["format=rgb24"]
+        vf = []
     else:
         cwd, lut = _lut_for(g)
-        vf = grade_chain(g, lut) + ["format=rgb24"]
-    return run([paths.ffmpeg(), "-v", "error", "-i", _abs(cached), "-frames:v", "1",
-                "-vf", ",".join(vf), "-f", "image2pipe", "-c:v", "png", "-"], cwd=cwd)
+        vf = grade_chain(g, lut)
+    vf += [f"select=gte(n\\,{cached.lead})", "format=rgb24"]
+    return run([paths.ffmpeg(), "-v", "error", "-f", "nut", "-i", "-", "-frames:v", "1",
+                "-vf", ",".join(vf), "-f", "image2pipe", "-c:v", "png", "-"], cwd=cwd, data=cached.data)
 
 
 # ------------------------------------------------------------------ 선명도

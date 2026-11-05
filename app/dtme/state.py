@@ -25,11 +25,18 @@ class AppState(QObject):
         self.errors: dict[str, str] = {}      # sid → 마지막 오류 내용
         self._proxy_jobs: dict[str, jobs.Job] = {}
         self._undo: list[dict] = []
+        self._ck_tag, self._ck_t = "", 0.0
         self.dirty = False
 
     # ------------------------------------------------------------ 실행취소
-    def checkpoint(self):
-        """변경 직전에 호출 → 실행취소 지점."""
+    def checkpoint(self, tag: str = ""):
+        """변경 직전에 호출 → 실행취소 지점. tag 가 같고 1초 안에 다시 오면(슬라이더를 연속으로 움직임) 1번으로 합침."""
+        import time
+        now = time.monotonic()
+        if tag and tag == self._ck_tag and now - self._ck_t < 1.0:
+            self._ck_t = now
+            return
+        self._ck_tag, self._ck_t = tag, now
         self._undo.append(copy.deepcopy(self.project.to_dict()))
         del self._undo[:-80]
 
@@ -159,9 +166,27 @@ class AppState(QObject):
         self.checkpoint()
         for m in new:
             self.project.images.append(m)
-            self._queue_image(m)
+            if not self._read_image_now(m):     # 보통 즉시 끝남(헤더만 읽음). 실패할 때만 ffprobe 로
+                self._queue_image(m)
         self.touch("images")
         return len(new)
+
+    def _read_image_now(self, m: ImageSource) -> bool:
+        """Qt 로 크기만 즉시 읽기(영상 분석·프록시 대기열과 무관). EXIF 방향은 직접 읽음."""
+        try:
+            from PySide6.QtGui import QImageReader
+            r = QImageReader(m.path)
+            sz = r.size()
+            if not sz.isValid() or sz.width() <= 0:
+                return False
+            o = ff.exif_orientation(m.path)
+            w, h = sz.width(), sz.height()
+            m.width, m.height, m.orient = (h, w, o) if o >= 5 else (w, h, o)
+            self.img_status[m.id] = ""
+            return True
+        except Exception as e:  # noqa: BLE001
+            ff.log_error(f"이미지 {m.path}", str(e))
+            return False
 
     def _queue_image(self, m: ImageSource):
         job = jobs.Job(lambda: ff.probe_image(m.path))

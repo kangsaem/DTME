@@ -139,7 +139,7 @@ class EditTab(QWidget):
         self.src_list.currentItemChanged.connect(self._on_src_selected)
         self.src_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.src_list.customContextMenuRequested.connect(lambda _pos: self.add_files())
-        self.src_list.itemPressed.connect(lambda _it: setattr(self, "_last_list", "src"))
+        self.src_list.itemPressed.connect(lambda _it: self._set_target("src"))
         # 스틸 소스(이미지) — 영상 목록 아래, 클릭 = 현재 영상에 레이어로 얹음
         self.img_list = QListWidget()
         self.img_list.setFocusPolicy(Qt.NoFocus)
@@ -290,6 +290,7 @@ class EditTab(QWidget):
         self.tl_scroll.setFixedHeight(118)
         self.tl_scroll.setFrameShape(QFrame.NoFrame)
         self.tl_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.tl_scroll.viewport().installEventFilter(self)     # 크기 바뀌면 타임라인 폭 맞춤
 
         center = QVBoxLayout()
         center.setContentsMargins(0, 0, 0, 0)
@@ -335,10 +336,20 @@ class EditTab(QWidget):
 
     # ================================================================ 키 입력
     def eventFilter(self, obj, e):
+        if e.type() == QEvent.Resize and obj is self.tl_scroll.viewport():
+            self.timeline.fit()
+            return False
         if e.type() != QEvent.KeyPress or not self.isVisible() or not self.window().isActiveWindow():
             return False
         fw = QApplication.focusWidget()
-        if isinstance(fw, TEXT_INPUTS) or QApplication.activeModalWidget() is not None:
+        if QApplication.activeModalWidget() is not None:
+            return False
+        if isinstance(fw, TEXT_INPUTS):
+            # 입력란에 커서가 있어도 Ctrl+Z / Ctrl+S 는 앱 기능(실행취소·저장)
+            if e.modifiers() & Qt.ControlModifier and e.key() in (Qt.Key_Z, Qt.Key_S):
+                fw.clearFocus()
+                (self.window().undo if e.key() == Qt.Key_Z else self.window().save_project)()
+                return True
             return False
         name = None
         if os.name == "nt" and e.nativeScanCode():
@@ -368,9 +379,13 @@ class EditTab(QWidget):
 
     def _key(self, name, shift=False):
         p = self.player
-        if name == "del":
-            if self._del_target == "layer" and self.sel_layer:
+        if name == "del":                  # 마지막으로 누른 대상: 레이어 / 스틸 소스 / 영상 소스 / 타임라인 컷
+            t = self._del_target
+            if t == "layer" and self.sel_layer:
                 self.remove_layer(self.sel_layer)
+            elif t in ("src", "img"):
+                self._last_list = t
+                self._remove_selected()
             else:
                 self.delete_cut()
             return
@@ -621,6 +636,7 @@ class EditTab(QWidget):
             s.sel_in = max(0, min(f, b - 2))
         else:
             s.sel_out = max(a + 2, min(s.frames, f))
+        self._clamp_layers(s)
         self._refresh_sbar()          # 프리뷰 위치는 그대로(재생 위치·재생 버튼으로만 이동)
 
     def clear_io(self):
@@ -631,6 +647,7 @@ class EditTab(QWidget):
 
     def _after_io(self):
         s = self._cur()
+        self._clamp_layers(s)
         a, b = s.io
         sec = float((b - a) / s.fps / s.speed)
         self.state.dirty = True
@@ -739,6 +756,9 @@ class EditTab(QWidget):
 
     # ================================================================ 스틸 (바로 PNG)
     def export_still(self):
+        from .ui_render import ensure_folder
+        if not ensure_folder(self, self.state):
+            return
         s = self._cur()
         frame = self.player.frame
         g = self.state.project.grade_for_source(s.id)
@@ -829,8 +849,12 @@ class EditTab(QWidget):
         self._img_cache[iid] = img
         return img
 
+    def _set_target(self, t):
+        self._last_list = t if t in ("src", "img") else self._last_list
+        self._del_target = t
+
     def _on_img_clicked(self, it):
-        self._last_list = "img"
+        self._set_target("img")
         self.add_layer(it.data(Qt.UserRole))
 
     def add_layer(self, iid):
@@ -852,8 +876,7 @@ class EditTab(QWidget):
         s.layers.append(lay)
         self.state.dirty = True
         self.sel_layer = lay["id"]
-        self._del_target = "layer"
-        self._refresh_layers()
+        self._refresh_layers()      # Del 대상은 스틸 소스(방금 클릭) 그대로, 레이어를 누르면 레이어
 
     def remove_layer(self, lid):
         s = self._cur()
@@ -878,16 +901,41 @@ class EditTab(QWidget):
             self._select_layer(lid)
         self._del_target = "layer"
 
+    SNAP_PX = 8
+
     def _layer_drag(self, lid, which, f):
+        """자석: 소스 인/아웃·다른 레이어 끝·재생 위치에 SNAP_PX 안이면 붙음. 소스 인/아웃 밖으로는 못 나감."""
         s = self._cur()
         lay = next((l for l in s.layers if l["id"] == lid), None) if s else None
         if lay is None:
             return
+        a, b = s.io
+        tol = self.SNAP_PX * s.frames / max(1, self.lbar.width())
+        targets = [a, b, self.player.frame] + [x for l in s.layers if l is not lay for x in (l["fin"], l["fout"])]
+
+        def snap(v):
+            t = min(targets, key=lambda t: abs(t - v))
+            return t if abs(t - v) <= tol else v
         if which == "in":
-            lay["fin"] = max(0, min(f, lay["fout"] - 1))
-        else:
-            lay["fout"] = max(lay["fin"] + 1, min(s.frames, f))
+            lay["fin"] = max(a, min(snap(f), lay["fout"] - 1))
+        elif which == "out":
+            lay["fout"] = min(b, max(snap(f), lay["fin"] + 1))
+        else:                          # 통째 이동: 시작 또는 끝 중 더 가까운 쪽이 붙음
+            ln = lay["fout"] - lay["fin"]
+            s1, s2 = snap(f), snap(f + ln) - ln
+            d1 = abs(s1 - f) if s1 != f else float("inf")
+            d2 = abs(s2 - f) if s2 != f else float("inf")
+            nf = s1 if d1 <= d2 and d1 < float("inf") else s2 if d2 < float("inf") else f
+            nf = max(a, min(int(round(nf)), b - ln))
+            lay["fin"], lay["fout"] = nf, nf + ln
         self._refresh_layers()         # 프리뷰 위치는 그대로
+
+    def _clamp_layers(self, s):
+        """소스 인/아웃이 바뀌면 레이어를 그 안으로. 완전히 밖이면 인/아웃 전체로."""
+        a, b = s.io
+        for l in s.layers:
+            fi, fo = max(a, l["fin"]), min(b, l["fout"])
+            l["fin"], l["fout"] = (fi, fo) if fo > fi else (a, b)
 
     def _refresh_layers(self):
         s = self._cur()
