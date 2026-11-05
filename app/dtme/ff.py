@@ -13,8 +13,8 @@ from pathlib import Path
 from typing import Callable
 
 from . import paths
-from .project import (OUT_FPS, ImageSource, Marker, Project, Segment, Source, layer_box, plan_transitions,
-                      reframe_max)
+from .project import (KEYABLE, OUT_FPS, ImageSource, Marker, Project, Segment, Source, grade_at, layer_box,
+                      plan_transitions, reframe_max)
 
 NO_WINDOW = 0x08000000 if os.name == "nt" else 0   # Windows 콘솔창 숨김
 
@@ -255,8 +255,11 @@ def curve_is_identity(curve) -> bool:
     return all(abs(x - y) < 1e-4 for x, y in curve)
 
 
-def grade_chain(g: dict, lut_file: str | None, width: int = 1920) -> list[str]:
-    """(YUV) 노이즈 → 밝기 샤픈·디헤이즈 → (RGB 16bit) LUT → R/B 게인 → 커브 → Hue → 채도"""
+def grade_chain(g: dict, lut_file: str | None, width: int = 1920, named: bool = False) -> list[str]:
+    """(YUV) 노이즈 → 밝기 샤픈·디헤이즈 → (RGB 16bit) LUT → R/B 게인 → 커브 → Hue → 채도
+    named = 색 키프레임용: 게인·Hue·채도 필터를 항상 넣고 이름(@g)을 붙임 → sendcmd 로 프레임마다 값 변경."""
+    if named:
+        return _grade_named(g, lut_file, width)
     f = denoise_chain(g) + sharpen_chain(g, width)
     f.append("format=gbrp16le")
     if lut_file:
@@ -275,6 +278,38 @@ def grade_chain(g: dict, lut_file: str | None, width: int = 1920) -> list[str]:
     if abs(sat - 1) > 1e-3:
         f.append(f"vibrance=intensity={max(-2.0, min(2.0, sat - 1)):.3f}")
     return f
+
+
+def _grade_named(g, lut_file, width):
+    f = denoise_chain(g) + sharpen_chain(g, width) + ["format=gbrp16le"]
+    if lut_file:
+        f.append(f"lut3d=file={lut_file}:interp=tetrahedral")
+    f.append(f"colorchannelmixer@g=rr={float(g.get('r_gain', 1)):.4f}:bb={float(g.get('b_gain', 1)):.4f}")
+    curve = sorted(g.get("curve") or [[0, 0], [1, 1]])
+    if not curve_is_identity(curve):
+        f.append(f"curves=m='{' '.join(f'{x:.4f}/{y:.4f}' for x, y in curve)}'")
+    f.append(f"huesaturation@g=hue={float(g.get('hue', 0)):.2f}")
+    f.append(f"vibrance@g=intensity={max(-2.0, min(2.0, float(g.get('sat', 1)) - 1)):.3f}")
+    return f
+
+
+def has_gkeys(seg) -> bool:
+    return any(seg.gkeys.get(k) for k in KEYABLE) if getattr(seg, "gkeys", None) else False
+
+
+def gkey_cmds(g: dict, seg: Segment, src: Source, n_out: int, frames_per_sec: float) -> str:
+    """sendcmd 명령: 출력 프레임마다 색 키프레임 보간값(바뀔 때만)."""
+    lines, last = [], None
+    for n in range(n_out):
+        t = n / float(OUT_FPS)
+        v = grade_at(g, seg.gkeys, seg.fin + t * frames_per_sec)
+        cur = (round(v["r_gain"], 4), round(v["b_gain"], 4), round(v["hue"], 2), round(max(-2, min(2, v["sat"] - 1)), 3))
+        if cur == last:
+            continue
+        last = cur
+        lines.append(f"{max(0.0, t - 0.25 / float(OUT_FPS)):.6f} [enter] colorchannelmixer@g rr {cur[0]}, "
+                     f"colorchannelmixer@g bb {cur[1]}, huesaturation@g hue {cur[2]}, vibrance@g intensity {cur[3]};")
+    return "\n".join(lines) + "\n"
 
 
 def out_size(orientation: str) -> tuple[int, int]:
@@ -629,12 +664,12 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orien
         total += out_sec
         cmd += [*_hw(o.gpu_decode), "-ss", _seek(seg.fin, src.fps), "-t", f"{seg_src_sec + 0.5:.6f}", "-i", _abs(src.path)]
         v = [f"trim=end_frame={seg.frames}", "setpts=PTS-STARTPTS"]
-        lens = lens_chain(g)
+        lensf = lens_chain(g)
         sp = None if fast else stab_params(g)       # 미리보기 렌더는 흔들림 보정 생략(분석이 느림)
         if sp:
             ow, oh = out_size(orientation)
-            trf = stab_file(src, seg, orientation, sp[0], lens)
-            pre, post, _k = stab_band(src, seg, orientation, lens)
+            trf = stab_file(src, seg, orientation, sp[0], lensf)
+            pre, post, _k = stab_band(src, seg, orientation, lensf)
             v += [*pre, f"vidstabtransform=input={trf.name}:smoothing={sp[1]}:optzoom=1:interpol=bicubic",
                   *([post] if post else []), f"scale={ow}:{oh}:flags=lanczos"]
             cwd = str(trf.parent)
@@ -642,7 +677,7 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orien
             v.append(f"setpts=PTS/{seg.speed}")
         v.append(f"fps={OUT_FPS.numerator}/{OUT_FPS.denominator}")
         if not sp:
-            v += lens
+            v += lensf
             keys = seg_reframe(src, seg, orientation)
             if keys:      # 움직이는 세로 크롭(배속·fps 뒤라 t = 출력 시간)
                 cw, ch = crop_size(src.width, src.height, orientation)
@@ -652,7 +687,17 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orien
                       f"scale={ow}:{oh}:flags=lanczos"]
             else:
                 v += frame_chain(orientation)
-        v += grade_chain(g, lut, min(out_size(orientation)) * 16 // 9)
+        if has_gkeys(seg):          # 색 키프레임: 프레임마다 값 변경(sendcmd, 파일은 LUT 와 같은 작업 폴더)
+            n_out = int(round(seg_src_sec / seg.speed * float(OUT_FPS))) + 2
+            cmdtxt = gkey_cmds(g, seg, src, n_out, float(src.fps) * seg.speed)
+            cfile = paths.cache_dir() / "lut" / f"gk_{hashlib.sha1(cmdtxt.encode()).hexdigest()[:12]}.txt"
+            cfile.parent.mkdir(parents=True, exist_ok=True)
+            cfile.write_text(cmdtxt, encoding="utf-8")
+            cwd = cwd or str(cfile.parent)
+            v.append(f"sendcmd=f={cfile.name}")
+            v += grade_chain(g, lut, min(out_size(orientation)) * 16 // 9, named=True)
+        else:
+            v += grade_chain(g, lut, min(out_size(orientation)) * 16 // 9)
         lays = seg_layers(project, seg)
         if not lays:
             v += [TO_YUV709, "setsar=1"]

@@ -60,6 +60,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
           python tests/test_reframe.py test4k.mp4 reframe_test
           if ($LASTEXITCODE -ne 0) { exit 1 }
+          python tests/test_gkeys.py test4k.mp4 gkeys_test
+          if ($LASTEXITCODE -ne 0) { exit 1 }
 
       - name: Smoke test (exe 실행)
         shell: pwsh

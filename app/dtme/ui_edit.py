@@ -26,10 +26,10 @@ MEDIA_FILTER = "영상·이미지 (*.mp4 *.MP4 *.mov *.MOV *.jpg *.JPG *.jpeg *.
 IMG_DISPLAY_MAX = 2048      # 모니터 표시용 이미지 최대 변(렌더는 원본 사용)
 
 # Windows 물리 키(스캔코드) — 한/영 상태와 무관하게 동작
-SCAN = {0x11: "w", 0x39: "space", 0x24: "j", 0x26: "l", 0x17: "i", 0x18: "o", 0x1A: "i", 0x1B: "o", 0x1F: "s", 0x22: "g",
+SCAN = {0x11: "w", 0x32: "m", 0x39: "space", 0x24: "j", 0x26: "l", 0x17: "i", 0x18: "o", 0x1A: "i", 0x1B: "o", 0x1F: "s", 0x22: "g",
         0x30: "b", 0x02: "1", 0x03: "2", 0x04: "3", 0x53: "del", 0x0E: "del", 0x01: "esc",
         0x4B: "left", 0x4D: "right", 0x50: "down", 0x1C: "enter", 0x2C: "z"}
-QKEY = {Qt.Key_W: "w", Qt.Key_Space: "space", Qt.Key_J: "j", Qt.Key_L: "l", Qt.Key_I: "i", Qt.Key_O: "o",
+QKEY = {Qt.Key_W: "w", Qt.Key_M: "m", Qt.Key_Space: "space", Qt.Key_J: "j", Qt.Key_L: "l", Qt.Key_I: "i", Qt.Key_O: "o",
         Qt.Key_BracketLeft: "i", Qt.Key_BracketRight: "o", Qt.Key_S: "s", Qt.Key_G: "g", Qt.Key_B: "b",
         Qt.Key_1: "1", Qt.Key_2: "2", Qt.Key_3: "3", Qt.Key_Delete: "del", Qt.Key_Backspace: "del",
         Qt.Key_Escape: "esc", Qt.Key_Left: "left", Qt.Key_Right: "right", Qt.Key_Down: "down",
@@ -246,6 +246,7 @@ class EditTab(QWidget):
         cut.addSpacing(12)
         cut.addWidget(_btn("스틸", "S", lambda: self._key("s")))
         cut.addWidget(_btn("샘플", "G", lambda: self._key("g")))
+        cut.addWidget(_btn("★", "장면 표시 (M) · 다시 누르면 지움", lambda: self._key("m")))
         cut.addSpacing(12)
         cut.addWidget(render_list_button(lambda: self._key("enter"), "렌더리스트로 (Enter)"))
         cut.addStretch(1)
@@ -312,6 +313,8 @@ class EditTab(QWidget):
         self.grade.whitePickToggled.connect(self._white_mode)
         self.grade.sampleClicked.connect(self._show_sample)
         self.grade.targets_fn = self._selected_sids
+        self.grade.keysChanged.connect(self._refresh_marks)
+        self.sbar.gkeyDeleteRequested.connect(self._delete_gkeys)
         self.player.mon.whitePicked.connect(self._white_picked)
         self.render_panel = RenderPanel(state)
 
@@ -449,6 +452,8 @@ class EditTab(QWidget):
             self.grade.set_view("grade" if self.grade.view_mode() == "raw" else "raw")
         elif name == "w":
             self.grade.b_white.toggle()
+        elif name == "m":
+            self.toggle_star()
         elif name == "down":
             self.send_to_timeline()
         elif name == "enter":
@@ -581,6 +586,7 @@ class EditTab(QWidget):
             self.tc.setText(timecode(f, s.fps))
         self.sbar.set_playhead(f)
         self.lbar.set_playhead(f)
+        self.grade.set_frame(f)
         if self.player.overlay_frame != f:
             self.player.mon.set_before(None)
         self._update_monitor_layers()
@@ -613,7 +619,7 @@ class EditTab(QWidget):
         self.pgen += 1
         gen, frame, tok = self.pgen, p.frame, p._token
         mode = self.grade.view_mode()
-        full = self.state.project.grade_for_source(s.id)
+        full = self.state.project.grade_for_source(s.id, frame)
         grade = None if mode == "raw" else full
 
         def work():
@@ -647,7 +653,7 @@ class EditTab(QWidget):
         if not s or not s.frames:
             return
         self.grade.b_white.setChecked(False)
-        g = dict(self.state.project.grade_for_source(s.id))
+        g = dict(self.state.project.grade_for_source(s.id, self.player.frame))
         g.update(r_gain=1.0, b_gain=1.0, curve=[[0, 0], [1, 1]], hue=0, sat=1.0, dehaze=0, sharpen=0)
         frame = self.player.frame
 
@@ -670,6 +676,44 @@ class EditTab(QWidget):
         job.signals.done.connect(done)
         job.signals.error.connect(lambda m: self._say(f"흰색 찍기 실패: {m[-120:]}", C_WARN))
         jobs.submit(jobs.PREVIEW_POOL, job, priority=9)
+
+    # ================================================================ ★ · 색 키프레임 표시
+    def toggle_star(self):
+        s = self._cur()
+        if not s:
+            return
+        f = self.player.frame
+        near = [x for x in s.stars if abs(x - f) <= 2]
+        self.state.checkpoint()
+        if near:
+            s.stars = [x for x in s.stars if x not in near]
+        else:
+            s.stars = sorted(s.stars + [f])
+        self.state.dirty = True
+        self._refresh_marks()
+
+    def _delete_gkeys(self, f):
+        s = self._cur()
+        if not s:
+            return
+        self.state.checkpoint()
+        for k in list(s.gkeys):
+            s.gkeys[k] = [x for x in s.gkeys[k] if x["f"] != f]
+            if not s.gkeys[k]:
+                s.gkeys.pop(k)
+        self.state.dirty = True
+        self.grade.set_frame(self.player.frame)
+        self.grade._load_controls()
+        self._refresh_marks()
+        self.request_preview()
+
+    def _refresh_marks(self):
+        s = self._cur()
+        if not s:
+            self.sbar.set_marks([], [])
+            return
+        fs = sorted({k["f"] for ks in s.gkeys.values() for k in ks})
+        self.sbar.set_marks(fs, list(s.stars))
 
     def _selected_sids(self):
         return [it.data(Qt.UserRole) for it in self.src_list.selectedItems()]
@@ -770,7 +814,7 @@ class EditTab(QWidget):
         lays = [copy.deepcopy(l) for l in s.layers if l["fout"] > a and l["fin"] < b]
         for l in lays:
             l["id"] = new_layer("", 0, 0)["id"]
-        return Segment(s.id, a, b, s.speed, layers=lays, reframe=copy.deepcopy(s.reframe))
+        return Segment(s.id, a, b, s.speed, layers=lays, reframe=copy.deepcopy(s.reframe), gkeys=copy.deepcopy(s.gkeys))
 
     def send_to_timeline(self):
         seg = self._cur_segment()
@@ -896,7 +940,7 @@ class EditTab(QWidget):
 
     def _tag(self, sid):
         s = self.state.project.source(sid)
-        return "C" if s and s.grade else "E"
+        return "C" if s and (s.grade or s.gkeys) else "E"
 
     def _refresh_sbar(self):
         s = self._cur()
@@ -907,6 +951,7 @@ class EditTab(QWidget):
             return
         self.sbar.set_data(s.frames, s.io, s.io_trimmed, s.speed, self._tag(s.id),
                            [m.frame for m in p.stills if m.src == s.id], [m.frame for m in p.samples if m.src == s.id])
+        self._refresh_marks()
         self._refresh_layers()
 
     # ================================================================ 스틸 소스·이미지 레이어

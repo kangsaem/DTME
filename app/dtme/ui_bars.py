@@ -38,6 +38,7 @@ class SourceBar(QWidget):
     ioDragged = Signal(str, int)      # "in" | "out", frame
     ioDragFinished = Signal()
     keyDeleteRequested = Signal(int)   # 세로 크롭 키프레임 우클릭
+    gkeyDeleteRequested = Signal(int)  # 색 키프레임 우클릭(그 프레임의 색 키 모두)
 
     GRAB = 7   # 끝 잡는 범위(px)
 
@@ -53,6 +54,8 @@ class SourceBar(QWidget):
         self.stills: list[int] = []
         self.samples: list[int] = []
         self.keys: list[int] = []      # 세로 크롭 키프레임(세로 출력일 때만 표시)
+        self.gkeys: list[int] = []     # 색 키프레임(노란 ◆)
+        self.stars: list[int] = []     # ★ 장면 표시
         self._drag = False
         self._edge = ""
         self.setMouseTracking(True)
@@ -70,8 +73,18 @@ class SourceBar(QWidget):
         self.keys = keys
         self.update()
 
+    def set_marks(self, gkeys, stars):
+        self.gkeys, self.stars = gkeys, stars
+        self.update()
+
     def _key_at(self, x):
         for f in self.keys:
+            if abs(self._x(f) - x) <= 6:
+                return f
+        return None
+
+    def _gkey_at(self, x):
+        for f in self.gkeys:
             if abs(self._x(f) - x) <= 6:
                 return f
         return None
@@ -110,6 +123,18 @@ class SourceBar(QWidget):
         for fr in self.samples:
             p.setBrush(QColor("#e8e8e8"))
             p.drawEllipse(QPointF(self._x(fr), h - 4), 2.5, 2.5)
+        for fr in self.gkeys:         # ◆ 색 키프레임(노랑)
+            x = self._x(fr)
+            p.setPen(QPen(QColor("#111"), 1))
+            p.setBrush(QColor("#f2c94c"))
+            p.drawPolygon(QPolygonF([QPointF(x, 1), QPointF(x + 5, 6), QPointF(x, 11), QPointF(x - 5, 6)]))
+        f2 = QFont(self.font())
+        f2.setPointSizeF(9)
+        p.setFont(f2)
+        for fr in self.stars:         # ★
+            x = self._x(fr)
+            p.setPen(QColor("#ffd84a"))
+            p.drawText(QRectF(x - 7, h - 15, 14, 14), Qt.AlignCenter, "★")
         for fr in self.keys:          # ◇ 세로 크롭 키프레임
             x = self._x(fr)
             p.setPen(QPen(QColor("#111"), 1))
@@ -138,10 +163,15 @@ class SourceBar(QWidget):
     def mousePressEvent(self, e):
         x = e.position().x()
         k = self._key_at(x) if e.position().y() <= 14 else None
+        gk = self._gkey_at(x) if e.position().y() <= 14 else None
         if e.button() == Qt.RightButton:
             if k is not None:
                 self.keyDeleteRequested.emit(k)
+            elif gk is not None:
+                self.gkeyDeleteRequested.emit(gk)
             return
+        if k is None and gk is not None:
+            k = gk
         if k is not None:            # ◇ 클릭 = 그 키프레임 위치로
             self._drag, self._edge = False, ""
             self.seekRequested.emit(k)

@@ -171,6 +171,8 @@ class Source:
     speed: float = 1.0       # 소스 모니터에서 지정한 배속
     layers: list = field(default_factory=list)  # 이미지 레이어(new_layer 형식 dict, 아래가 먼저 그려짐)
     reframe: list = field(default_factory=list)  # 세로 크롭 키프레임 [{"f": 프레임, "dx": 원본 px}] (프레임 순)
+    gkeys: dict = field(default_factory=dict)    # 색 키프레임 {"r_gain": [{"f", "v"}], …} (KEYABLE 만)
+    stars: list = field(default_factory=list)    # ★ 장면 표시(프레임)
     id: str = field(default_factory=_id)
 
     @property
@@ -203,6 +205,7 @@ class Segment:
     layers: list = field(default_factory=list)  # 보낼 때 소스 레이어의 사본
     trans: dict = field(default_factory=dict)   # 이 컷 '앞 경계'의 화면 전환 {"type", "dur"}
     reframe: list = field(default_factory=list)  # 보낼 때 소스 세로 크롭 키프레임의 사본
+    gkeys: dict = field(default_factory=dict)    # 보낼 때 소스 색 키프레임의 사본
 
     @property
     def frames(self) -> int:
@@ -210,7 +213,7 @@ class Segment:
 
     def copy(self) -> "Segment":
         return Segment(self.src, self.fin, self.fout, self.speed, layers=copy.deepcopy(self.layers),
-                       trans=dict(self.trans), reframe=copy.deepcopy(self.reframe))
+                       trans=dict(self.trans), reframe=copy.deepcopy(self.reframe), gkeys=copy.deepcopy(self.gkeys))
 
 
 # 세로 크롭 위치 이동(리프레이밍). 4K 기준 ±540px(그 이상은 액션캠 가장자리 왜곡)
@@ -225,6 +228,33 @@ def ease(u: float) -> float:
     """키프레임 사이 곡선 이동(smoothstep). ffmpeg 식(ff.reframe_expr)과 같은 함수."""
     u = max(0.0, min(1.0, u))
     return u * u * (3 - 2 * u)
+
+
+KEYABLE = ["r_gain", "b_gain", "hue", "sat"]     # 시간에 따라 바뀌는 보정(◆)
+
+
+def key_at(keys: list, f: float, field_: str = "v") -> float | None:
+    """키프레임 사이 smoothstep. 첫 키 전·마지막 키 뒤는 그 값."""
+    if not keys:
+        return None
+    if f <= keys[0]["f"]:
+        return float(keys[0][field_])
+    for a, b in zip(keys, keys[1:]):
+        if f < b["f"]:
+            return a[field_] + (b[field_] - a[field_]) * ease((f - a["f"]) / max(1, b["f"] - a["f"]))
+    return float(keys[-1][field_])
+
+
+def grade_at(g: dict, gkeys: dict, f: float) -> dict:
+    """프레임 f 의 보정값(색 키프레임 반영)."""
+    if not gkeys:
+        return g
+    g = dict(g)
+    for k in KEYABLE:
+        v = key_at(gkeys.get(k) or [], f)
+        if v is not None:
+            g[k] = v
+    return g
 
 
 def reframe_at(keys: list, f: float) -> float:
@@ -349,11 +379,14 @@ class Project:
         return [g for g in self.segments if g.src == sid]
 
     # ---- 보정값 병합: 기본값 → 클립 → (스틸) ----
-    def grade_for_source(self, sid: str) -> dict:
+    def grade_for_source(self, sid: str, frame: float | None = None) -> dict:
+        """기본값 → 클립. frame 을 주면 색 키프레임까지 반영."""
         g = dict(self.grade)
         s = self.source(sid)
         if s:
             g.update(s.grade)
+            if frame is not None and s.gkeys:
+                g = grade_at(g, s.gkeys, frame)
         return g
 
     def grade_for_still(self, still: Marker) -> dict:

@@ -10,11 +10,11 @@ from PySide6.QtCore import QEvent, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QPixmap
 from PySide6.QtWidgets import (QButtonGroup, QComboBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QInputDialog,
                                QLabel, QLineEdit, QListWidget, QListWidgetItem, QMenu, QMessageBox, QPushButton,
-                               QScrollArea, QSizePolicy, QSlider, QToolButton, QVBoxLayout, QWidget)
+                               QScrollArea, QSizePolicy, QSlider, QVBoxLayout, QWidget)
 
 from . import ff, jobs, paths
-from .project import (OUTPUTS, delete_preset, get_setting, list_presets, load_preset, rename_preset,
-                      save_default_grade, save_preset, set_setting, timecode)
+from .project import (KEYABLE, OUTPUTS, delete_preset, get_setting, grade_at, list_presets, load_preset,
+                      rename_preset, save_default_grade, save_preset, set_setting, timecode)
 from .state import AppState
 from .ui_curve import CurveEditor
 from .ui_render import fix_size
@@ -147,10 +147,13 @@ class GradePanel(QWidget):
     scopeToggled = Signal(bool)
     whitePickToggled = Signal(bool)
     sampleClicked = Signal(str, int, QPixmap)   # 모니터에 그대로 띄움(이동·재렌더 없음)
+    keysChanged = Signal()                      # 색 키프레임 추가·삭제·이동
 
     def __init__(self, state: AppState, parent=None):
         super().__init__(parent)
         self.state = state
+        self.frame = 0
+        self.kbtn: dict[str, QPushButton] = {}
         self.target = BASE
         self.cur_sid = ""
         self.gen = 0
@@ -357,13 +360,71 @@ class GradePanel(QWidget):
         row.addWidget(lab)
         row.addWidget(s, 1)
         row.addWidget(val)
+        if key in KEYABLE:
+            kb = QPushButton("◆")
+            kb.setFixedSize(22, 20)
+            kb.setFocusPolicy(Qt.NoFocus)
+            kb.setToolTip("이 프레임에 키프레임 (다시 누르면 삭제)")
+            kb.clicked.connect(lambda _=False, k=key: self._toggle_key(k))
+            self.kbtn[key] = kb
+            row.addWidget(kb)
         return row
+
+    # ------------------------------------------------------------ 색 키프레임 ◆
+    def _src(self):
+        return self.state.project.source(self.cur_sid) if self.target[0] == "src" else None
+
+    def set_frame(self, f):
+        self.frame = f
+        s = self._src()
+        if s and s.gkeys:
+            self._load_controls()
+
+    def _toggle_key(self, key):
+        s = self._src()
+        if not s:
+            return
+        self.state.checkpoint()
+        ks = s.gkeys.setdefault(key, [])
+        hit = next((k for k in ks if k["f"] == self.frame), None)
+        if hit:
+            ks.remove(hit)
+        else:
+            ks.append({"f": self.frame, "v": float(self._shown()[key])})
+            ks.sort(key=lambda k: k["f"])
+        if not ks:
+            s.gkeys.pop(key, None)
+        self.state.dirty = True
+        self._load_controls()
+        self.keysChanged.emit()
+        self._emit_change()
+
+    def _shown(self) -> dict:
+        """지금 프레임에 보이는 값(키프레임 보간 포함)."""
+        s = self._src()
+        e = self._effective()
+        return grade_at(e, s.gkeys, self.frame) if s and s.gkeys else e
+
+    def _write(self, key, value):
+        """키프레임이 있는 항목이면 현재 프레임 키를 만들거나 고침, 아니면 클립 값."""
+        s = self._src()
+        if s and key in KEYABLE and s.gkeys.get(key):
+            ks = s.gkeys[key]
+            hit = next((k for k in ks if k["f"] == self.frame), None)
+            if hit:
+                hit["v"] = float(value)
+            else:
+                ks.append({"f": self.frame, "v": float(value)})
+                ks.sort(key=lambda k: k["f"])
+                self.keysChanged.emit()
+        else:
+            self._target_dict()[key] = value
 
     def _typed(self, key, v):
         lo, hi, sc, _f = SLIDERS[key]
         self.state.checkpoint()
         v = max(lo / sc, min(hi / sc, v))
-        self._target_dict()[key] = v if sc != 1 else int(round(v))
+        self._write(key, v if sc != 1 else int(round(v)))
         self.state.dirty = True
         self._load_controls()
         self._emit_change()
@@ -465,6 +526,8 @@ class GradePanel(QWidget):
                 s = p.source(sid)
                 if s:
                     s.grade = {k: v for k, v in g.items() if p.grade.get(k) != v}
+                    s.gkeys = {}
+            self.keysChanged.emit()
         else:
             p.grade.update(g)
         self.state.dirty = True
@@ -515,7 +578,13 @@ class GradePanel(QWidget):
 
     # ------------------------------------------------------------ 조절값
     def _load_controls(self):
-        e = self._effective()
+        e = self._shown()
+        s = self._src()
+        for k, b in self.kbtn.items():
+            ks = (s.gkeys.get(k) or []) if s else []
+            on = any(x["f"] == self.frame for x in ks)
+            b.setStyleSheet("QPushButton{background:#5a4a1a; border:1px solid #f2c94c; color:#f2c94c; padding:0;}" if on else
+                            "QPushButton{color:#f2c94c; padding:0;}" if ks else "QPushButton{color:#777; padding:0;}")
         widgets = [self.lut, *self.sliders.values()]
         for w in widgets:
             w.blockSignals(True)
@@ -531,7 +600,7 @@ class GradePanel(QWidget):
         self._update_labels()
 
     def _update_labels(self):
-        e = self._effective()
+        e = self._shown()
         for k, v in self.vals.items():
             x = float(e.get(k, 0))
             v.show_value("끔" if k == "stab" and x <= 0 else SLIDERS[k][3].format(x))
@@ -539,7 +608,7 @@ class GradePanel(QWidget):
     def _set(self, key, value, slider=False):
         # 슬라이더: 손잡이·홈 클릭·휠 어느 쪽이든 실행취소 지점(연속 조작은 1번으로 합침)
         self.state.checkpoint(f"slider:{key}" if slider else "")
-        self._target_dict()[key] = value
+        self._write(key, value)
         self.state.dirty = True
         self._update_labels()
         if slider:
@@ -566,6 +635,9 @@ class GradePanel(QWidget):
     def _clear_all(self):
         self.state.checkpoint()
         self._target_dict().clear()
+        if self._src():
+            self._src().gkeys = {}
+            self.keysChanged.emit()
         self._load_controls()
         self._emit_change()
 
@@ -584,6 +656,9 @@ class GradePanel(QWidget):
             d["nr_chroma"], d["nr_luma"], d["sharpen"] = 0, 0, 0.0
         if self.target[0] == "src" and lut != self.state.project.grade.get("lut", ""):
             d["lut"] = lut
+        if self._src():
+            self._src().gkeys = {}
+            self.keysChanged.emit()
         self._load_controls()
         self._emit_change()
 
@@ -625,8 +700,8 @@ class GradePanel(QWidget):
         if not s or not s.frames:
             return
         marks = [m for m in p.samples if m.src == s.id]
-        grade = None if raw else p.grade_for_source(s.id)
         for m in marks:
+            grade = None if raw else p.grade_for_source(s.id, m.frame)
             it = QListWidgetItem("")
             it.setToolTip(timecode(m.frame, s.fps))
             it.setSizeHint(QSize(self.tile[0] + 4, self.tile[1] + 4))
