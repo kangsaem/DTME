@@ -13,7 +13,8 @@ from pathlib import Path
 from typing import Callable
 
 from . import paths
-from .project import OUT_FPS, ImageSource, Marker, Project, Segment, Source, layer_box, plan_transitions
+from .project import (OUT_FPS, ImageSource, Marker, Project, Segment, Source, layer_box, plan_transitions,
+                      reframe_max)
 
 NO_WINDOW = 0x08000000 if os.name == "nt" else 0   # Windows 콘솔창 숨김
 
@@ -256,6 +257,33 @@ def crop_filter(orientation: str) -> str:
     return "crop=w='trunc(min(iw,ih*16/9)/2)*2':h='trunc(min(ih,iw*9/16)/2)*2'"
 
 
+def crop_size(w: int, h: int, orientation: str) -> tuple[int, int]:
+    """crop_filter 와 같은 계산(숫자)."""
+    if orientation == "vertical":
+        return int(min(w, h * 9 / 16) / 2) * 2, int(min(h, w * 16 / 9) / 2) * 2
+    return int(min(w, h * 16 / 9) / 2) * 2, int(min(h, w * 9 / 16) / 2) * 2
+
+
+def seg_reframe(src: Source, seg: Segment, orientation: str) -> list | None:
+    """세로 출력에서 쓸 크롭 키프레임(범위 제한). 없거나 모두 0 이면 None → 기존 가운데 크롭."""
+    if orientation != "vertical" or not seg.reframe:
+        return None
+    m = reframe_max(src.width or 3840)
+    keys = sorted(({"f": int(k["f"]), "dx": max(-m, min(m, float(k["dx"])))} for k in seg.reframe),
+                  key=lambda k: k["f"])
+    return keys if any(abs(k["dx"]) >= 0.5 for k in keys) else None
+
+
+def reframe_expr(keys: list, f0: int, frames_per_sec: float, mul: float = 1.0) -> str:
+    """t(초) → 이동량 식. 프레임 = f0 + t*frames_per_sec. 키프레임 사이 smoothstep (project.ease 와 같음)."""
+    tk = [((k["f"] - f0) / frames_per_sec, k["dx"] * mul) for k in keys]
+    e = f"{tk[-1][1]:.3f}"
+    for (t0, d0), (t1, d1) in reversed(list(zip(tk, tk[1:]))):
+        u = f"clip((t-{t0:.6f})/{max(1e-6, t1 - t0):.6f},0,1)"
+        e = f"if(lt(t,{t1:.6f}),{d0:.3f}+({d1 - d0:.3f})*{u}*{u}*(3-2*{u}),{e})"
+    return f"if(lt(t,{tk[0][0]:.6f}),{tk[0][1]:.3f},{e})"
+
+
 def frame_chain(orientation: str) -> list[str]:
     """화면비 맞춰 중앙 크롭(4K에서) 후 축소."""
     w, h = out_size(orientation)
@@ -280,8 +308,28 @@ def _stab_size(orientation):
     return int(w * STAB_OVERSIZE) // 2 * 2, int(h * STAB_OVERSIZE) // 2 * 2
 
 
+def stab_band(src: Source, seg: Segment, orientation: str):
+    """흔들림 보정 앞 크롭. 세로 리프레이밍이 있으면 이동 범위 전체를 덮는 띠를 먼저 보정하고(보정 → 크롭)
+    그 안에서 움직이는 크롭. 반환 (보정 전 필터들, 보정 후 크롭 필터 또는 None, 캐시 키)."""
+    sw, sh = _stab_size(orientation)
+    keys = seg_reframe(src, seg, orientation)
+    if not keys:
+        return [crop_filter(orientation), f"scale={sw}:{sh}:flags=lanczos"], None, ""
+    cw, ch = crop_size(src.width, src.height, orientation)
+    dmin, dmax = min(k["dx"] for k in keys), max(k["dx"] for k in keys)
+    x0 = max(0, int((src.width - cw) / 2 + dmin))
+    bw = min(src.width - x0, int(cw + (dmax - dmin) + 2) // 2 * 2)
+    k = sh / ch
+    bws = int(round(bw * k / 2)) * 2
+    pre = [f"crop={bw}:{ch}:{x0}:{(src.height - ch) // 2}", f"scale={bws}:{sh}:flags=lanczos"]
+    cx0 = (src.width - cw) / 2 - x0          # 띠 안 가운데 크롭 위치(원본 px)
+    xe = reframe_expr(keys, seg.fin, float(src.fps), k)
+    post = f"crop={sw}:{sh}:x='clip({cx0 * k:.3f}+{xe},0,iw-{sw})':y=0"
+    return pre, post, f"{x0}x{bw}"
+
+
 def stab_file(src: Source, seg: Segment, orientation: str, shakiness: int) -> Path:
-    key = f"{os.path.abspath(src.path)}|{seg.fin}|{seg.fout}|{orientation}|{shakiness}"
+    key = f"{os.path.abspath(src.path)}|{seg.fin}|{seg.fout}|{orientation}|{shakiness}|{stab_band(src, seg, orientation)[2]}"
     d = paths.cache_dir() / "lut"       # LUT 와 같은 작업 폴더(cwd) 사용 → 경로 이스케이프 불필요
     d.mkdir(parents=True, exist_ok=True)
     return d / f"stab_{hashlib.sha1(key.encode()).hexdigest()[:12]}.trf"
@@ -292,11 +340,11 @@ def stab_detect(src: Source, seg: Segment, orientation: str, shakiness: int, gpu
     trf = stab_file(src, seg, orientation, shakiness)
     if trf.exists() and trf.stat().st_size > 0:
         return trf
-    sw, sh = _stab_size(orientation)
     tmp = trf.with_suffix(".part.trf")
     sec = float(Fraction(seg.frames) / src.fps)
-    vf = [f"trim=end_frame={seg.frames}", "setpts=PTS-STARTPTS", crop_filter(orientation),
-          f"scale={sw}:{sh}:flags=bicubic", f"vidstabdetect=shakiness={shakiness}:accuracy=15:result={tmp.name}"]
+    pre = [f.replace("flags=lanczos", "flags=bicubic") for f in stab_band(src, seg, orientation)[0]]
+    vf = [f"trim=end_frame={seg.frames}", "setpts=PTS-STARTPTS", *pre,
+          f"vidstabdetect=shakiness={shakiness}:accuracy=15:result={tmp.name}"]
     cmd = [paths.ffmpeg(), "-y", *_hw(gpu), "-ss", _seek(seg.fin, src.fps), "-t", f"{sec + 0.5:.6f}",
            "-i", _abs(src.path), "-an", "-vf", ",".join(vf), "-f", "null", "-"]
     try:
@@ -521,18 +569,25 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orien
         v = [f"trim=end_frame={seg.frames}", "setpts=PTS-STARTPTS"]
         sp = stab_params(g)
         if sp:
-            sw, sh = _stab_size(orientation)
             ow, oh = out_size(orientation)
             trf = stab_file(src, seg, orientation, sp[0])
-            v += [crop_filter(orientation), f"scale={sw}:{sh}:flags=lanczos",
-                  f"vidstabtransform=input={trf.name}:smoothing={sp[1]}:optzoom=1:interpol=bicubic",
-                  f"scale={ow}:{oh}:flags=lanczos"]
+            pre, post, _k = stab_band(src, seg, orientation)
+            v += [*pre, f"vidstabtransform=input={trf.name}:smoothing={sp[1]}:optzoom=1:interpol=bicubic",
+                  *([post] if post else []), f"scale={ow}:{oh}:flags=lanczos"]
             cwd = str(trf.parent)
         if seg.speed != 1.0:
             v.append(f"setpts=PTS/{seg.speed}")
         v.append(f"fps={OUT_FPS.numerator}/{OUT_FPS.denominator}")
         if not sp:
-            v += frame_chain(orientation)
+            keys = seg_reframe(src, seg, orientation)
+            if keys:      # 움직이는 세로 크롭(배속·fps 뒤라 t = 출력 시간)
+                cw, ch = crop_size(src.width, src.height, orientation)
+                ow, oh = out_size(orientation)
+                xe = reframe_expr(keys, seg.fin, float(src.fps) * seg.speed)
+                v += [f"crop={cw}:{ch}:x='clip((iw-{cw})/2+{xe},0,iw-{cw})':y=(ih-{ch})/2",
+                      f"scale={ow}:{oh}:flags=lanczos"]
+            else:
+                v += frame_chain(orientation)
         v += grade_chain(g, lut)
         lays = seg_layers(project, seg)
         if not lays:

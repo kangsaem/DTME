@@ -57,6 +57,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
           python tests/test_transitions.py test4k.mp4 trans_test
           if ($LASTEXITCODE -ne 0) { exit 1 }
+          python tests/test_reframe.py test4k.mp4 reframe_test
+          if ($LASTEXITCODE -ne 0) { exit 1 }
 
       - name: Smoke test (exe 실행)
         shell: pwsh

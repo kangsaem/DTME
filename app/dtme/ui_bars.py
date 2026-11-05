@@ -37,6 +37,7 @@ class SourceBar(QWidget):
     ioDragStarted = Signal()
     ioDragged = Signal(str, int)      # "in" | "out", frame
     ioDragFinished = Signal()
+    keyDeleteRequested = Signal(int)   # 세로 크롭 키프레임 우클릭
 
     GRAB = 7   # 끝 잡는 범위(px)
 
@@ -51,6 +52,7 @@ class SourceBar(QWidget):
         self.playhead = 0
         self.stills: list[int] = []
         self.samples: list[int] = []
+        self.keys: list[int] = []      # 세로 크롭 키프레임(세로 출력일 때만 표시)
         self._drag = False
         self._edge = ""
         self.setMouseTracking(True)
@@ -63,6 +65,16 @@ class SourceBar(QWidget):
     def set_playhead(self, f):
         self.playhead = f
         self.update()
+
+    def set_keys(self, keys):
+        self.keys = keys
+        self.update()
+
+    def _key_at(self, x):
+        for f in self.keys:
+            if abs(self._x(f) - x) <= 6:
+                return f
+        return None
 
     def _x(self, f):
         return f / max(1, self.frames) * self.width()
@@ -98,6 +110,11 @@ class SourceBar(QWidget):
         for fr in self.samples:
             p.setBrush(QColor("#e8e8e8"))
             p.drawEllipse(QPointF(self._x(fr), h - 4), 2.5, 2.5)
+        for fr in self.keys:          # ◇ 세로 크롭 키프레임
+            x = self._x(fr)
+            p.setPen(QPen(QColor("#111"), 1))
+            p.setBrush(QColor("#ffffff"))
+            p.drawPolygon(QPolygonF([QPointF(x, 1), QPointF(x + 5, 6), QPointF(x, 11), QPointF(x - 5, 6)]))
         x = self._x(self.playhead)
         p.setPen(QPen(QColor("#e5484d"), 2))
         p.drawLine(QPointF(x, 0), QPointF(x, h))
@@ -120,6 +137,15 @@ class SourceBar(QWidget):
 
     def mousePressEvent(self, e):
         x = e.position().x()
+        k = self._key_at(x) if e.position().y() <= 14 else None
+        if e.button() == Qt.RightButton:
+            if k is not None:
+                self.keyDeleteRequested.emit(k)
+            return
+        if k is not None:            # ◇ 클릭 = 그 키프레임 위치로
+            self._drag, self._edge = False, ""
+            self.seekRequested.emit(k)
+            return
         self._edge = self._edge_at(x)
         self._drag = True
         if self._edge:

@@ -13,8 +13,8 @@ from PySide6.QtWidgets import (QAbstractSpinBox, QApplication, QButtonGroup, QCh
                                QSplitter, QStyle, QStyledItemDelegate, QTextEdit, QVBoxLayout, QWidget)
 
 from . import ff, jobs
-from .project import (MAX_LAYERS, Marker, RenderItem, Segment, display_name, new_layer, short_name, speed_label,
-                      timecode)
+from .project import (MAX_LAYERS, Marker, RenderItem, Segment, display_name, new_layer, reframe_at, reframe_max,
+                      short_name, speed_label, timecode)
 from .state import AppState
 from .ui_bars import LayerBar, SeqTimeline, SourceBar
 from .ui_grade import GradePanel
@@ -189,6 +189,9 @@ class EditTab(QWidget):
         mon_w.layerPressed.connect(self._on_layer_pressed)
         mon_w.layerChanged.connect(lambda: setattr(self.state, "dirty", True))
         mon_w.layerSelected.connect(self._select_layer)
+        mon_w.cropPressed.connect(self._crop_pressed)
+        mon_w.cropDragged.connect(self._crop_dragged)
+        self.sbar.keyDeleteRequested.connect(self._delete_key)
         mon = QVBoxLayout()
         mon.setSpacing(0)
         mon.setContentsMargins(0, 0, 0, 0)
@@ -430,6 +433,7 @@ class EditTab(QWidget):
     def _apply_aspect(self):
         self.player.set_aspect(9 / 16 if self.state.project.output.orientation == "vertical" else 16 / 9)
         self._update_monitor_layers()
+        self._refresh_keys()
 
     # ================================================================ 소스
     def add_files(self):
@@ -659,7 +663,7 @@ class EditTab(QWidget):
         lays = [copy.deepcopy(l) for l in s.layers if l["fout"] > a and l["fin"] < b]
         for l in lays:
             l["id"] = new_layer("", 0, 0)["id"]
-        return Segment(s.id, a, b, s.speed, layers=lays)
+        return Segment(s.id, a, b, s.speed, layers=lays, reframe=copy.deepcopy(s.reframe))
 
     def send_to_timeline(self):
         seg = self._cur_segment()
@@ -896,6 +900,7 @@ class EditTab(QWidget):
         if not s or not s.frames:
             self.lbar.set_data(0, [], "")
             self.player.mon.set_layers([], "")
+            self.sbar.set_keys([])
             return
         if self.sel_layer and not any(l["id"] == self.sel_layer for l in s.layers):
             self.sel_layer = ""
@@ -905,14 +910,59 @@ class EditTab(QWidget):
             m = p.image(l["img"])
             rows.append((l["id"], l["fin"], l["fout"], Path(m.path).name if m else ""))
         self.lbar.set_data(s.frames, rows, self.sel_layer)
+        self._refresh_keys()
         self.lbar.set_playhead(self.player.frame)
         self._update_monitor_layers()
+
+    # ================================================================ 세로 크롭 위치 이동(키프레임)
+    def _crop_pressed(self):
+        if self._cur():
+            self.player.pause()
+            self.state.checkpoint()
+
+    def _crop_dragged(self, dx):
+        """현재 프레임에 키프레임(있으면 갱신). 프리뷰 위치는 그대로."""
+        s = self._cur()
+        if not s:
+            return
+        f = self.player.frame
+        k = next((k for k in s.reframe if k["f"] == f), None)
+        if k is None:
+            s.reframe.append({"f": f, "dx": round(dx, 1)})
+            s.reframe.sort(key=lambda k: k["f"])
+        else:
+            k["dx"] = round(dx, 1)
+        self.state.dirty = True
+        self._refresh_keys()
+
+    def _delete_key(self, f):
+        s = self._cur()
+        if not s or not any(k["f"] == f for k in s.reframe):
+            return
+        self.state.checkpoint()
+        s.reframe = [k for k in s.reframe if k["f"] != f]
+        self.state.dirty = True
+        self._refresh_keys()
+        self._update_crop()
+
+    def _refresh_keys(self):
+        s = self._cur()
+        vert = self.state.project.output.orientation == "vertical"
+        self.sbar.set_keys([k["f"] for k in s.reframe] if s and vert else [])
+
+    def _update_crop(self):
+        s = self._cur()
+        if not s or not s.frames:
+            return
+        self.player.mon.set_crop(reframe_at(s.reframe, self.player.frame), s.width or 3840, reframe_max(s.width or 3840))
 
     def _update_monitor_layers(self):
         s = self._cur()
         if not s or not s.frames:
             self.player.mon.set_layers([], "")
             return
+        if self.player.mon._drag is None or self.player.mon._drag[0] != "crop":
+            self._update_crop()
         f = self.player.frame
         vis = []
         for l in s.layers:

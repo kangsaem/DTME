@@ -23,6 +23,8 @@ class Monitor(QWidget):
     layerPressed = Signal(str)
     layerChanged = Signal()
     layerSelected = Signal(str)
+    cropPressed = Signal()
+    cropDragged = Signal(float)        # 세로 크롭 이동량(원본 px)
 
     HANDLE = 9
 
@@ -39,7 +41,18 @@ class Monitor(QWidget):
         self._out_rect = QRectF()
         self._drag = None              # (mode, layer, press pos, cx, cy, scale)
         self._wheel_t = 0.0
+        self.crop_dx = 0.0             # 세로 크롭 이동량(원본 px)
+        self.src_w = 3840
+        self.crop_max = 540.0
+        self._img_rect = QRectF()
         self.setMouseTracking(True)
+
+    def set_crop(self, dx: float, src_w: int, max_px: float):
+        self.crop_dx, self.src_w, self.crop_max = dx, max(1, src_w), max_px
+        self.update()
+
+    def _crop_mode(self) -> bool:
+        return not self._img_rect.isEmpty() and self.out_aspect < self._img_rect.width() / self._img_rect.height() - 0.01
 
     def sizeHint(self):
         return QSize(960, 540)
@@ -95,6 +108,9 @@ class Monitor(QWidget):
         if lay is None:
             if self.sel_layer:
                 self.layerSelected.emit("")
+            if self._crop_mode() and self._out_rect.contains(e.position()):
+                self.cropPressed.emit()
+                self._drag = ("crop", None, e.position(), self.crop_dx, 0, 0)
             return
         self.layerPressed.emit(lay["id"])
         self._drag = (mode, lay, e.position(), lay["cx"], lay["cy"], lay["scale"])
@@ -104,6 +120,12 @@ class Monitor(QWidget):
         if self._drag and (e.buttons() & Qt.LeftButton):
             mode, lay, p0, cx, cy, sc = self._drag
             c = self._out_rect
+            if mode == "crop":
+                px = (pos.x() - p0.x()) / max(1.0, self._img_rect.width()) * self.src_w
+                self.crop_dx = max(-self.crop_max, min(self.crop_max, cx + px))
+                self.update()
+                self.cropDragged.emit(self.crop_dx)
+                return
             if mode == "move":
                 lay["cx"] = max(0.0, min(1.0, cx + (pos.x() - p0.x()) / c.width()))
                 lay["cy"] = max(0.0, min(1.0, cy + (pos.y() - p0.y()) / c.height()))
@@ -121,8 +143,10 @@ class Monitor(QWidget):
             r = self._layer_rect(lay, next(w for l, _i, w in self.layers if l is lay))
             diag = (pos.x() < r.center().x()) == (pos.y() < r.center().y())
             self.setCursor(Qt.SizeFDiagCursor if diag else Qt.SizeBDiagCursor)
+        elif mode == "move":
+            self.setCursor(Qt.SizeAllCursor)
         else:
-            self.setCursor(Qt.SizeAllCursor if mode == "move" else Qt.ArrowCursor)
+            self.setCursor(Qt.SizeHorCursor if self._crop_mode() and self._out_rect.contains(pos) else Qt.ArrowCursor)
 
     def mouseReleaseEvent(self, _):
         self._drag = None
@@ -159,12 +183,14 @@ class Monitor(QWidget):
         # 출력에서 잘리는 영역
         src_aspect = r.width() / r.height()
         self._out_rect = QRectF(r)
+        self._img_rect = QRectF(r)
         if abs(src_aspect - self.out_aspect) <= 0.01:
             self._paint_layers(p)
         else:
             if self.out_aspect < src_aspect:
                 cw = r.height() * self.out_aspect
-                c = QRectF(r.center().x() - cw / 2, r.top(), cw, r.height())
+                off = self.crop_dx / self.src_w * r.width()          # 세로 크롭 위치 이동
+                c = QRectF(r.center().x() - cw / 2 + off, r.top(), cw, r.height())
                 masks = [QRectF(r.left(), r.top(), c.left() - r.left(), r.height()),
                          QRectF(c.right(), r.top(), r.right() - c.right(), r.height())]
             else:
