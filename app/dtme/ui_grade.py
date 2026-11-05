@@ -156,6 +156,8 @@ class GradePanel(QWidget):
         add_row("nr_chroma", "색 노이즈", self.nr_c)
         self.nr_l = slider(0, 100, "nr_luma", 1, "")
         add_row("nr_luma", "밝기 노이즈", self.nr_l)
+        self.stab = slider(0, 100, "stab", 1, "렌더에만 적용")
+        add_row("stab", "흔들림 보정", self.stab)
         g.setColumnStretch(1, 1)
 
 
@@ -267,7 +269,7 @@ class GradePanel(QWidget):
     def _load_controls(self):
         kind = self.target[0]
         e = self._effective()
-        widgets = [self.lut, self.r_gain, self.b_gain, self.hue, self.nr_c, self.nr_l, self.sharp]
+        widgets = [self.lut, self.r_gain, self.b_gain, self.hue, self.nr_c, self.nr_l, self.sharp, self.stab]
         for w in widgets:
             w.blockSignals(True)
         if e["lut"] and self.lut.findData(e["lut"]) < 0:
@@ -279,6 +281,7 @@ class GradePanel(QWidget):
         self.sharp.setValue(round(e["sharpen"] * 100))
         self.nr_c.setValue(int(round(e.get("nr_chroma", 0))))
         self.nr_l.setValue(int(round(e.get("nr_luma", 0))))
+        self.stab.setValue(int(round(e.get("stab", 0))))
         for w in widgets:
             w.blockSignals(False)
         self.curve.set_points(e["curve"])
@@ -293,6 +296,7 @@ class GradePanel(QWidget):
         self.vals["sharpen"].setText(f"{e['sharpen']:.2f}")
         self.vals["nr_chroma"].setText(f"{int(e.get('nr_chroma', 0))}")
         self.vals["nr_luma"].setText(f"{int(e.get('nr_luma', 0))}")
+        self.vals["stab"].setText(f"{int(e.get('stab', 0))}" if e.get("stab", 0) else "끔")
         for k, b in self.resets.items():
             b.setVisible(k in over)
 
@@ -337,7 +341,7 @@ class GradePanel(QWidget):
         if self.target[0] == "src":
             d.clear()
             d.update({k: v for k, v in FACTORY_GRADE.items() if k != "lut"})
-            d["nr_chroma"], d["nr_luma"], d["sharpen"] = 0, 0, 0.0
+            d["nr_chroma"], d["nr_luma"], d["sharpen"], d["stab"] = 0, 0, 0.0, 0
         else:
             d.update({k: v for k, v in FACTORY_GRADE.items() if k != "lut"})
             d["nr_chroma"], d["nr_luma"], d["sharpen"] = 0, 0, 0.0

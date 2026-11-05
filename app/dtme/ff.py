@@ -196,15 +196,67 @@ def grade_chain(g: dict, lut_file: str | None) -> list[str]:
     return f
 
 
-def frame_chain(orientation: str) -> list[str]:
-    """화면비 맞춰 중앙 크롭 후 축소."""
+def out_size(orientation: str) -> tuple[int, int]:
+    return (1080, 1920) if orientation == "vertical" else (1920, 1080)
+
+
+def crop_filter(orientation: str) -> str:
     if orientation == "vertical":
-        w, h, ar = 1080, 1920, "9/16"
-        crop = "crop=w='trunc(min(iw,ih*9/16)/2)*2':h='trunc(min(ih,iw*16/9)/2)*2'"
-    else:
-        w, h, ar = 1920, 1080, "16/9"
-        crop = "crop=w='trunc(min(iw,ih*16/9)/2)*2':h='trunc(min(ih,iw*9/16)/2)*2'"
-    return [crop, f"scale={w}:{h}:flags=lanczos"]
+        return "crop=w='trunc(min(iw,ih*9/16)/2)*2':h='trunc(min(ih,iw*16/9)/2)*2'"
+    return "crop=w='trunc(min(iw,ih*16/9)/2)*2':h='trunc(min(ih,iw*9/16)/2)*2'"
+
+
+def frame_chain(orientation: str) -> list[str]:
+    """화면비 맞춰 중앙 크롭(4K에서) 후 축소."""
+    w, h = out_size(orientation)
+    return [crop_filter(orientation), f"scale={w}:{h}:flags=lanczos"]
+
+
+# ------------------------------------------------------------------ 흔들림 보정 (vidstab 2패스)
+# 화질 순서: 4K 에서 화면비 크롭 → 출력의 1.25배 크기로 축소 → 흔들림 보정(자동 확대 포함) → 출력 크기로 축소.
+# 확대가 일어나도 최종 단계는 항상 '축소'라 업스케일 흐림이 없고, 4K 전체 처리보다 약 4배 빠름.
+STAB_OVERSIZE = 1.25
+
+
+def stab_params(g: dict) -> tuple[int, int] | None:
+    v = float(g.get("stab", 0))
+    if v <= 0:
+        return None
+    return int(round(4 + v * 0.06)), int(round(6 + v * 0.30))   # (shakiness 4~10, smoothing 6~36)
+
+
+def _stab_size(orientation):
+    w, h = out_size(orientation)
+    return int(w * STAB_OVERSIZE) // 2 * 2, int(h * STAB_OVERSIZE) // 2 * 2
+
+
+def stab_file(src: Source, seg: Segment, orientation: str, shakiness: int) -> Path:
+    key = f"{os.path.abspath(src.path)}|{seg.fin}|{seg.fout}|{orientation}|{shakiness}"
+    d = paths.cache_dir() / "lut"       # LUT 와 같은 작업 폴더(cwd) 사용 → 경로 이스케이프 불필요
+    d.mkdir(parents=True, exist_ok=True)
+    return d / f"stab_{hashlib.sha1(key.encode()).hexdigest()[:12]}.trf"
+
+
+def stab_detect(src: Source, seg: Segment, orientation: str, shakiness: int, gpu: bool,
+                on_progress=None, cancel=None) -> Path:
+    trf = stab_file(src, seg, orientation, shakiness)
+    if trf.exists() and trf.stat().st_size > 0:
+        return trf
+    sw, sh = _stab_size(orientation)
+    tmp = trf.with_suffix(".part.trf")
+    sec = float(Fraction(seg.frames) / src.fps)
+    vf = [f"trim=end_frame={seg.frames}", "setpts=PTS-STARTPTS", crop_filter(orientation),
+          f"scale={sw}:{sh}:flags=bicubic", f"vidstabdetect=shakiness={shakiness}:accuracy=15:result={tmp.name}"]
+    cmd = [paths.ffmpeg(), "-y", *_hw(gpu), "-ss", _seek(seg.fin, src.fps), "-t", f"{sec + 0.5:.6f}",
+           "-i", _abs(src.path), "-an", "-vf", ",".join(vf), "-f", "null", "-"]
+    try:
+        run_progress(cmd, sec, on_progress, cancel, cwd=str(trf.parent))
+    except FFError:
+        if not gpu:
+            raise
+        run_progress([c for c in cmd if c not in ("-hwaccel", "cuda")], sec, on_progress, cancel, cwd=str(trf.parent))
+    replace_retry(tmp, trf)
+    return trf
 
 
 def _lut_for(g: dict) -> tuple[str | None, str | None]:
@@ -322,10 +374,20 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orien
         total += out_sec
         cmd += [*_hw(o.gpu_decode), "-ss", _seek(seg.fin, src.fps), "-t", f"{seg_src_sec + 0.5:.6f}", "-i", _abs(src.path)]
         v = [f"trim=end_frame={seg.frames}", "setpts=PTS-STARTPTS"]
+        sp = stab_params(g)
+        if sp:
+            sw, sh = _stab_size(orientation)
+            ow, oh = out_size(orientation)
+            trf = stab_file(src, seg, orientation, sp[0])
+            v += [crop_filter(orientation), f"scale={sw}:{sh}:flags=lanczos",
+                  f"vidstabtransform=input={trf.name}:smoothing={sp[1]}:optzoom=1:interpol=bicubic",
+                  f"scale={ow}:{oh}:flags=lanczos"]
+            cwd = str(trf.parent)
         if seg.speed != 1.0:
             v.append(f"setpts=PTS/{seg.speed}")
         v.append(f"fps={OUT_FPS.numerator}/{OUT_FPS.denominator}")
-        v += frame_chain(orientation)
+        if not sp:
+            v += frame_chain(orientation)
         v += grade_chain(g, lut)
         v += [TO_YUV709, "setsar=1"]
         fparts.append(f"[{i}:v:0]{','.join(v)}[v{i}]")
@@ -365,6 +427,23 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orien
 
 def render_video(project: Project, segs: list[Segment], out_file: str, on_progress=None, cancel=None,
                  orientation: str | None = None, audio: bool | None = None) -> None:
+    orient = orientation or project.output.orientation
+    gpu = project.output.gpu_decode
+    # 1패스: 흔들림 분석(필요한 컷만, 결과 캐시). 진행률 앞 40%
+    todo = []
+    for seg in segs:
+        src = project.source(seg.src)
+        sp = stab_params(project.grade_for_source(src.id))
+        if sp and not stab_file(src, seg, orient, sp[0]).exists():
+            todo.append((src, seg, sp[0]))
+    share = 0.4 if todo else 0.0
+    for k, (src, seg, shk) in enumerate(todo):
+        def sub(v, k=k):
+            if on_progress:
+                on_progress(share * (k + v) / len(todo))
+        stab_detect(src, seg, orient, shk, gpu, sub, cancel)
+    outer = on_progress
+    on_progress = (lambda v: outer(share + (1 - share) * v)) if outer else None
     cmd, total, cwd = build_render_cmd(project, segs, out_file, orientation, audio)
     try:
         run_progress(cmd, total, on_progress, cancel, cwd=cwd)

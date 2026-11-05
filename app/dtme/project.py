@@ -21,7 +21,7 @@ NR_LEVELS = ["off", "weak", "mid", "strong"]   # strong 은 스틸 전용
 # 옛 디노이즈 단계 → (색 노이즈, 밝기 노이즈) 0~100
 NR_LEGACY = {"off": (0, 0), "weak": (60, 25), "mid": (80, 45), "strong": (100, 70)}
 
-GRADE_KEYS = ["lut", "r_gain", "b_gain", "hue", "curve", "nr_chroma", "nr_luma", "sharpen"]
+GRADE_KEYS = ["lut", "r_gain", "b_gain", "hue", "curve", "nr_chroma", "nr_luma", "sharpen", "stab"]
 
 FACTORY_GRADE = {
     "lut": "",
@@ -32,6 +32,7 @@ FACTORY_GRADE = {
     "nr_chroma": 60,     # 색 노이즈(푸른 물속의 보라·빨강 점) 0~100
     "nr_luma": 25,       # 밝기 노이즈 0~100
     "sharpen": 0.3,      # 밝기에만 적용
+    "stab": 0,           # 흔들림 보정 0(끔)~100, 렌더에만 적용
 }
 
 
