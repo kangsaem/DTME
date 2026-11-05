@@ -227,12 +227,18 @@ def cached_frame(src: Source, frame: int, gpu: bool = False) -> str:
     d = paths.cache_dir() / "frames"
     d.mkdir(exist_ok=True)
     out = d / f"{src.id}_{frame}.mkv"
-    if out.exists():
-        return str(out)
-    run([paths.ffmpeg(), "-v", "error", "-y", *_hw(gpu), "-ss", _seek(frame, src.fps), "-i", src.path,
-         "-frames:v", "1", "-an", "-vf", "scale=1280:-2:flags=lanczos,format=yuv420p10le",
-         "-c:v", "ffv1", str(out)])
+    with _frame_locks.setdefault(out.name, threading.Lock()):   # 같은 프레임 동시 생성 방지
+        if out.exists():
+            return str(out)
+        tmp = d / f"{src.id}_{frame}.{threading.get_ident()}.part.mkv"
+        run([paths.ffmpeg(), "-v", "error", "-y", *_hw(gpu), "-ss", _seek(frame, src.fps), "-i", _abs(src.path),
+             "-frames:v", "1", "-an", "-vf", "scale=1280:-2:flags=lanczos,format=yuv420p10le",
+             "-c:v", "ffv1", str(tmp)])
+        os.replace(tmp, out)
     return str(out)
+
+
+_frame_locks: dict[str, threading.Lock] = {}
 
 
 def render_preview(cached: str, g: dict | None) -> bytes:

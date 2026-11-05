@@ -11,7 +11,6 @@ from . import __version__, paths
 from .project import Project
 from .state import AppState
 from .ui_edit import EditTab
-from .ui_grade import GradeTab
 from .ui_output import OutputTab
 
 PROJ_FILTER = "DTME 프로젝트 (*.dtme.json *.json)"
@@ -22,16 +21,14 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.state = AppState()
-        self.resize(1500, 920)
+        self.resize(1600, 960)
         self.setAcceptDrops(True)
 
         self.tabs = QTabWidget()
         self.edit = EditTab(self.state)
-        self.grade = GradeTab(self.state)
         self.output = OutputTab(self.state)
-        self.tabs.addTab(self.edit, "1. 편집")
-        self.tabs.addTab(self.grade, "2. 보정")
-        self.tabs.addTab(self.output, "3. 출력")
+        self.tabs.addTab(self.edit, "1. 편집 · 보정")
+        self.tabs.addTab(self.output, "2. 출력")
         self.tabs.currentChanged.connect(self._on_tab)
         self.setCentralWidget(self.tabs)
 
@@ -56,8 +53,8 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("영상 추가(Ctrl+I) 또는 창에 영상 파일을 끌어다 놓으세요.")
 
     def _on_tab(self, i):
-        if i == 0:
-            self.edit.setFocus()
+        if i == 1:
+            self.output._refresh_plan()
 
     def _title(self):
         f = Path(self.state.project.file).name if self.state.project.file else "새 프로젝트"

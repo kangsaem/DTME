@@ -2,12 +2,23 @@
 
 다음 대화에서 이어 작업할 때 이 문서를 기준으로 한다.
 
-## 현재 상태 (v0.1.0, 2026-11-05)
+## 현재 상태 (v0.2.0, 2026-11-05)
 
 1단계 전체 구현 완료. Linux에서 엔진·화면 검증, GitHub Actions(Windows)에서 빌드·엔진·exe 실행 점검 통과. **사용자 PC 실기 테스트 대기.**
 
 다운로드: Actions → 최신 성공한 "Windows build" → Artifacts `DTME-windows` (약 200MB, 30일 보관).
 Release zip 이 필요하면 GitHub 웹에서 `v0.1.0` 같은 태그로 Release 를 만들면 자동 빌드됨(Claude 세션에서는 태그 push 가 막혀 있음).
+
+## 변경 이력
+
+- v0.2.0: 사용자 피드백 반영
+  - 영상 추가 즉시 목록 등록(0.002초), 분석(4병렬)·프록시(1개씩)는 백그라운드, 진행 막대, 선택 파일 프록시 우선
+  - 분석 끝나면 첫 장면 바로 표시. 프록시 전에도 정지화면 모드로 프레임 이동·컷 지정 가능
+  - 단축키를 Windows 스캔코드(물리 키)로 인식 → 한/영·포커스 무관. 앱 전체 이벤트 필터
+  - 모든 동작 버튼화, 상태줄 안내, 컷인 대기 줄을 구간 목록에 노란색으로 표시
+  - 보정을 편집 화면 오른쪽 패널로 통합(탭 2개). 정지 시 화면 = 원본 기준 정확한 보정 미리보기
+  - 미리보기 프레임 캐시 동시 생성 경쟁 수정(락 + 임시파일 rename), 시작 시 프레임 캐시 비움
+- v0.1.0: 1단계 최초 구현
 
 ## 확정된 요구사항
 
@@ -30,7 +41,9 @@ app/dtme/project.py      데이터 구조(JSON 저장), 보정 병합, 결과 �
 app/dtme/ff.py           FFmpeg: probe, 프록시, 필터 체인, 렌더, 스틸, 미리보기, 선명도
 app/dtme/state.py        공유 상태, 불러오기, 프록시 작업
 app/dtme/jobs.py         스레드 풀(프록시 1 / 미리보기 6 / 렌더 1)
-app/dtme/ui_*.py         편집·보정·출력 탭, 플레이어(QMediaPlayer), 타임라인, 커브
+app/dtme/ui_edit.py      편집·보정 화면(소스 | 화면·조작·타임라인·구간 | 보정 패널), 키 입력 필터
+app/dtme/ui_grade.py     보정 패널(GradePanel)
+app/dtme/ui_*.py         출력 탭, 플레이어(프록시 재생 + 정지화면), 타임라인, 커브
 tests/test_core.py       실제 샘플로 점검 (python tests/test_core.py 샘플.MP4 LUT.cube)
 tests/test_engine_min.py CI용 합성 4K 점검
 .github/workflows/build.yml  Windows 빌드 → Artifacts "DTME-windows" (v* 태그 시 Release zip)
@@ -46,7 +59,7 @@ tests/test_engine_min.py CI용 합성 4K 점검
 - LUT 경로 이스케이프 문제 회피: cache/lut 에 해시 이름으로 복사 후 cwd 지정
 - 미리보기: 원본 프레임을 1280px 10bit ffv1로 캐시 → 같은 체인 적용 → PNG
 - GPU 디코딩(-hwaccel cuda) 실패 시 자동 CPU 재시도. NVENC 불가 시 출력 탭에서 x264 선택
-- 플레이어: Qt QMediaPlayer(FFmpeg 백엔드). J(역재생)는 탐색 반복으로 구현
+- 플레이어: Qt QMediaPlayer(FFmpeg 백엔드). J(역재생)는 탐색 반복. 이동 직후엔 프록시 화면 → 350ms 멈추면 원본 보정 화면
 
 ## 검증된 것 (Linux, CPU 2코어, x264)
 

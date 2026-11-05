@@ -12,6 +12,7 @@ SPEED_TEXT = {2.0: "2x", 1.0: "1x", 0.5: "½x"}
 class Timeline(QWidget):
     seekRequested = Signal(int)
     segmentClicked = Signal(str)   # 세그먼트 id ("" = 선택 해제)
+    stillClicked = Signal(int)     # 스틸 프레임
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -97,6 +98,11 @@ class Timeline(QWidget):
     def mousePressEvent(self, e):
         f = self._f(e.position().x())
         y = e.position().y()
+        if y < 18:
+            near = [m for m in self.stills if abs(self._x(m) - e.position().x()) <= 7]
+            if near:
+                self.stillClicked.emit(near[0])
+                return
         if 18 <= y <= self.height() - 18:
             hit = next((s for s in self.segments if s.fin <= f < s.fout), None)
             if hit is not None and e.modifiers() & Qt.ControlModifier:

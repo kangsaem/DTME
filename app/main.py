@@ -23,7 +23,15 @@ def dark(app: QApplication):
     app.setPalette(p)
 
 
+def purge_frame_cache():
+    """미리보기 프레임 캐시는 시작할 때 비운다(프레임 이동마다 쌓이므로)."""
+    import shutil
+    from dtme import paths
+    shutil.rmtree(paths.cache_dir() / "frames", ignore_errors=True)
+
+
 def main():
+    purge_frame_cache()
     # Qt 멀티미디어는 FFmpeg 백엔드 사용(Windows 기본)
     os.environ.setdefault("QT_MEDIA_BACKEND", "ffmpeg")
     app = QApplication(sys.argv)
