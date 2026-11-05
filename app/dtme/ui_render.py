@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QFileDia
 from . import ff, jobs
 from .project import short_name
 
-ORIENT_TXT = {"horizontal": "가로", "vertical": "세로"}
+ORIENT_TXT = {"horizontal": "가로", "horizontal1440": "가로 1440", "horizontal2160": "가로 4K", "vertical": "세로"}
 
 
 RED_BTN = ("QPushButton{color:white; background:#c0392b; border:none; border-radius:3px; font-weight:700;}"
@@ -24,7 +24,15 @@ ADD_W, ADD_H = BTN_W, BTN_H    # 영상 추가 · 삭제(소스)
 
 
 def fix_size(b, main=False):
-    b.setFixedSize(MAIN_W if main else BTN_W, MAIN_H if main else BTN_H)
+    """주요 버튼 = 고정 88×32. 일반 버튼 = 높이 28, 폭 56~76(자리가 모자라면 줄어듦 → 노트북에서 겹치지 않음)."""
+    if main:
+        b.setFixedSize(MAIN_W, MAIN_H)
+    else:
+        b.setFixedHeight(BTN_H)
+        b.setMinimumWidth(56)
+        b.setMaximumWidth(BTN_W)
+        from PySide6.QtWidgets import QSizePolicy
+        b.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
     return b
 
 
@@ -97,6 +105,27 @@ def item_base(project, segs) -> str:
     """첫 컷 소스의 날짜·시간."""
     s = project.source(segs[0].src) if segs else None
     return short_name(s.path) if s else "DTME"
+
+
+def paths_cache_preview():
+    from . import paths
+    d = paths.cache_dir() / "preview"
+    d.mkdir(parents=True, exist_ok=True)
+    for old in sorted(d.glob("preview_*.mp4"))[:-3]:      # 최근 3개만 남김
+        try:
+            old.unlink()
+        except OSError:
+            pass
+    return d / f"preview_{int(time.time())}.mp4"
+
+
+def open_file(path):
+    import os
+    import subprocess
+    if os.name == "nt":
+        os.startfile(path)  # noqa: S606
+    else:
+        subprocess.Popen(["xdg-open", path])
 
 
 def ensure_folder(parent, state) -> bool:
@@ -210,17 +239,37 @@ class RenderPanel(QWidget):
         add_shadow(self.b_render)
         self.b_render.clicked.connect(self.render)
         self.settings = RenderSettings(state)
+        from PySide6.QtWidgets import QDialog
+        self.dlg = QDialog(self)
+        self.dlg.setWindowTitle("렌더 설정")
+        self.dlg.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
+        dl = QVBoxLayout(self.dlg)
+        dl.addWidget(self.settings)
+        self.dlg.setMinimumWidth(380)
+        self.b_prev = QPushButton("미리보기 렌더")
+        fix_size(self.b_prev, main=True)
+        self.b_prev.setMaximumWidth(16777215)
+        self.b_prev.setToolTip("타임라인을 작은 크기(540p)로 빠르게 렌더해 재생")
+        self.b_prev.setFocusPolicy(Qt.NoFocus)
+        self.b_prev.clicked.connect(self.preview_render)
+        self.b_set = QPushButton("⚙")
+        self.b_set.setFixedSize(34, MAIN_H)
+        self.b_set.setToolTip("렌더 설정")
+        self.b_set.setFocusPolicy(Qt.NoFocus)
+        self.b_set.clicked.connect(lambda: (self.settings._load(), self.dlg.exec()))
+        self.b_render.setMaximumWidth(16777215)
+        self.b_render.setMinimumWidth(MAIN_W)
+        top = QHBoxLayout()
+        top.setSpacing(4)
+        top.addWidget(self.b_prev, 1)
+        top.addWidget(self.b_set)
+        top.addWidget(self.b_render, 1)
 
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(4, 4, 4, 4)
-        lay.addWidget(self.settings)
+        lay.setContentsMargins(0, 4, 0, 0)
+        lay.addLayout(top)
         lay.addWidget(self.table, 1)
-        brow = QHBoxLayout()
-        brow.addStretch(1)
-        brow.addWidget(self.b_render)
-        brow.addStretch(1)
-        lay.addLayout(brow)
-        self.setMinimumWidth(300)
+        self.setMinimumWidth(200)
         state.changed.connect(lambda w: w in ("render", "sources", "project", "undo", "output") and self.refresh())
 
     def refresh(self):
@@ -275,6 +324,39 @@ class RenderPanel(QWidget):
         self.running = True
         self.b_render.setEnabled(False)
         self._next()
+
+    def preview_render(self):
+        """타임라인 전체(없으면 렌더 리스트 첫 항목)를 960×540 x264 ultrafast 로 → 기본 플레이어로 열기."""
+        p = self.state.project
+        segs = [g.copy() for g in p.segments] or (p.render_items[0].segs if p.render_items else [])
+        if not segs or self.running:
+            return
+        out = paths_cache_preview()
+        self.b_prev.setEnabled(False)
+        self.b_prev.setText("미리보기 0%")
+        orient = p.output.orientation
+
+        def work(prog, cancel):
+            ff.render_video(p, segs, str(out), prog, cancel, "preview_v" if orient == "vertical" else "preview",
+                            p.output.audio, fast=True)
+            return str(out)
+
+        job = jobs.Job(work, with_progress=True)
+        job.signals.progress.connect(lambda v: self.b_prev.setText(f"미리보기 {int(v * 100)}%"))
+
+        def done(path):
+            self.b_prev.setEnabled(True)
+            self.b_prev.setText("미리보기 렌더")
+            open_file(path)
+
+        def err(msg):
+            self.b_prev.setEnabled(True)
+            self.b_prev.setText("미리보기 렌더")
+            ff.log_error("미리보기 렌더", msg)
+            self.b_prev.setToolTip(f"실패: {msg[-200:]}")
+        job.signals.done.connect(done)
+        job.signals.error.connect(err)
+        jobs.submit(jobs.RENDER_POOL, job)
 
     def _next(self):
         p = self.state.project

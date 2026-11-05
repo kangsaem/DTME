@@ -26,10 +26,10 @@ MEDIA_FILTER = "영상·이미지 (*.mp4 *.MP4 *.mov *.MOV *.jpg *.JPG *.jpeg *.
 IMG_DISPLAY_MAX = 2048      # 모니터 표시용 이미지 최대 변(렌더는 원본 사용)
 
 # Windows 물리 키(스캔코드) — 한/영 상태와 무관하게 동작
-SCAN = {0x39: "space", 0x24: "j", 0x26: "l", 0x17: "i", 0x18: "o", 0x1A: "i", 0x1B: "o", 0x1F: "s", 0x22: "g",
+SCAN = {0x11: "w", 0x39: "space", 0x24: "j", 0x26: "l", 0x17: "i", 0x18: "o", 0x1A: "i", 0x1B: "o", 0x1F: "s", 0x22: "g",
         0x30: "b", 0x02: "1", 0x03: "2", 0x04: "3", 0x53: "del", 0x0E: "del", 0x01: "esc",
         0x4B: "left", 0x4D: "right", 0x50: "down", 0x1C: "enter", 0x2C: "z"}
-QKEY = {Qt.Key_Space: "space", Qt.Key_J: "j", Qt.Key_L: "l", Qt.Key_I: "i", Qt.Key_O: "o",
+QKEY = {Qt.Key_W: "w", Qt.Key_Space: "space", Qt.Key_J: "j", Qt.Key_L: "l", Qt.Key_I: "i", Qt.Key_O: "o",
         Qt.Key_BracketLeft: "i", Qt.Key_BracketRight: "o", Qt.Key_S: "s", Qt.Key_G: "g", Qt.Key_B: "b",
         Qt.Key_1: "1", Qt.Key_2: "2", Qt.Key_3: "3", Qt.Key_Delete: "del", Qt.Key_Backspace: "del",
         Qt.Key_Escape: "esc", Qt.Key_Left: "left", Qt.Key_Right: "right", Qt.Key_Down: "down",
@@ -129,12 +129,14 @@ class EditTab(QWidget):
         self._del_target = "cut"        # Del 키 대상: "cut" | "layer"
         self._last_list = "src"         # [삭제](소스) 대상: "src" | "img"
         self._img_cache: dict[str, QImage] = {}
+        self._text_key = None
         self.pgen = 0
 
         # ================= 소스
         self.src_list = QListWidget()
         self.src_list.setFocusPolicy(Qt.NoFocus)
         self.src_list.setItemDelegate(SourceDelegate(self))
+        self.src_list.setSelectionMode(QListWidget.ExtendedSelection)      # Ctrl·Shift = 여러 클립(프리셋 적용)
         self.src_list.setStyleSheet("QListWidget{background:#1a1a1a; border:none;}")
         self.src_list.currentItemChanged.connect(self._on_src_selected)
         self.src_list.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -163,9 +165,8 @@ class EditTab(QWidget):
             b.setFixedSize(ADD_W, ADD_H)
             row.addWidget(b)
         left.addLayout(row)
-        lw = QWidget()
-        lw.setLayout(left)
-        lw.setMinimumWidth(170)
+        self.src_box = QWidget()          # 오른쪽 열 위: 소스. 높이 = 모니터+바(렌더가 재생 버튼 줄부터 시작)
+        self.src_box.setLayout(left)
 
         # ================= 모니터 + 소스 바 (간격 없음)
         self.player = Player()
@@ -306,17 +307,32 @@ class EditTab(QWidget):
         # ================= 보정 / 렌더 리스트
         self.grade = GradePanel(state)
         self.grade.gradeChanged.connect(self._on_grade_changed)
-        self.grade.beforeToggled.connect(lambda _: self.request_preview())
+        self.grade.viewChanged.connect(lambda _k: self.request_preview())
+        self.grade.scopeToggled.connect(self.player.mon.set_scope)
+        self.grade.whitePickToggled.connect(self._white_mode)
         self.grade.sampleClicked.connect(self._show_sample)
+        self.grade.targets_fn = self._selected_sids
+        self.player.mon.whitePicked.connect(self._white_picked)
         self.render_panel = RenderPanel(state)
 
+        # 3열: 보정 | 모니터·타임라인 | 소스·렌더
+        rw = QWidget()
+        rl = QVBoxLayout(rw)
+        rl.setContentsMargins(0, 0, 0, 0)
+        rl.setSpacing(0)
+        rl.addWidget(self.src_box)
+        rl.addWidget(self.render_panel, 1)
+        rw.setMinimumWidth(200)
         hs = QSplitter(Qt.Horizontal)
-        for w in (lw, cw, self.grade, self.render_panel):
+        for w in (self.grade, cw, rw):
             hs.addWidget(w)
-        for i in (0, 2, 3):
+        for i in (0, 2):
             hs.setCollapsible(i, False)
         hs.setStretchFactor(1, 1)
-        hs.setSizes([190, 880, 350, 340])
+        hs.setSizes([310, 1000, 230])
+        self._hs, self._sized = hs, False
+        self.player.installEventFilter(self)
+        self.lbar.installEventFilter(self)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(6, 6, 6, 6)
         lay.addWidget(hs)
@@ -339,10 +355,16 @@ class EditTab(QWidget):
         if e.type() == QEvent.Resize and obj is self.tl_scroll.viewport():
             self.timeline.fit()
             return False
+        if e.type() == QEvent.Resize and obj in (self.player, self.lbar):
+            QTimer.singleShot(0, self._sync_right)
+            return False
         if e.type() != QEvent.KeyPress or not self.isVisible() or not self.window().isActiveWindow():
             return False
         fw = QApplication.focusWidget()
         if QApplication.activeModalWidget() is not None:
+            return False
+        stamp = (e.timestamp(), e.key(), int(e.modifiers().value) if hasattr(e.modifiers(), "value") else 0)
+        if stamp == self._text_key:      # 입력란이 처리한 키(Enter 등)가 부모로 다시 올라온 것 → 무시
             return False
         if isinstance(fw, TEXT_INPUTS):
             # 입력란에 커서가 있어도 Ctrl+Z / Ctrl+S 는 앱 기능(실행취소·저장)
@@ -350,6 +372,7 @@ class EditTab(QWidget):
                 fw.clearFocus()
                 (self.window().undo if e.key() == Qt.Key_Z else self.window().save_project)()
                 return True
+            self._text_key = stamp
             return False
         name = None
         if os.name == "nt" and e.nativeScanCode():
@@ -423,7 +446,9 @@ class EditTab(QWidget):
         elif name == "g":
             self.grade.make_samples()
         elif name == "b":
-            self.grade.before.toggle()
+            self.grade.set_view("grade" if self.grade.view_mode() == "raw" else "raw")
+        elif name == "w":
+            self.grade.b_white.toggle()
         elif name == "down":
             self.send_to_timeline()
         elif name == "enter":
@@ -556,12 +581,15 @@ class EditTab(QWidget):
             self.tc.setText(timecode(f, s.fps))
         self.sbar.set_playhead(f)
         self.lbar.set_playhead(f)
+        if self.player.overlay_frame != f:
+            self.player.mon.set_before(None)
         self._update_monitor_layers()
         if not self.player.is_busy():
             self._pv_timer.start()
 
     def _on_playing(self, playing):
         if playing:
+            self.player.mon.set_before(None)
             self._pv_timer.stop()
             self.pgen += 1          # 진행 중인 보정 화면 무시 → 바로 부드럽게 재생
         else:
@@ -579,12 +607,20 @@ class EditTab(QWidget):
             return
         if not self.chk_preview.isChecked() and p.has_media:
             p.overlay_frame = None
+            p.mon.set_before(None)
             p._grab(p.frame)
             return
         self.pgen += 1
         gen, frame, tok = self.pgen, p.frame, p._token
-        grade = None if self.grade.before.isChecked() else self.state.project.grade_for_source(s.id)
-        job = jobs.Job(lambda: ff.render_preview(ff.cached_frame(s, frame), grade))
+        mode = self.grade.view_mode()
+        full = self.state.project.grade_for_source(s.id)
+        grade = None if mode == "raw" else full
+
+        def work():
+            c = ff.cached_frame(s, frame)
+            out = ff.render_preview(c, grade)
+            return (out, ff.render_preview(c, None)) if mode == "split" else (out, None)
+        job = jobs.Job(work)
         job.signals.done.connect(lambda data, g=gen, fr=frame, t=tok: self._on_preview(g, fr, t, data))
         job.signals.error.connect(lambda msg: (ff.log_error("미리보기", msg), self._say(f"미리보기 오류: {msg[-160:]}", C_WARN)))
         jobs.submit(jobs.PREVIEW_POOL, job, priority=5)
@@ -593,8 +629,68 @@ class EditTab(QWidget):
         p = self.player
         if gen != self.pgen or frame != p.frame or tok != p._token or p.is_busy():
             return
+        img, before = data
         p.overlay_frame = frame
-        p.show_image(QImage.fromData(data, "PNG"))
+        p.mon.set_before(QImage.fromData(before, "PNG") if before else None)
+        p.show_image(QImage.fromData(img, "PNG"))
+
+    # ================================================================ 흰색 찍기
+    def _white_mode(self, on):
+        self.player.mon.set_pick(on)
+        if on:
+            self.player.pause()
+            self._say("모래·흰 부분 클릭", C_INFO)
+
+    def _white_picked(self, nx, ny):
+        """LUT 만 입힌 화면(게인 1, 커브·색조·채도 없음)에서 찍은 곳 평균 → 빨강·파랑 = 초록/빨강, 초록/파랑."""
+        s = self._cur()
+        if not s or not s.frames:
+            return
+        self.grade.b_white.setChecked(False)
+        g = dict(self.state.project.grade_for_source(s.id))
+        g.update(r_gain=1.0, b_gain=1.0, curve=[[0, 0], [1, 1]], hue=0, sat=1.0, dehaze=0, sharpen=0)
+        frame = self.player.frame
+
+        def work():
+            import numpy as np
+            png = ff.render_preview(ff.cached_frame(s, frame), g)
+            im = QImage.fromData(png, "PNG").convertToFormat(QImage.Format_RGB888)
+            a = np.frombuffer(im.constBits(), np.uint8, im.bytesPerLine() * im.height()).reshape(im.height(), im.bytesPerLine())
+            a = a[:, :im.width() * 3].reshape(im.height(), im.width(), 3).astype(float)
+            x, y = int(nx * im.width()), int(ny * im.height())
+            r = max(3, im.width() // 160)
+            patch = a[max(0, y - r):y + r + 1, max(0, x - r):x + r + 1].reshape(-1, 3).mean(0)
+            return patch
+        job = jobs.Job(work)
+
+        def done(patch):
+            rr, gg, bb = (max(1.0, float(v)) for v in patch)
+            self.grade.set_values({"r_gain": gg / rr, "b_gain": gg / bb})
+            self._say(f"흰색 찍기 → 빨강 {gg / rr:.2f}  파랑 {gg / bb:.2f}", C_OK)
+        job.signals.done.connect(done)
+        job.signals.error.connect(lambda m: self._say(f"흰색 찍기 실패: {m[-120:]}", C_WARN))
+        jobs.submit(jobs.PREVIEW_POOL, job, priority=9)
+
+    def _selected_sids(self):
+        return [it.data(Qt.UserRole) for it in self.src_list.selectedItems()]
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        if not self._sized:                  # 처음 한 번: 화면 폭에 비례(노트북 ≈ 310 | … | 230, 4K 는 더 넓게)
+            self._sized = True
+            QTimer.singleShot(0, self._init_sizes)
+
+    def _init_sizes(self):
+        w = max(1200, self._hs.width())
+        left = int(max(300, min(470, w * 0.18)))
+        right = int(max(220, min(360, w * 0.13)))
+        self._hs.setSizes([left, w - left - right, right])
+
+    def _sync_right(self):
+        """오른쪽 열 소스 영역 높이 = 모니터 + 레이어 바 + 소스 바 → 렌더 영역이 재생 버튼 줄 높이부터."""
+        h = self.player.height() + self.lbar.height() + self.sbar.height()
+        if h > 50 and self.src_box.height() != h:
+            self.src_box.setFixedHeight(h)
 
     def _show_sample(self, sid, frame, pix):
         self.player.pause()
@@ -868,8 +964,8 @@ class EditTab(QWidget):
         if len(s.layers) >= MAX_LAYERS:
             self._say(f"레이어는 {MAX_LAYERS}개까지", C_WARN)
             return
-        ow, oh = ff.out_size(self.state.project.output.orientation)
-        scale = min(1.0, ow / m.width, oh / m.height)      # 원본 크기. 출력 화면보다 크면 화면에 맞춤
+        ow, oh = ff.out_size("vertical" if self.state.project.output.orientation == "vertical" else "horizontal")
+        scale = min(1.0, ow / m.width, oh / m.height)       # 1080p 기준(1440·4K 는 같은 비율로 커짐)      # 원본 크기. 출력 화면보다 크면 화면에 맞춤
         a, b = s.io
         self.state.checkpoint()
         lay = new_layer(iid, a, b, scale)

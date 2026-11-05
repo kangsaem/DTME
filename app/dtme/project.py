@@ -26,7 +26,11 @@ NR_LEVELS = ["off", "weak", "mid", "strong"]   # strong 은 스틸 전용
 # 옛 디노이즈 단계 → (색 노이즈, 밝기 노이즈) 0~100
 NR_LEGACY = {"off": (0, 0), "weak": (60, 25), "mid": (80, 45), "strong": (100, 70)}
 
-GRADE_KEYS = ["lut", "r_gain", "b_gain", "hue", "curve", "nr_chroma", "nr_luma", "sharpen", "stab"]
+GRADE_KEYS = ["lut", "r_gain", "b_gain", "hue", "sat", "curve", "nr_chroma", "nr_luma", "sharpen", "dehaze", "lens", "stab"]
+
+# 출력: orientation 값 하나로 방향·크기를 함께 나타냄
+OUTPUTS = [("horizontal", "1920×1080"), ("horizontal1440", "2560×1440"), ("horizontal2160", "3840×2160"),
+           ("vertical", "1080×1920")]
 
 DEFAULT_LUT = "DJI_OSMO_Action_4_D-Log_M_to_Rec.709_V1.cube"   # DJI 공개 LUT, 프로그램에 포함
 DEFAULTS_REV = 2      # 공장 기본값을 바꾸면 올림 → 이전에 저장한 '새 프로젝트 기본값'은 한 번 무시
@@ -36,10 +40,13 @@ FACTORY_GRADE = {
     "r_gain": 1.0,
     "b_gain": 1.05,
     "hue": 5.0,
+    "sat": 1.0,          # 채도(vibrance 방식: 진한 색은 덜 올림) 0~2
     "curve": [[0.0, 0.0], [1.0, 1.0]],
     "nr_chroma": 25,     # 색 노이즈(푸른 물속의 보라·빨강 점) 0~100
     "nr_luma": 25,       # 밝기 노이즈 0~100
     "sharpen": 0.3,      # 밝기에만 적용
+    "dehaze": 0,         # 디헤이즈(넓은 범위 대비) 0~100
+    "lens": 0,           # 렌즈 왜곡 보정(액션캠 휘어짐) 0~100
     "stab": 0,           # 흔들림 보정 0(끔)~100, 렌더에만 적용
 }
 
@@ -70,6 +77,24 @@ def load_default_grade() -> dict:
     return g
 
 
+def get_setting(key: str, default=None):
+    p = paths.settings_path()
+    try:
+        return json.loads(p.read_text(encoding="utf-8")).get(key, default) if p.exists() else default
+    except Exception:  # noqa: BLE001
+        return default
+
+
+def set_setting(key: str, value) -> None:
+    p = paths.settings_path()
+    try:
+        s = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+    except Exception:  # noqa: BLE001
+        s = {}
+    s[key] = value
+    p.write_text(json.dumps(s, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def save_default_grade(grade: dict) -> None:
     p = paths.settings_path()
     s = {}
@@ -81,6 +106,49 @@ def save_default_grade(grade: dict) -> None:
     s["default_grade"] = {k: grade[k] for k in GRADE_KEYS}
     s["defaults_rev"] = DEFAULTS_REV
     p.write_text(json.dumps(s, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+# ------------------------------------------------------------------ 프리셋 (presets/*.json)
+def _preset_dir() -> Path:
+    d = paths.app_dir() / "presets"
+    d.mkdir(exist_ok=True)
+    return d
+
+
+def _preset_file(name: str) -> Path:
+    safe = re.sub(r'[\\/:*?"<>|]', "_", name).strip() or "preset"
+    return _preset_dir() / f"{safe}.json"
+
+
+def list_presets() -> list[str]:
+    out = []
+    for f in sorted(_preset_dir().glob("*.json"), key=lambda x: x.stem.lower()):
+        try:
+            out.append(json.loads(f.read_text(encoding="utf-8")).get("name", f.stem))
+        except Exception:  # noqa: BLE001
+            pass
+    return out
+
+
+def load_preset(name: str) -> dict:
+    d = json.loads(_preset_file(name).read_text(encoding="utf-8"))
+    g = upgrade_grade(dict(d.get("grade", {})))
+    return {k: v for k, v in g.items() if k in GRADE_KEYS}
+
+
+def save_preset(name: str, grade: dict) -> None:
+    _preset_file(name).write_text(json.dumps({"name": name, "grade": {k: grade[k] for k in GRADE_KEYS if k in grade}},
+                                             ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def delete_preset(name: str) -> None:
+    _preset_file(name).unlink(missing_ok=True)
+
+
+def rename_preset(old: str, new: str) -> None:
+    g = load_preset(old)
+    delete_preset(old)
+    save_preset(new, g)
 
 
 def _id() -> str:
@@ -220,9 +288,11 @@ def new_layer(img: str, fin: int, fout: int, scale: float = 1.0) -> dict:
 
 
 def layer_box(layer: dict, img: "ImageSource", out_w: int, out_h: int) -> tuple[int, int, int, int]:
-    """출력 화면에서 레이어 사각형 (x, y, w, h) 픽셀."""
-    w = max(2, int(round(img.width * layer["scale"])))
-    h = max(2, int(round(img.height * layer["scale"])))
+    """출력 화면에서 레이어 사각형 (x, y, w, h) 픽셀. scale 1 = 1080p 출력에서 원본 픽셀 크기
+    (1440·4K 출력은 같은 비율로 커짐)."""
+    k = min(out_w, out_h) / 1080
+    w = max(2, int(round(img.width * layer["scale"] * k)))
+    h = max(2, int(round(img.height * layer["scale"] * k)))
     return int(round(layer["cx"] * out_w - w / 2)), int(round(layer["cy"] * out_h - h / 2)), w, h
 
 

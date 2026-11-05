@@ -13,3 +13,5 @@ test_out/
 *.MP4
 *.mp4
 *.tif
+presets/
+fonts_user/

@@ -25,6 +25,7 @@ class Monitor(QWidget):
     layerSelected = Signal(str)
     cropPressed = Signal()
     cropDragged = Signal(float)        # 세로 크롭 이동량(원본 px)
+    whitePicked = Signal(float, float)   # 흰색 찍기: 영상 안 위치(0~1)
 
     HANDLE = 9
 
@@ -45,7 +46,26 @@ class Monitor(QWidget):
         self.src_w = 3840
         self.crop_max = 540.0
         self._img_rect = QRectF()
+        self.before: QImage | None = None      # 반반 보기: 왼쪽에 그릴 원본
+        self.split_x = 0.5
+        self._split_drag = False
+        self.pick_mode = False                  # 흰색 찍기
+        self.scope = False                      # RGB 파형
+        self._scope_data = None
         self.setMouseTracking(True)
+
+    def set_before(self, img):
+        self.before = img
+        self.update()
+
+    def set_scope(self, on):
+        self.scope = on
+        self._scope_data = None
+        self.update()
+
+    def set_pick(self, on):
+        self.pick_mode = on
+        self.setCursor(Qt.CrossCursor if on else Qt.ArrowCursor)
 
     def set_crop(self, dx: float, src_w: int, max_px: float):
         self.crop_dx, self.src_w, self.crop_max = dx, max(1, src_w), max_px
@@ -59,6 +79,7 @@ class Monitor(QWidget):
 
     def set_image(self, img: QImage | None, smooth=True):
         self.img = img
+        self._scope_data = None
         self.text = ""
         self.smooth = smooth
         self.update()
@@ -101,8 +122,20 @@ class Monitor(QWidget):
                 return "move", lay
         return None, None
 
+    def _split_px(self):
+        r = self._img_rect
+        return r.left() + r.width() * self.split_x
+
     def mousePressEvent(self, e):
         if e.button() != Qt.LeftButton:
+            return
+        pos = e.position()
+        r = self._img_rect
+        if self.pick_mode and not r.isEmpty() and r.contains(pos):
+            self.whitePicked.emit((pos.x() - r.left()) / r.width(), (pos.y() - r.top()) / r.height())
+            return
+        if self.before is not None and not r.isEmpty() and abs(pos.x() - self._split_px()) <= 8:
+            self._split_drag = True
             return
         mode, lay = self._hit(e.position())
         if lay is None:
@@ -117,6 +150,17 @@ class Monitor(QWidget):
 
     def mouseMoveEvent(self, e):
         pos = e.position()
+        if self._split_drag and (e.buttons() & Qt.LeftButton):
+            r = self._img_rect
+            self.split_x = max(0.02, min(0.98, (pos.x() - r.left()) / max(1.0, r.width())))
+            self.update()
+            return
+        if self.pick_mode:
+            self.setCursor(Qt.CrossCursor)
+            return
+        if self.before is not None and abs(pos.x() - self._split_px()) <= 8:
+            self.setCursor(Qt.SplitHCursor)
+            return
         if self._drag and (e.buttons() & Qt.LeftButton):
             mode, lay, p0, cx, cy, sc = self._drag
             c = self._out_rect
@@ -150,6 +194,7 @@ class Monitor(QWidget):
 
     def mouseReleaseEvent(self, _):
         self._drag = None
+        self._split_drag = False
 
     def wheelEvent(self, e):
         """레이어 위에서 휠 = 크기 ±5%"""
@@ -180,6 +225,16 @@ class Monitor(QWidget):
         r = QRectF((self.width() - iw * k) / 2, (self.height() - ih * k) / 2, iw * k, ih * k)
         p.setRenderHint(QPainter.SmoothPixmapTransform, self.smooth)
         p.drawImage(r, self.img)
+        if self.before is not None and not self.before.isNull():      # 반반: 왼쪽 = 원본
+            sx = r.width() * self.split_x
+            src = QRectF(0, 0, self.before.width() * self.split_x, self.before.height())
+            p.drawImage(QRectF(r.left(), r.top(), sx, r.height()), self.before, src)
+            x = r.left() + sx
+            p.setPen(QPen(QColor("#ffffff"), 2))
+            p.drawLine(QPointF(x, r.top()), QPointF(x, r.bottom()))
+            p.setPen(QPen(QColor("#1b1b1b"), 2))
+            p.setBrush(QColor("#ffffff"))
+            p.drawEllipse(QPointF(x, r.center().y()), 9, 9)
         # 출력에서 잘리는 영역
         src_aspect = r.width() / r.height()
         self._out_rect = QRectF(r)
@@ -205,6 +260,30 @@ class Monitor(QWidget):
             p.drawRect(c)
             self._out_rect = QRectF(c)
             self._paint_layers(p)
+        self._paint_scope(p)
+
+    def _paint_scope(self, p: QPainter):
+        """RGB 파형(채널별 밝기 분포). 오른쪽 위 작은 창."""
+        if not self.scope or self.img is None or self.img.isNull():
+            return
+        if self._scope_data is None:
+            import numpy as np
+            im = self.img.scaled(320, 180, Qt.IgnoreAspectRatio, Qt.FastTransformation).convertToFormat(QImage.Format_RGB888)
+            a = np.frombuffer(im.constBits(), np.uint8, im.bytesPerLine() * im.height()).reshape(im.height(), im.bytesPerLine())
+            a = a[:, :im.width() * 3].reshape(im.height(), im.width(), 3)
+            hs = [np.histogram(a[:, :, c], bins=64, range=(0, 256))[0].astype(float) for c in range(3)]
+            m = max(1.0, max(h[1:-1].max() for h in hs))
+            self._scope_data = [np.minimum(1.0, h / m) for h in hs]
+        w, h = max(160, self.width() * 0.22), max(84, self.height() * 0.2)
+        box = QRectF(self.width() - w - 8, 8, w, h)
+        p.fillRect(box, QColor(10, 10, 10, 215))
+        p.setPen(QPen(QColor(70, 70, 70), 1))
+        p.drawRect(box)
+        from PySide6.QtGui import QPolygonF
+        for hist, col in zip(self._scope_data, ("#e5484d", "#5fd17a", "#4a8fe0")):
+            pts = [QPointF(box.left() + i / 63 * box.width(), box.bottom() - 2 - v * (box.height() - 6)) for i, v in enumerate(hist)]
+            p.setPen(QPen(QColor(col), 1.5))
+            p.drawPolyline(QPolygonF(pts))
 
     def _paint_layers(self, p: QPainter):
         """이미지 레이어(보정 없음, 투명 그대로). 출력 화면 밖은 잘림. 선택한 레이어는 테두리·모서리."""

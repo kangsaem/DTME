@@ -33,10 +33,26 @@ def denoise_chain(g: dict) -> list[str]:
     return f
 
 
-def sharpen_chain(g: dict) -> list[str]:
-    """밝기(Y)에만 언샤프 → 색 노이즈를 날카롭게 만들지 않음."""
+def sharpen_chain(g: dict, width: int = 1920) -> list[str]:
+    """밝기(Y)에만 언샤프 → 색 노이즈를 날카롭게 만들지 않음.
+    디헤이즈 = 넓은 반경 언샤프(국소 대비). 반경은 화면 폭에 비례(미리보기 1280 ↔ 렌더 1080~2160 이 같은 느낌)."""
+    f = []
     s = float(g.get("sharpen", 0))
-    return [f"unsharp=5:5:{min(2.0, s * 2):.3f}:5:5:0"] if s > 1e-3 else []
+    if s > 1e-3:
+        f.append(f"unsharp=5:5:{min(2.0, s * 2):.3f}:5:5:0")
+    d = float(g.get("dehaze", 0))
+    if d > 0.5:
+        r = max(5, min(13, int(round(13 * width / 1920)) // 2 * 2 + 1))   # unsharp 최대 13
+        f.append(f"unsharp={r}:{r}:{d / 100 * 1.2:.3f}:5:5:0")
+    return f
+
+
+def lens_chain(g: dict) -> list[str]:
+    """액션캠 휘어짐 보정(원본 크기에서, 크롭·축소 전). 가장자리는 늘어나며 검은 모서리는 생기지 않음."""
+    v = float(g.get("lens", 0))
+    if v < 0.5:
+        return []
+    return [f"lenscorrection=k1={-0.24 * v / 100:.4f}:k2={0.05 * v / 100:.4f}:i=bilinear"]
 
 
 # RGB → YUV 변환 시 BT.709 를 명시하지 않으면 BT.601 로 변환돼 색이 틀어진다(실측 평균 4.8 → 2.5 차이).
@@ -239,9 +255,9 @@ def curve_is_identity(curve) -> bool:
     return all(abs(x - y) < 1e-4 for x, y in curve)
 
 
-def grade_chain(g: dict, lut_file: str | None) -> list[str]:
-    """(YUV) 노이즈 → 밝기 샤픈 → (RGB 16bit) LUT → R/B 게인 → 커브 → Hue"""
-    f = denoise_chain(g) + sharpen_chain(g)
+def grade_chain(g: dict, lut_file: str | None, width: int = 1920) -> list[str]:
+    """(YUV) 노이즈 → 밝기 샤픈·디헤이즈 → (RGB 16bit) LUT → R/B 게인 → 커브 → Hue → 채도"""
+    f = denoise_chain(g) + sharpen_chain(g, width)
     f.append("format=gbrp16le")
     if lut_file:
         f.append(f"lut3d=file={lut_file}:interp=tetrahedral")
@@ -255,29 +271,37 @@ def grade_chain(g: dict, lut_file: str | None) -> list[str]:
     hue = float(g.get("hue", 0))
     if abs(hue) > 1e-3:
         f.append(f"huesaturation=hue={hue:.2f}")
+    sat = float(g.get("sat", 1.0))
+    if abs(sat - 1) > 1e-3:
+        f.append(f"vibrance=intensity={max(-2.0, min(2.0, sat - 1)):.3f}")
     return f
 
 
 def out_size(orientation: str) -> tuple[int, int]:
-    return (1080, 1920) if orientation == "vertical" else (1920, 1080)
+    return {"vertical": (1080, 1920), "horizontal1440": (2560, 1440), "horizontal2160": (3840, 2160),
+            "preview": (960, 540), "preview_v": (540, 960)}.get(orientation, (1920, 1080))
+
+
+def is_vertical(orientation: str) -> bool:
+    return orientation in ("vertical", "preview_v")
 
 
 def crop_filter(orientation: str) -> str:
-    if orientation == "vertical":
+    if is_vertical(orientation):
         return "crop=w='trunc(min(iw,ih*9/16)/2)*2':h='trunc(min(ih,iw*16/9)/2)*2'"
     return "crop=w='trunc(min(iw,ih*16/9)/2)*2':h='trunc(min(ih,iw*9/16)/2)*2'"
 
 
 def crop_size(w: int, h: int, orientation: str) -> tuple[int, int]:
     """crop_filter 와 같은 계산(숫자)."""
-    if orientation == "vertical":
+    if is_vertical(orientation):
         return int(min(w, h * 9 / 16) / 2) * 2, int(min(h, w * 16 / 9) / 2) * 2
     return int(min(w, h * 16 / 9) / 2) * 2, int(min(h, w * 9 / 16) / 2) * 2
 
 
 def seg_reframe(src: Source, seg: Segment, orientation: str) -> list | None:
     """세로 출력에서 쓸 크롭 키프레임(범위 제한). 없거나 모두 0 이면 None → 기존 가운데 크롭."""
-    if orientation != "vertical" or not seg.reframe:
+    if not is_vertical(orientation) or not seg.reframe:
         return None
     m = reframe_max(src.width or 3840)
     keys = sorted(({"f": int(k["f"]), "dx": max(-m, min(m, float(k["dx"])))} for k in seg.reframe),
@@ -314,46 +338,54 @@ def stab_params(g: dict) -> tuple[int, int] | None:
     return int(round(4 + v * 0.06)), int(round(6 + v * 0.30))   # (shakiness 4~10, smoothing 6~36)
 
 
-def _stab_size(orientation):
+def _stab_size(orientation, src: Source | None = None):
+    """흔들림 보정 작업 크기 = 출력의 1.25배. 단 원본 크롭 크기보다 크게 키우지 않음(1440·4K 출력)."""
     w, h = out_size(orientation)
+    if src is not None and src.width:
+        cw, ch = crop_size(src.width, src.height, orientation)
+        k = min(STAB_OVERSIZE, cw / w, ch / h)
+        if k < STAB_OVERSIZE:
+            return int(w * max(1.0, k)) // 2 * 2, int(h * max(1.0, k)) // 2 * 2
     return int(w * STAB_OVERSIZE) // 2 * 2, int(h * STAB_OVERSIZE) // 2 * 2
 
 
-def stab_band(src: Source, seg: Segment, orientation: str):
+def stab_band(src: Source, seg: Segment, orientation: str, lens: list | tuple = ()):
     """흔들림 보정 앞 크롭. 세로 리프레이밍이 있으면 이동 범위 전체를 덮는 띠를 먼저 보정하고(보정 → 크롭)
     그 안에서 움직이는 크롭. 반환 (보정 전 필터들, 보정 후 크롭 필터 또는 None, 캐시 키)."""
-    sw, sh = _stab_size(orientation)
+    sw, sh = _stab_size(orientation, src)
     keys = seg_reframe(src, seg, orientation)
+    tag = f"{sw}x{sh}|{','.join(lens)}"
     if not keys:
-        return [crop_filter(orientation), f"scale={sw}:{sh}:flags=lanczos"], None, ""
+        return [*lens, crop_filter(orientation), f"scale={sw}:{sh}:flags=lanczos"], None, tag
     cw, ch = crop_size(src.width, src.height, orientation)
     dmin, dmax = min(k["dx"] for k in keys), max(k["dx"] for k in keys)
     x0 = max(0, int((src.width - cw) / 2 + dmin))
     bw = min(src.width - x0, int(cw + (dmax - dmin) + 2) // 2 * 2)
     k = sh / ch
     bws = int(round(bw * k / 2)) * 2
-    pre = [f"crop={bw}:{ch}:{x0}:{(src.height - ch) // 2}", f"scale={bws}:{sh}:flags=lanczos"]
+    pre = [*lens, f"crop={bw}:{ch}:{x0}:{(src.height - ch) // 2}", f"scale={bws}:{sh}:flags=lanczos"]
     cx0 = (src.width - cw) / 2 - x0          # 띠 안 가운데 크롭 위치(원본 px)
     xe = reframe_expr(keys, seg.fin, float(src.fps), k)
     post = f"crop={sw}:{sh}:x='clip({cx0 * k:.3f}+{xe},0,iw-{sw})':y=0"
-    return pre, post, f"{x0}x{bw}"
+    return pre, post, f"{x0}x{bw}|{tag}"
 
 
-def stab_file(src: Source, seg: Segment, orientation: str, shakiness: int) -> Path:
-    key = f"{os.path.abspath(src.path)}|{seg.fin}|{seg.fout}|{orientation}|{shakiness}|{stab_band(src, seg, orientation)[2]}"
+def stab_file(src: Source, seg: Segment, orientation: str, shakiness: int, lens=()) -> Path:
+    key = (f"{os.path.abspath(src.path)}|{seg.fin}|{seg.fout}|{orientation}|{shakiness}|"
+           f"{stab_band(src, seg, orientation, lens)[2]}")
     d = paths.cache_dir() / "lut"       # LUT 와 같은 작업 폴더(cwd) 사용 → 경로 이스케이프 불필요
     d.mkdir(parents=True, exist_ok=True)
     return d / f"stab_{hashlib.sha1(key.encode()).hexdigest()[:12]}.trf"
 
 
 def stab_detect(src: Source, seg: Segment, orientation: str, shakiness: int, gpu: bool,
-                on_progress=None, cancel=None) -> Path:
-    trf = stab_file(src, seg, orientation, shakiness)
+                on_progress=None, cancel=None, lens=()) -> Path:
+    trf = stab_file(src, seg, orientation, shakiness, lens)
     if trf.exists() and trf.stat().st_size > 0:
         return trf
     tmp = trf.with_suffix(".part.trf")
     sec = float(Fraction(seg.frames) / src.fps)
-    pre = [f.replace("flags=lanczos", "flags=bicubic") for f in stab_band(src, seg, orientation)[0]]
+    pre = [f.replace("flags=lanczos", "flags=bicubic") for f in stab_band(src, seg, orientation, lens)[0]]
     vf = [f"trim=end_frame={seg.frames}", "setpts=PTS-STARTPTS", *pre,
           f"vidstabdetect=shakiness={shakiness}:accuracy=15:result={tmp.name}"]
     cmd = [paths.ffmpeg(), "-y", *_hw(gpu), "-ss", _seek(seg.fin, src.fps), "-t", f"{sec + 0.5:.6f}",
@@ -457,7 +489,7 @@ def render_preview(cached: CachedFrame, g: dict | None) -> bytes:
         vf = []
     else:
         cwd, lut = _lut_for(g)
-        vf = grade_chain(g, lut)
+        vf = lens_chain(g) + grade_chain(g, lut, 1280)
     vf += [f"select=gte(n\\,{cached.lead})", "format=rgb24"]
     return run([paths.ffmpeg(), "-v", "error", "-f", "nut", "-i", "-", "-frames:v", "1",
                 "-vf", ",".join(vf), "-f", "image2pipe", "-c:v", "png", "-"], cwd=cwd, data=cached.data)
@@ -577,7 +609,7 @@ def seg_layers(project: Project, seg: Segment) -> list[tuple[dict, ImageSource, 
 
 
 def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orientation: str | None = None,
-                     audio: bool | None = None) -> tuple[list[str], float, str | None]:
+                     audio: bool | None = None, fast: bool = False) -> tuple[list[str], float, str | None]:
     o = project.output
     orientation = orientation or o.orientation
     audio = o.audio if audio is None else audio
@@ -597,11 +629,12 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orien
         total += out_sec
         cmd += [*_hw(o.gpu_decode), "-ss", _seek(seg.fin, src.fps), "-t", f"{seg_src_sec + 0.5:.6f}", "-i", _abs(src.path)]
         v = [f"trim=end_frame={seg.frames}", "setpts=PTS-STARTPTS"]
-        sp = stab_params(g)
+        lens = lens_chain(g)
+        sp = None if fast else stab_params(g)       # 미리보기 렌더는 흔들림 보정 생략(분석이 느림)
         if sp:
             ow, oh = out_size(orientation)
-            trf = stab_file(src, seg, orientation, sp[0])
-            pre, post, _k = stab_band(src, seg, orientation)
+            trf = stab_file(src, seg, orientation, sp[0], lens)
+            pre, post, _k = stab_band(src, seg, orientation, lens)
             v += [*pre, f"vidstabtransform=input={trf.name}:smoothing={sp[1]}:optzoom=1:interpol=bicubic",
                   *([post] if post else []), f"scale={ow}:{oh}:flags=lanczos"]
             cwd = str(trf.parent)
@@ -609,6 +642,7 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orien
             v.append(f"setpts=PTS/{seg.speed}")
         v.append(f"fps={OUT_FPS.numerator}/{OUT_FPS.denominator}")
         if not sp:
+            v += lens
             keys = seg_reframe(src, seg, orientation)
             if keys:      # 움직이는 세로 크롭(배속·fps 뒤라 t = 출력 시간)
                 cw, ch = crop_size(src.width, src.height, orientation)
@@ -618,7 +652,7 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orien
                       f"scale={ow}:{oh}:flags=lanczos"]
             else:
                 v += frame_chain(orientation)
-        v += grade_chain(g, lut)
+        v += grade_chain(g, lut, min(out_size(orientation)) * 16 // 9)
         lays = seg_layers(project, seg)
         if not lays:
             v += [TO_YUV709, "setsar=1"]
@@ -667,8 +701,10 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orien
     cmd += ["-filter_complex", ";".join(fparts), "-map", "[vo]"]
     if audio:
         cmd += ["-map", "[ao]", "-c:a", "aac", "-b:a", "192k"]
-    br = int(o.bitrate_mbps)
-    if o.encoder == "nvenc":
+    br = int(o.bitrate_mbps * {"horizontal1440": 1.5, "horizontal2160": 2.5}.get(orientation, 1.0))   # 설정값 = 1080p 기준
+    if fast:                         # 미리보기 렌더: 작고 빠르게
+        cmd += ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "26"]
+    elif o.encoder == "nvenc":
         cmd += ["-c:v", "h264_nvenc", "-preset", "p6", "-tune", "hq", "-rc", "vbr", "-cq", "19",
                 "-b:v", f"{br}M", "-maxrate", f"{int(br * 1.5)}M", "-bufsize", f"{br * 2}M", "-profile:v", "high"]
     else:
@@ -682,25 +718,26 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orien
 
 
 def render_video(project: Project, segs: list[Segment], out_file: str, on_progress=None, cancel=None,
-                 orientation: str | None = None, audio: bool | None = None) -> None:
+                 orientation: str | None = None, audio: bool | None = None, fast: bool = False) -> None:
     orient = orientation or project.output.orientation
     gpu = project.output.gpu_decode
     # 1패스: 흔들림 분석(필요한 컷만, 결과 캐시). 진행률 앞 40%
     todo = []
     for seg in segs:
         src = project.source(seg.src)
-        sp = stab_params(project.grade_for_source(src.id))
-        if sp and not stab_file(src, seg, orient, sp[0]).exists():
-            todo.append((src, seg, sp[0]))
+        gg = project.grade_for_source(src.id)
+        sp = stab_params(gg)
+        if sp and not fast and not stab_file(src, seg, orient, sp[0], lens_chain(gg)).exists():
+            todo.append((src, seg, sp[0], lens_chain(gg)))
     share = 0.4 if todo else 0.0
-    for k, (src, seg, shk) in enumerate(todo):
+    for k, (src, seg, shk, lens) in enumerate(todo):
         def sub(v, k=k):
             if on_progress:
                 on_progress(share * (k + v) / len(todo))
-        stab_detect(src, seg, orient, shk, gpu, sub, cancel)
+        stab_detect(src, seg, orient, shk, gpu, sub, cancel, lens)
     outer = on_progress
     on_progress = (lambda v: outer(share + (1 - share) * v)) if outer else None
-    cmd, total, cwd = build_render_cmd(project, segs, out_file, orientation, audio)
+    cmd, total, cwd = build_render_cmd(project, segs, out_file, orientation, audio, fast)
     try:
         run_progress(cmd, total, on_progress, cancel, cwd=cwd)
     except FFError:
@@ -723,7 +760,7 @@ def export_still(src: Source, frame: int, g: dict, out_file: str, gpu: bool = Fa
     lead = min(3, frame)
     start = frame - lead
     is_png = str(out_file).lower().endswith(".png")
-    vf = grade_chain(g, lut) + [SRGB_TAG, "format=rgb48be" if is_png else "format=rgb48le"]
+    vf = lens_chain(g) + grade_chain(g, lut, 3840) + [SRGB_TAG, "format=rgb48be" if is_png else "format=rgb48le"]
     codec = ["-c:v", "png", "-compression_level", "3"] if is_png else ["-c:v", "tiff", "-compression_algo", "deflate"]
     cmd = [paths.ffmpeg(), "-v", "error", "-y", *_hw(gpu), "-ss", _seek(start, src.fps), "-i", _abs(src.path),
            "-frames:v", str(lead + 1), "-an", "-vf", ",".join(vf), "-update", "1", *codec, _abs(out_file)]

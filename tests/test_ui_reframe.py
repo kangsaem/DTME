@@ -21,7 +21,7 @@ st, e = w.state, w.edit
 st.project.output.folder = os.path.join(WORK, "out"); st.project.output.encoder = "x264"; st.project.output.gpu_decode = False
 e.import_files([SAMPLE]); wait(60, lambda: st.project.sources and st.status.get(st.project.sources[0].id) == "준비")
 src = st.project.sources[0]
-e.grade.orient.button(1).setChecked(True); e.grade._on_output(); wait(1.0)
+e.grade.set_output("vertical"); wait(1.0)
 mon = e.player.mon
 # 가로 상태에서는 크롭 드래그 없음 확인은 생략. 프레임 30 에서 크롭 틀을 왼쪽으로 끌기
 e.player.seek(30); wait(0.8)
@@ -57,6 +57,6 @@ assert st.project.render_items[-1].segs[0].reframe
 e.render_panel.render(); wait(600, lambda: not e.render_panel.running)
 print([e.render_panel.status.get(r.id, "")[:40] for r in st.project.render_items])
 # 가로로 바꾸면 ◇ 숨김
-e.grade.orient.button(0).setChecked(True); e.grade._on_output(); wait(0.5)
+e.grade.set_output("horizontal"); wait(0.5)
 print("가로 ◇:", e.sbar.keys); assert e.sbar.keys == []
 print("UI REFRAME OK")

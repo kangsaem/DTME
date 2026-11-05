@@ -141,7 +141,7 @@ assert len(seg.layers) == 1 and seg.layers[0]["id"] != lay["id"]
 e.timeline_to_render(); wait(0.2)
 assert st.project.render_items[-1].segs[0].layers
 # 세로도 하나
-e.grade.orient.button(1).setChecked(True); e.grade._on_output(); wait(1.0)
+e.grade.set_output("vertical"); wait(1.0)
 print("세로 out_wh:", mon.out_wh, "레이어", len(mon.layers))
 w.grab().save(os.path.join(WORK, "shot_layers_vertical.png"))
 e.send_to_render(); wait(0.2)

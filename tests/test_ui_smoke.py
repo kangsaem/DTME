@@ -38,7 +38,7 @@ def key(k, mod=Qt.NoModifier, n=1):
 key(Qt.Key_Right, n=30); key(Qt.Key_I); key(Qt.Key_Right, n=90); key(Qt.Key_O); key(Qt.Key_Down)
 key(Qt.Key_G); wait(15, lambda: e.grade.samples.count()==6 and all(not e.grade.samples.item(i).icon().isNull() for i in range(6)))
 # 세로 + 크롭 표시
-e.grade.orient.button(1).setChecked(True); e.grade._on_output(); wait(3)
+e.grade.set_output("vertical"); wait(3)
 print("세로 aspect:", round(e.player.mon.out_aspect,3))
 w.grab().save(""+WORK+"/shot_edit.png")
 # 소스 전환 → 즉시 '로딩 중'
@@ -69,7 +69,7 @@ print("드래그 IO:", src.io)
 e._key("goto_out"); wait(0.2); print("▶I →", e.player.frame); e._key("goto_in"); wait(0.2); print("I◀ →", e.player.frame)
 print("표시 이름:", [e.src_list.item(i).text() for i in range(e.src_list.count())])
 # 보정: 리셋 / 기본값 / 기본값으로 저장
-gp=e.grade; gp.hue.setValue(10); wait(0.5)
+gp=e.grade; gp.sliders["hue"].setValue(10); wait(0.5)
 print("클립 C:", e._tag(src.id), gp.target)
 gp._clear_all(); wait(0.3); print("기본값 →", e._tag(src.id))
 gp._reset_clip(); wait(0.3); print("리셋 → hue", st.project.grade_for_source(src.id)["hue"], "nr", st.project.grade_for_source(src.id)["nr_chroma"])
