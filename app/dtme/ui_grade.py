@@ -753,10 +753,13 @@ class GradePanel(QWidget):
         QTimer.singleShot(0, self._fit_tiles)       # 스크롤 영역 폭이 확정된 뒤 한 번 더
 
     def _fit_curve(self):
-        """화면이 낮으면(노트북) 커브를 낮게 → 모든 묶음을 펴도 스크롤 없이."""
-        h = self._scroll.viewport().height()
-        ch = 100 if h < 900 else 150 if h < 1150 else 240
-        if self.curve.height() != ch:
+        """커브 높이 = 남는 높이(70~240) → 화면이 낮아도(노트북) 모든 묶음을 펴고 스크롤 없이."""
+        box = self._scroll.widget()
+        if box is None or not self.curve.isVisible():
+            return
+        spare = self._scroll.viewport().height() - box.sizeHint().height()
+        ch = int(max(70, min(240, self.curve.height() + spare)))
+        if abs(self.curve.height() - ch) > 2:
             self.curve.setFixedHeight(ch)
 
     def _fit_tiles(self):

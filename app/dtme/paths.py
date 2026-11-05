@@ -22,6 +22,12 @@ def lut_dir() -> Path:
     return d
 
 
+def fonts_dir() -> Path:
+    d = app_dir() / "fonts"
+    d.mkdir(exist_ok=True)
+    return d
+
+
 def cache_dir() -> Path:
     d = app_dir() / "cache"
     d.mkdir(exist_ok=True)

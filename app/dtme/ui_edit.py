@@ -13,8 +13,9 @@ from PySide6.QtWidgets import (QAbstractSpinBox, QApplication, QButtonGroup, QCh
                                QSplitter, QStyle, QStyledItemDelegate, QTextEdit, QVBoxLayout, QWidget)
 
 from . import ff, jobs
-from .project import (MAX_LAYERS, Marker, RenderItem, Segment, display_name, new_layer, reframe_at, reframe_max,
-                      short_name, speed_label, timecode)
+from .project import (MAX_LAYERS, TITLE_DEFAULT_SEC, Marker, RenderItem, Segment, display_name, new_layer,
+                      new_music, new_text, new_title_image, reframe_at, reframe_max, short_name,
+                      speed_label, timecode)
 from .state import AppState
 from .ui_bars import LayerBar, SeqTimeline, SourceBar
 from .ui_grade import GradePanel
@@ -22,7 +23,8 @@ from .ui_player import Player
 from .ui_render import (ADD_H, ADD_W, RenderPanel, add_shadow, fix_size, item_base, out_dir,
                         render_list_button, unique)
 
-MEDIA_FILTER = "영상·이미지 (*.mp4 *.MP4 *.mov *.MOV *.jpg *.JPG *.jpeg *.JPEG *.png *.PNG)"
+MEDIA_FILTER = ("영상·이미지·음악 (*.mp4 *.MP4 *.mov *.MOV *.jpg *.JPG *.jpeg *.JPEG *.png *.PNG "
+                "*.mp3 *.MP3 *.m4a *.M4A *.wav *.WAV *.flac *.FLAC *.aac *.AAC)")
 IMG_DISPLAY_MAX = 2048      # 모니터 표시용 이미지 최대 변(렌더는 원본 사용)
 
 # Windows 물리 키(스캔코드) — 한/영 상태와 무관하게 동작
@@ -91,11 +93,12 @@ class SourceDelegate(QStyledItemDelegate):
 
 
 class ImageDelegate(QStyledItemDelegate):
-    """스틸 소스 1개 = 연한 회색 바(오류는 빨강), 파일 이름."""
+    """스틸·음악 소스 1개 = 연한 바(오류는 빨강), 파일 이름."""
 
-    def __init__(self, tab):
+    def __init__(self, tab, color="#a9b0b8"):
         super().__init__(tab)
         self.tab = tab
+        self.color = color
 
     def sizeHint(self, option, index):
         return QSize(option.rect.width(), 26)
@@ -107,7 +110,7 @@ class ImageDelegate(QStyledItemDelegate):
         p.save()
         p.setRenderHint(QPainter.Antialiasing)
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor("#7a2a22") if bad else QColor("#a9b0b8"))
+        p.setBrush(QColor("#7a2a22") if bad else QColor(self.color))
         p.drawRoundedRect(r, 3, 3)
         if option.state & QStyle.State_Selected:
             p.setPen(QPen(QColor("#4a8fe0"), 2))
@@ -131,6 +134,8 @@ class EditTab(QWidget):
         self._img_cache: dict[str, QImage] = {}
         self._text_key = None
         self._space_down = False
+        self.tl_time = 0.0
+        self.sel_ov = ("", "")
         self.pgen = 0
 
         # ================= 소스
@@ -151,8 +156,17 @@ class EditTab(QWidget):
         self.img_list.setStyleSheet("QListWidget{background:#1a1a1a; border:none; border-top:1px solid #333;}")
         self.img_list.itemClicked.connect(self._on_img_clicked)
         self.img_list.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.img_list.customContextMenuRequested.connect(lambda _pos: self.add_files())
+        self.img_list.customContextMenuRequested.connect(self._img_menu)
         self.img_list.setVisible(False)
+        # 음악 소스 — 클릭 = 타임라인 음악 줄 끝에 붙임
+        self.mus_list = QListWidget()
+        self.mus_list.setFocusPolicy(Qt.NoFocus)
+        self.mus_list.setItemDelegate(ImageDelegate(self, "#8fc4a4"))
+        self.mus_list.setStyleSheet("QListWidget{background:#1a1a1a; border:none; border-top:1px solid #333;}")
+        self.mus_list.itemClicked.connect(self._on_mus_clicked)
+        self.mus_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.mus_list.customContextMenuRequested.connect(lambda _pos: self.add_files())
+        self.mus_list.setVisible(False)
         self.load_bar = QProgressBar()
         self.load_bar.setTextVisible(False)
         self.load_bar.setFixedHeight(6)
@@ -160,6 +174,7 @@ class EditTab(QWidget):
         left.setContentsMargins(0, 0, 0, 0)
         left.addWidget(self.src_list, 3)
         left.addWidget(self.img_list, 1)
+        left.addWidget(self.mus_list, 1)
         left.addWidget(self.load_bar)
         row = QHBoxLayout()
         for text, fn in (("영상 추가", self.add_files), ("삭제", self._remove_selected)):
@@ -249,6 +264,7 @@ class EditTab(QWidget):
         cut.addWidget(_btn("스틸", "S", lambda: self._key("s")))
         cut.addWidget(_btn("샘플", "G", lambda: self._key("g")))
         cut.addWidget(_btn("★", "장면 표시 (M) · 다시 누르면 지움", lambda: self._key("m")))
+        cut.addWidget(_btn("글자", "타임라인 재생 위치에 글자 추가", self.add_text))
         cut.addSpacing(12)
         cut.addWidget(render_list_button(lambda: self._key("enter"), "렌더리스트로 (Enter)"))
         cut.addStretch(1)
@@ -288,10 +304,16 @@ class EditTab(QWidget):
         self.timeline.selected.connect(self._on_cut_selected)
         self.timeline.moved.connect(self._on_cut_moved)
         self.timeline.activated.connect(self._on_cut_activated)
+        self.timeline.timeChanged.connect(self._on_tl_time)
+        self.timeline.ovSelected.connect(self._on_ov_selected)
+        self.timeline.ovDragStart.connect(lambda _k, _i: self.state.checkpoint())
+        self.timeline.ovEdited.connect(self._on_ov_edited)
+        self.timeline.ovRemove.connect(self.remove_ov)
+        self.timeline.ovActivated.connect(self.edit_ov)
         self.tl_scroll = QScrollArea()
         self.tl_scroll.setWidget(self.timeline)
         self.tl_scroll.setWidgetResizable(False)
-        self.tl_scroll.setFixedHeight(118)
+        self.tl_scroll.setFixedHeight(150)
         self.tl_scroll.setFrameShape(QFrame.NoFrame)
         self.tl_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.tl_scroll.viewport().installEventFilter(self)     # 크기 바뀌면 타임라인 폭 맞춤
@@ -436,6 +458,10 @@ class EditTab(QWidget):
             t = self._del_target
             if t == "layer" and self.sel_layer:
                 self.remove_layer(self.sel_layer)
+            elif t == "ov" and self.sel_ov[1]:
+                self.remove_ov(*self.sel_ov)
+            elif t == "mus" and self.mus_list.currentItem() is not None:
+                self.state.remove_audio(self.mus_list.currentItem().data(Qt.UserRole))
             elif t in ("src", "img"):
                 self._last_list = t
                 self._remove_selected()
@@ -511,6 +537,9 @@ class EditTab(QWidget):
         self.state.import_files(files)
 
     def _remove_selected(self):
+        if self._last_list == "mus" and self.mus_list.currentItem() is not None:
+            self.state.remove_audio(self.mus_list.currentItem().data(Qt.UserRole))
+            return
         if self._last_list == "img" and self.img_list.currentItem() is not None:
             iid = self.img_list.currentItem().data(Qt.UserRole)
             m = self.state.project.image(iid)
@@ -892,7 +921,9 @@ class EditTab(QWidget):
         if not p.segments:
             return
         self.state.checkpoint()
-        p.render_items.append(self._new_item([g.copy() for g in p.segments]))
+        it = self._new_item([g.copy() for g in p.segments])
+        it.titles, it.music, it.mix = copy.deepcopy(p.titles), copy.deepcopy(p.music), dict(p.mix)
+        p.render_items.append(it)
         self.state.touch("render")
 
     # ================================================================ 타임라인
@@ -982,6 +1013,10 @@ class EditTab(QWidget):
             self._refresh_sources()
         if what in ("project", "undo", "images"):
             self._refresh_images()
+        if what in ("project", "undo", "audios"):
+            self._refresh_audios()
+        if what in ("titles",):
+            self._refresh_timeline()
         if what in ("project", "undo", "images", "sources"):
             self._refresh_layers()
         if what in ("project", "undo", "output"):
@@ -1044,7 +1079,7 @@ class EditTab(QWidget):
         return img
 
     def _set_target(self, t):
-        self._last_list = t if t in ("src", "img") else self._last_list
+        self._last_list = t if t in ("src", "img", "mus") else self._last_list
         self._del_target = t
 
     def _on_img_clicked(self, it):
@@ -1210,6 +1245,112 @@ class EditTab(QWidget):
                 vis.append((l, img, (m.width, m.height)))
         self.player.mon.set_layers(vis, self.sel_layer)
 
+    # ================================================================ 타임라인 글자·이미지·음악
+    def _on_tl_time(self, t):
+        self.tl_time = t
+
+    def _on_ov_selected(self, kind, oid):
+        self.sel_ov = (kind, oid)
+        self._del_target = "ov"
+        self.sel_cut = ""
+        self._refresh_timeline()
+
+    def _on_ov_edited(self, kind, oid):
+        self.state.dirty = True
+
+    def _ov(self, kind, oid):
+        p = self.state.project
+        return next((d for d in (p.titles if kind == "title" else p.music) if d["id"] == oid), None)
+
+    def remove_ov(self, kind, oid):
+        p = self.state.project
+        self.state.checkpoint()
+        if kind == "title":
+            p.titles = [d for d in p.titles if d["id"] != oid]
+        else:
+            p.music = [d for d in p.music if d["id"] != oid]
+        self.sel_ov = ("", "")
+        self.state.touch("titles")
+
+    def edit_ov(self, kind, oid):
+        from .ui_titles import MusicDialog, TextDialog
+        d = self._ov(kind, oid)
+        if d is None:
+            return
+        self.state.checkpoint()
+        if kind == "title" and d.get("kind") == "text":
+            dlg = TextDialog(d, self)
+        elif kind == "music":
+            dlg = MusicDialog(self.state.project.mix, self)
+        else:
+            return
+        dlg.changed.connect(lambda: (setattr(self.state, "dirty", True), self.state.changed.emit("titles")))
+        self._dlg = dlg
+        dlg.exec()
+
+    def add_text(self):
+        p = self.state.project
+        t0 = self.tl_time
+        self.state.checkpoint()
+        d = new_text(t0, t0 + TITLE_DEFAULT_SEC, "")
+        p.titles.append(d)
+        self.sel_ov = ("title", d["id"])
+        self._del_target = "ov"
+        self.state.touch("titles")
+        self.edit_ov("title", d["id"])
+        if not (d.get("text") or "").strip():          # 아무것도 안 쓰고 닫으면 없앰
+            p.titles = [x for x in p.titles if x is not d]
+            self.state.touch("titles")
+
+    def _img_menu(self, pos):
+        from PySide6.QtWidgets import QMenu
+        it = self.img_list.itemAt(pos)
+        m = QMenu(self)
+        a_src = m.addAction("현재 영상에 얹기") if it else None
+        a_tl = m.addAction("타임라인에 넣기") if it else None
+        m.addSeparator()
+        a_add = m.addAction("불러오기…")
+        act = m.exec(self.img_list.mapToGlobal(pos))
+        if act is None:
+            return
+        if act is a_add:
+            self.add_files()
+        elif act is a_src:
+            self.add_layer(it.data(Qt.UserRole))
+        elif act is a_tl:
+            self.add_title_image(it.data(Qt.UserRole))
+
+    def add_title_image(self, iid):
+        m = self.state.project.image(iid)
+        if m is None or not m.width:
+            return
+        ow, oh = ff.out_size("vertical" if self.state.project.output.orientation == "vertical" else "horizontal")
+        self.state.checkpoint()
+        d = new_title_image(iid, self.tl_time, self.tl_time + TITLE_DEFAULT_SEC, min(1.0, ow / m.width, oh / m.height))
+        self.state.project.titles.append(d)
+        self.sel_ov = ("title", d["id"])
+        self.state.touch("titles")
+
+    def _refresh_audios(self):
+        self.mus_list.clear()
+        for a in self.state.project.audios:
+            it = QListWidgetItem(Path(a["path"]).stem)
+            it.setData(Qt.UserRole, a["id"])
+            it.setToolTip(f"{a['path']}\n{a['dur']:.1f}초")
+            self.mus_list.addItem(it)
+        self.mus_list.setVisible(bool(self.state.project.audios))
+
+    def _on_mus_clicked(self, it):
+        self._set_target("mus")
+        a = next((x for x in self.state.project.audios if x["id"] == it.data(Qt.UserRole)), None)
+        if not a:
+            return
+        p = self.state.project
+        t0 = max([float(m["t0"]) + float(m["len"]) for m in p.music] + [0.0])
+        self.state.checkpoint()
+        p.music.append(new_music(a["path"], t0, a["dur"]))
+        self.state.touch("titles")
+
     def _refresh_timeline(self):
         p = self.state.project
         items = []
@@ -1217,13 +1358,20 @@ class EditTab(QWidget):
         segs = [g for g in p.segments if p.source(g.src) and p.source(g.src).frames]
         lens = [p.seg_out_seconds(g, p.source(g.src).fps) for g in segs]
         plan = plan_transitions(segs, lens)
-        for g, ln, t in zip(segs, lens, plan):
+        start = 0.0
+        for i, (g, ln, t) in enumerate(zip(segs, lens, plan)):
             s = p.source(g.src)
+            if i > 0 and t:
+                start -= t[1]
             items.append((g.id, ln, short_name(s.path)[-4:], g.speed, self._tag(s.id),
-                          (TRANS_NAME[t[0]], t[1]) if t else None))
+                          (TRANS_NAME[t[0]], t[1]) if t else None, start))
+            start += ln
         if self.sel_cut and not any(i[0] == self.sel_cut for i in items):
             self.sel_cut = ""
         self.timeline.set_items(items, self.sel_cut)
+        if self.sel_ov[1] and not any(d["id"] == self.sel_ov[1] for d in p.titles + p.music):
+            self.sel_ov = ("", "")
+        self.timeline.set_overlays(p.titles, p.music, self.sel_ov)
         tot = p.segs_seconds(segs)
         self.tl_len.setText(f"{tot:.1f}초" if items else "")
 

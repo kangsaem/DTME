@@ -14,7 +14,7 @@ from typing import Callable
 
 from . import paths
 from .project import (KEYABLE, OUT_FPS, ImageSource, Marker, Project, Segment, Source, grade_at, layer_box,
-                      plan_transitions, reframe_max)
+                      orig_volume, plan_transitions, reframe_max)
 
 NO_WINDOW = 0x08000000 if os.name == "nt" else 0   # Windows 콘솔창 숨김
 
@@ -662,8 +662,129 @@ def seg_layers(project: Project, seg: Segment) -> list[tuple[dict, ImageSource, 
     return out
 
 
+def probe_audio(path: str) -> float:
+    """음악 파일 길이(초)."""
+    out = run([paths.ffprobe(), "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path])
+    return float(out.decode().strip() or 0)
+
+
+def _hex(c: str) -> str:
+    c = (c or "#ffffff").lstrip("#")
+    return "0x" + (c if len(c) == 6 else "ffffff")
+
+
+def _fade_alpha(t0, t1, f):
+    f = min(f, (t1 - t0) / 2)
+    if f <= 0.01:
+        return "1"
+    return f"if(lt(t,{t0 + f:.4f}),(t-{t0:.4f})/{f:.4f},if(gt(t,{t1 - f:.4f}),({t1:.4f}-t)/{f:.4f},1))"
+
+
+def _work_copy(path: str, prefix: str) -> str:
+    """글꼴·글자 파일을 작업 폴더(cache/lut, cwd)로 → 경로 이스케이프 문제 없음."""
+    d = paths.cache_dir() / "lut"
+    d.mkdir(parents=True, exist_ok=True)
+    src = Path(path)
+    h = hashlib.sha1(f"{src.resolve()}|{src.stat().st_size}".encode()).hexdigest()[:10]
+    dst = d / f"{prefix}_{h}{src.suffix.lower()}"
+    if not dst.exists():
+        shutil.copyfile(src, dst)
+    return dst.name
+
+
+def text_filter(t: dict, ow: int, oh: int) -> str | None:
+    """타임라인 글자 1개 → drawtext."""
+    from .fonts import font_file
+    if not (t.get("text") or "").strip():
+        return None
+    k = min(ow, oh) / 1080
+    ffile, real_bold = font_file(t.get("font", ""), bool(t.get("bold")))
+    if not ffile:
+        return None
+    fname = _work_copy(ffile, "font")
+    txt = (t.get("text") or "").replace("\r\n", "\n")
+    tf = paths.cache_dir() / "lut" / f"tx_{hashlib.sha1(txt.encode()).hexdigest()[:10]}.txt"
+    tf.write_text(txt, encoding="utf-8")
+    t0, t1 = float(t["t0"]), float(t["t1"])
+    col = _hex(t.get("color"))
+    o = [f"fontfile={fname}", f"textfile={tf.name}", f"fontsize={max(8, round(float(t.get('size', 64)) * k))}",
+         f"fontcolor={col}", "text_align=C", f"line_spacing={round(8 * k)}",
+         f"x={float(t.get('cx', 0.5)) * ow:.1f}-text_w/2", f"y={float(t.get('cy', 0.8)) * oh:.1f}-text_h/2"]
+    if t.get("bold") and not real_bold:
+        o.append(f"borderw={max(1, round(1.5 * k))}:bordercolor={col}")
+    bg = t.get("bg", "shadow")
+    if bg == "shadow":
+        sh = max(1, round(3 * k))
+        o.append(f"shadowx={sh}:shadowy={sh}:shadowcolor=0x000000@0.6")
+    elif bg == "band":
+        o.append(f"box=1:boxcolor=0x000000@0.45:boxborderw={round(16 * k)}")
+    o.append(f"enable='between(t,{t0:.4f},{t1:.4f})'")
+    o.append(f"alpha='{_fade_alpha(t0, t1, float(t.get('fade', 0.5)))}'")
+    return "drawtext=" + ":".join(o)
+
+
+def post_graph(fparts: list, cmd: list, project: Project, extras: dict, total: float, orientation: str,
+               audio: bool, n_inputs: int) -> None:
+    """[vm][am] → 타임라인 글자·이미지(아래→위) + 음악/원본 볼륨 → [vo][ao]."""
+    ow, oh = out_size(orientation)
+    titles = [t for t in extras.get("titles", []) if float(t["t1"]) > float(t["t0"]) and float(t["t0"]) < total]
+    music = [m for m in extras.get("music", []) if os.path.exists(m.get("path", "")) and float(m["t0"]) < total]
+    mix = extras.get("mix") or {}
+    cur, k, ii = "[vm]", 0, n_inputs
+    for t in titles:
+        nxt = f"[tv{k}]"
+        if t.get("kind") == "text":
+            f = text_filter(t, ow, oh)
+            if not f:
+                continue
+            fparts.append(f"{cur}{f}{nxt}")
+        else:
+            img = project.image(t.get("img", ""))
+            if img is None or not img.width or not os.path.exists(img.path):
+                continue
+            t0, t1 = float(t["t0"]), float(t["t1"])
+            cmd += ["-loop", "1", "-framerate", f"{OUT_FPS.numerator}/{OUT_FPS.denominator}", "-t", f"{total + 1:.3f}",
+                    "-noautorotate", "-i", _abs(img.path)]
+            x, y, w, h = layer_box(t, img, ow, oh)
+            fd = min(float(t.get("fade", 0.5)), (t1 - t0) / 2)
+            chain = ORIENT_FILTER.get(img.orient, []) + [f"scale=w={w}:h={h}:flags=lanczos:{OV_CONVERT}", "format=yuva420p"]
+            if fd > 0.01:
+                chain += [f"fade=t=in:st={t0:.4f}:d={fd:.4f}:alpha=1", f"fade=t=out:st={t1 - fd:.4f}:d={fd:.4f}:alpha=1"]
+            fparts.append(f"[{ii}:v:0]{','.join(chain)}[ti{k}]")
+            fparts.append(f"{cur}[ti{k}]overlay=x={x}:y={y}:format=yuv420:eof_action=pass"
+                          f":enable='between(t,{t0:.4f},{t1:.4f})'{nxt}")
+            ii += 1
+        cur, k = nxt, k + 1
+    fparts.append(f"{cur}null[vo]")
+    if not audio:
+        return
+    vo = orig_volume(mix, music)
+    fparts.append(f"[am]volume={vo:.3f}[ab]")
+    labs = ["[ab]"]
+    for j, m in enumerate(music):
+        t0 = float(m["t0"])
+        ln = max(0.05, min(float(m.get("len", m.get("dur", 0))), total - t0))
+        fi, fo = min(float(mix.get("fin", 0.5)), ln / 2), min(float(mix.get("fout", 2.0)), ln / 2)
+        cmd += ["-i", _abs(m["path"])]
+        a = [f"atrim=start={float(m.get('off', 0)):.4f}:duration={ln:.4f}", "asetpts=PTS-STARTPTS",
+             "aresample=48000", "aformat=sample_fmts=fltp:channel_layouts=stereo"]
+        if fi > 0.01:
+            a.append(f"afade=t=in:st=0:d={fi:.4f}")
+        if fo > 0.01:
+            a.append(f"afade=t=out:st={ln - fo:.4f}:d={fo:.4f}")
+        a += [f"volume={float(mix.get('music', 1.0)):.3f}", f"adelay=delays={int(t0 * 1000)}:all=1"]
+        fparts.append(f"[{ii}:a:0]{','.join(a)}[mu{j}]")
+        labs.append(f"[mu{j}]")
+        ii += 1
+    if len(labs) == 1:
+        fparts.append("[ab]anull[ao]")
+    else:
+        fparts.append(f"{''.join(labs)}amix=inputs={len(labs)}:duration=first:normalize=0:dropout_transition=0[ao]")
+
+
 def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orientation: str | None = None,
-                     audio: bool | None = None, fast: bool = False) -> tuple[list[str], float, str | None]:
+                     audio: bool | None = None, fast: bool = False,
+                     extras: dict | None = None) -> tuple[list[str], float, str | None]:
     o = project.output
     orientation = orientation or o.orientation
     audio = o.audio if audio is None else audio
@@ -762,6 +883,10 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orien
             fparts.append(f"{''.join(labels)}concat=n={n}:v=1:a=0[vo]")
     else:
         total = transition_graph(fparts, plan, lens, audio)
+    if extras and (extras.get("titles") or extras.get("music")):
+        fparts[:] = [f.replace("[vo]", "[vm]").replace("[ao]", "[am]") for f in fparts]
+        post_graph(fparts, cmd, project, extras, total, orientation, audio, len(segs) + len(img_inputs))
+        cwd = cwd or str(paths.cache_dir() / "lut")
     cmd += ["-filter_complex", ";".join(fparts), "-map", "[vo]"]
     if audio:
         cmd += ["-map", "[ao]", "-c:a", "aac", "-b:a", "192k"]
@@ -782,7 +907,8 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orien
 
 
 def render_video(project: Project, segs: list[Segment], out_file: str, on_progress=None, cancel=None,
-                 orientation: str | None = None, audio: bool | None = None, fast: bool = False) -> None:
+                 orientation: str | None = None, audio: bool | None = None, fast: bool = False,
+                 extras: dict | None = None) -> None:
     orient = orientation or project.output.orientation
     gpu = project.output.gpu_decode
     # 1패스: 흔들림 분석(필요한 컷만, 결과 캐시). 진행률 앞 40%
@@ -801,7 +927,7 @@ def render_video(project: Project, segs: list[Segment], out_file: str, on_progre
         stab_detect(src, seg, orient, shk, gpu, sub, cancel, lens)
     outer = on_progress
     on_progress = (lambda v: outer(share + (1 - share) * v)) if outer else None
-    cmd, total, cwd = build_render_cmd(project, segs, out_file, orientation, audio, fast)
+    cmd, total, cwd = build_render_cmd(project, segs, out_file, orientation, audio, fast, extras)
     try:
         run_progress(cmd, total, on_progress, cancel, cwd=cwd)
     except FFError:

@@ -9,12 +9,12 @@ from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import QFileDialog, QMainWindow, QMessageBox, QToolBar
 
 from . import __version__, paths
-from .project import IMAGE_EXT, Project
+from .project import AUDIO_EXT, IMAGE_EXT, Project
 from .state import AppState
 from .ui_edit import EditTab
 
 PROJ_FILTER = "DTME 프로젝트 (*.dtme.json *.json)"
-VIDEO_EXT = {".mp4", ".mov"} | IMAGE_EXT
+VIDEO_EXT = {".mp4", ".mov"} | IMAGE_EXT | AUDIO_EXT
 
 
 class MainWindow(QMainWindow):

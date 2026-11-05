@@ -7,7 +7,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, Signal
 
 from . import ff, jobs
-from .project import IMAGE_EXT, ImageSource, Project, Source
+from .project import AUDIO_EXT, IMAGE_EXT, ImageSource, Project, Source, _id
 
 
 class AppState(QObject):
@@ -100,9 +100,12 @@ class AppState(QObject):
     # ------------------------------------------------------------ 불러오기 (즉시 목록 등록)
     def import_files(self, files: list[str]) -> int:
         imgs = [f for f in files if Path(f).suffix.lower() in IMAGE_EXT]
-        files = [f for f in files if Path(f).suffix.lower() not in IMAGE_EXT]
+        auds = [f for f in files if Path(f).suffix.lower() in AUDIO_EXT]
+        files = [f for f in files if Path(f).suffix.lower() not in IMAGE_EXT | AUDIO_EXT]
         if imgs:
             self.import_images(imgs)
+        if auds:
+            self.import_audios(auds)
         if not files:
             return 0
         known = {Path(s.path).resolve() for s in self.project.sources}
@@ -208,6 +211,33 @@ class AppState(QObject):
         job.signals.error.connect(err)
         jobs.submit(jobs.ANALYZE_POOL, job)
 
+    # ------------------------------------------------------------ 음악 소스
+    def import_audios(self, files: list[str]) -> int:
+        known = {Path(a["path"]).resolve() for a in self.project.audios}
+        new = []
+        for f in files:
+            pth = Path(f).resolve()
+            if pth in known:
+                continue
+            known.add(pth)
+            try:
+                dur = ff.probe_audio(str(pth))
+            except Exception as e:  # noqa: BLE001
+                ff.log_error(f"음악 {pth}", str(e))
+                self.message.emit(f"{pth.name}: 읽을 수 없음")
+                continue
+            new.append({"id": _id(), "path": str(pth), "dur": dur})
+        if new:
+            self.checkpoint()
+            self.project.audios += new
+            self.touch("audios")
+        return len(new)
+
+    def remove_audio(self, aid: str):
+        self.checkpoint()
+        self.project.audios = [a for a in self.project.audios if a["id"] != aid]
+        self.touch("audios")
+
     def remove_image(self, iid: str):
         """이미지와 그 이미지를 쓰는 레이어(소스·타임라인·렌더 리스트)를 모두 지움."""
         self.checkpoint()
@@ -217,6 +247,7 @@ class AppState(QObject):
             s.layers = [l for l in s.layers if l.get("img") != iid]
         for g in p.segments + [g for r in p.render_items for g in r.segs]:
             g.layers = [l for l in g.layers if l.get("img") != iid]
+        p.titles = [t for t in p.titles if t.get("img") != iid]
         self.touch("images")
 
     def remove_source(self, sid: str):

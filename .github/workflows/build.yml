@@ -43,6 +43,8 @@ jobs:
           New-Item -ItemType Directory -Force dist/DTME/luts | Out-Null
           Copy-Item luts/README.txt dist/DTME/luts/
           Copy-Item luts/*.cube dist/DTME/luts/
+          New-Item -ItemType Directory -Force dist/DTME/fonts | Out-Null
+          Copy-Item fonts/* dist/DTME/fonts/
           Copy-Item README.md dist/DTME/사용법.md
           & dist/DTME/bin/ffmpeg.exe -hide_banner -version | Select-Object -First 1
 
@@ -61,6 +63,8 @@ jobs:
           python tests/test_reframe.py test4k.mp4 reframe_test
           if ($LASTEXITCODE -ne 0) { exit 1 }
           python tests/test_gkeys.py test4k.mp4 gkeys_test
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          python tests/test_titles.py test4k.mp4 titles_test
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
       - name: Smoke test (exe 실행)

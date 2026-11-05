@@ -1,6 +1,8 @@
 """소스 바(모니터 바로 아래, 현재 클립 전체 길이) + 타임라인(컷 이어붙이기)."""
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import QWidget
@@ -305,27 +307,53 @@ class LayerBar(QWidget):
 
 
 class SeqTimeline(QWidget):
-    """컷들을 결과 길이(배속 반영) 비율로 이어 그림. 클릭=선택, 드래그=순서 변경, 아래 눈금=결과 시간."""
+    """타임라인 3줄: 위 = 글자·이미지 / 가운데 = 영상 컷 / 아래 = 음악, 맨 아래 눈금(결과 시간).
+    컷: 클릭 = 선택, 드래그 = 순서 변경, 더블클릭 = 소스 열기.
+    글자·이미지·음악: 클릭 = 선택, 가운데 끌기 = 이동, 끝 끌기 = 길이(자석), 더블클릭 = 설정, 우클릭 = 삭제.
+    빈 곳·눈금 클릭 = 재생 위치(빨간 선)."""
     selected = Signal(str)
-    moved = Signal(int, int)      # from, to
-    activated = Signal(str)       # 더블클릭
+    moved = Signal(int, int)          # from, to
+    activated = Signal(str)           # 컷 더블클릭
+    timeChanged = Signal(float)       # 재생 위치(초)
+    ovSelected = Signal(str, str)     # kind("title"|"music"), id
+    ovActivated = Signal(str, str)
+    ovDragStart = Signal(str, str)
+    ovEdited = Signal(str, str)
+    ovRemove = Signal(str, str)
 
     RULER = 20
-    LIMIT_SEC = 30.0
+    TL = 18          # 글자·이미지 줄 높이
+    ML = 20          # 음악 줄 높이
+    GRAB = 6
+    SNAP = 8
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumHeight(86)
-        self.pps = 30.0           # 1초당 픽셀(확대 슬라이더)
-        self.items = []           # [(id, seconds, label, speed, tag)]
+        self.setMinimumHeight(110)
+        self.pps = 30.0
+        self.items = []               # [(id, sec, label, speed, tag, trans(name, d) | None, start)]
         self.sel = ""
-        self._press = None        # (index, x)
+        self.titles, self.music = [], []
+        self.ov_sel = ("", "")
+        self.t = 0.0
+        self._press = None            # 컷: (index, x)
         self._drag_x = None
+        self._ov = None               # (kind, dict, mode, x0, snapshot)
         self.setMouseTracking(True)
 
+    # ---------------------------------------------------------------- 데이터
     def set_items(self, items, sel):
         self.items, self.sel = items, sel
         self._resize()
+        self.update()
+
+    def set_overlays(self, titles, music, sel):
+        self.titles, self.music, self.ov_sel = titles, music, sel
+        self._resize()
+        self.update()
+
+    def set_time(self, t):
+        self.t = max(0.0, t)
         self.update()
 
     def fit(self):
@@ -338,26 +366,83 @@ class SeqTimeline(QWidget):
         self.update()
 
     def total(self):
-        return sum(it[1] for it in self.items)
+        cut_end = max((it[6] + it[1] for it in self.items), default=0.0)
+        ov_end = max([float(t["t1"]) for t in self.titles] + [float(m["t0"]) + float(m["len"]) for m in self.music] + [0.0])
+        return max(cut_end, ov_end)
+
+    def cuts_end(self):
+        return max((it[6] + it[1] for it in self.items), default=0.0)
 
     def _resize(self):
         w = int(self.total() * self.pps + 80)
         h = self.height()
         parent = self.parentWidget()
-        if parent is not None:          # 스크롤 영역(뷰포트)을 항상 가득 채움
+        if parent is not None:
             w = max(w, parent.width())
             h = max(self.minimumHeight(), parent.height())
         self.setMinimumWidth(w)
         self.resize(w, h)
 
+    # ---------------------------------------------------------------- 좌표
+    def _x(self, t):
+        return 4 + t * self.pps
+
+    def _t(self, x):
+        return max(0.0, (x - 4) / self.pps)
+
+    def _title_rows(self):
+        """겹치는 글자·이미지는 줄을 나눠 쌓음 → [(title, row)], 줄 수"""
+        ends, out = [], []
+        for t in sorted(self.titles, key=lambda x: float(x["t0"])):
+            r = next((i for i, e in enumerate(ends) if e <= float(t["t0"]) + 1e-6), None)
+            if r is None:
+                ends.append(float(t["t1"]))
+                r = len(ends) - 1
+            else:
+                ends[r] = float(t["t1"])
+            out.append((t, r))
+        return out, max(1, len(ends))
+
+    def _lanes(self):
+        h = self.height()
+        rows = self._title_rows()[1]
+        top = QRectF(0, 2, self.width(), self.TL if rows == 1 else min(3, rows) * 16)
+        mus = QRectF(0, h - self.RULER - self.ML - 2, self.width(), self.ML)
+        vid = QRectF(0, top.bottom() + 3, self.width(), mus.top() - 3 - top.bottom() - 3)
+        return top, vid, mus
+
     def _rects(self):
-        out, x = [], 4.0
-        h = self.height() - self.RULER - 6
-        for it in self.items:
-            wd = max(6.0, it[1] * self.pps)
-            out.append(QRectF(x, 4, wd - 2, h))
-            x += wd
+        _top, vid, _m = self._lanes()
+        return [QRectF(self._x(it[6]), vid.top(), max(6.0, it[1] * self.pps) - 2, vid.height()) for it in self.items]
+
+    def _ov_rects(self):
+        top, _v, mus = self._lanes()
+        out = []
+        trs, n = self._title_rows()
+        rh = top.height() / n
+        for t, r in trs:
+            out.append(("title", t, QRectF(self._x(float(t["t0"])), top.top() + r * rh + (1 if n > 1 else 0),
+                                           max(4.0, (float(t["t1"]) - float(t["t0"])) * self.pps), rh - (2 if n > 1 else 0))))
+        for m in self.music:
+            out.append(("music", m, QRectF(self._x(float(m["t0"])), mus.top(), max(4.0, float(m["len"]) * self.pps), mus.height())))
         return out
+
+    def _index_at(self, x):
+        for i, r in enumerate(self._rects()):
+            if r.left() <= x <= r.right() + 2:
+                return i
+        return -1
+
+    def _ov_at(self, pos):
+        for kind, d, r in reversed(self._ov_rects()):
+            if r.adjusted(-self.GRAB, -1, self.GRAB, 1).contains(pos):
+                if abs(pos.x() - r.left()) <= self.GRAB:
+                    return kind, d, "l"
+                if abs(pos.x() - r.right()) <= self.GRAB:
+                    return kind, d, "r"
+                if r.contains(pos):
+                    return kind, d, "move"
+        return None
 
     def tooltip_at(self, x):
         i = self._index_at(x)
@@ -366,17 +451,15 @@ class SeqTimeline(QWidget):
             return f"{n} {d:.1f}초"
         return ""
 
-    def _index_at(self, x):
-        for i, r in enumerate(self._rects()):
-            if r.left() <= x <= r.right() + 2:
-                return i
-        return -1
-
+    # ---------------------------------------------------------------- 그리기
     def paintEvent(self, _):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         w, h = self.width(), self.height()
         p.fillRect(self.rect(), QColor("#1b1b1b"))
+        top, vid, mus = self._lanes()
+        p.fillRect(top, QColor("#202020"))
+        p.fillRect(mus, QColor("#202020"))
         rects = self._rects()
         f = QFont(self.font())
         for i, (it, r) in enumerate(zip(self.items, rects)):
@@ -400,38 +483,56 @@ class SeqTimeline(QWidget):
                 p.drawText(rr.adjusted(4, 2, -4, -2), Qt.AlignHCenter | Qt.AlignVCenter,
                            f"{speed_text(sp)}\n{label}" if rr.width() > 90 else speed_text(sp))
             draw_tag(p, rr, tag)
-            if trans:          # 앞 경계 화면 전환: 경계에 걸친 나비 모양(폭 = 전환 길이)
-                tw = max(8.0, min(rr.width(), trans[1] * self.pps))
-                x0, y0, y1 = rr.left() - 1, rr.top() + rr.height() * 0.62, rr.bottom() - 2
+            if trans:          # 앞 경계 화면 전환: 나비 모양(폭 = 전환 길이)
+                tw = max(8.0, trans[1] * self.pps)
+                x0, y0, y1 = rr.left() + tw / 2, rr.top() + rr.height() * 0.62, rr.bottom() - 2
                 p.setPen(Qt.NoPen)
                 p.setBrush(QColor(245, 245, 245, 210))
                 p.drawPolygon(QPolygonF([QPointF(x0 - tw / 2, y0), QPointF(x0 + tw / 2, y1),
                                          QPointF(x0 + tw / 2, y0), QPointF(x0 - tw / 2, y1)]))
-        # 놓일 위치 표시
         if self._press is not None and self._drag_x is not None:
             j = self._drop_index(self._drag_x)
             xs = [r.left() for r in rects] + [rects[-1].right() + 2 if rects else 4]
             x = xs[min(j, len(xs) - 1)] - 1
             p.setPen(QPen(QColor("#f2c94c"), 3))
-            p.drawLine(QPointF(x, 2), QPointF(x, h - self.RULER - 2))
+            p.drawLine(QPointF(x, vid.top()), QPointF(x, vid.bottom()))
+        # 글자·이미지·음악
+        f.setBold(False)
+        f.setPointSizeF(8)
+        p.setFont(f)
+        for kind, d, r in self._ov_rects():
+            if kind == "title":
+                c = QColor("#7a5fb0") if d.get("kind") == "text" else QColor("#5f7f9e")
+                label = (d.get("text") or "").split("\n")[0] if d.get("kind") == "text" else "▣"
+            else:
+                c = QColor("#2f6b4a")
+                label = Path(d.get("path", "")).stem
+            c.setAlpha(225)
+            p.fillRect(r, c)
+            if (kind, d.get("id")) == self.ov_sel:
+                p.setPen(QPen(QColor("white"), 2))
+                p.drawRect(r.adjusted(1, 1, -1, -1))
+            p.setPen(QColor("#f4f4f4"))
+            p.drawText(r.adjusted(4, 0, -2, 0), Qt.AlignVCenter | Qt.AlignLeft, label)
         # 눈금
         y0 = h - self.RULER
         p.fillRect(QRectF(0, y0, w, self.RULER), QColor("#151515"))
         step = next(s for s in (0.5, 1, 2, 5, 10, 15, 30, 60, 120) if s * self.pps >= 60)
         minor = step / 5
-        f.setBold(False)
-        f.setPointSizeF(8)
-        p.setFont(f)
         t = 0.0
         end = (w - 4) / self.pps
         while t <= end:
-            x = 4 + t * self.pps
+            x = self._x(t)
             major = abs((t / step) - round(t / step)) < 1e-6
             p.setPen(QColor("#888") if major else QColor("#444"))
             p.drawLine(QPointF(x, y0), QPointF(x, y0 + (8 if major else 4)))
             if major:
                 p.drawText(QPointF(x + 2, h - 3), f"{int(t // 60)}:{t % 60:04.1f}" if t >= 60 else f"{t:g}s")
             t = round(t + minor, 6)
+        # 재생 위치
+        x = self._x(self.t)
+        p.setPen(QPen(QColor("#e5484d"), 2))
+        p.drawLine(QPointF(x, 0), QPointF(x, h))
 
     def _drop_index(self, x):
         rects = self._rects()
@@ -440,25 +541,100 @@ class SeqTimeline(QWidget):
                 return i
         return len(rects)
 
+    # ---------------------------------------------------------------- 자석
+    def _snap_targets(self, exclude):
+        ts = [0.0, self.t] + [it[6] for it in self.items] + [it[6] + it[1] for it in self.items]
+        for t in self.titles:
+            if t is not exclude:
+                ts += [float(t["t0"]), float(t["t1"])]
+        for m in self.music:
+            if m is not exclude:
+                ts += [float(m["t0"]), float(m["t0"]) + float(m["len"])]
+        return ts
+
+    def _snap(self, v, targets):
+        tol = self.SNAP / self.pps
+        best = min(targets, key=lambda t: abs(t - v), default=v)
+        return best if abs(best - v) <= tol else v
+
+    # ---------------------------------------------------------------- 마우스
     def mousePressEvent(self, e):
-        i = self._index_at(e.position().x())
-        if i >= 0:
-            self._press = (i, e.position().x())
+        pos = e.position()
+        hit = self._ov_at(pos)
+        if hit:
+            kind, d, mode = hit
+            if e.button() == Qt.RightButton:
+                self.ovRemove.emit(kind, d["id"])
+                return
+            self.ov_sel = (kind, d["id"])
+            self.ovSelected.emit(kind, d["id"])
+            self.ovDragStart.emit(kind, d["id"])
+            self._ov = (kind, d, mode, pos.x(), dict(d))
+            self.update()
+            return
+        i = self._index_at(pos.x())
+        _top, vid, _m = self._lanes()
+        if i >= 0 and vid.top() <= pos.y() <= vid.bottom():
+            self._press = (i, pos.x())
             self._drag_x = None
             self.selected.emit(self.items[i][0])
-        else:
-            self._press = None
-            self.selected.emit("")
+            return
+        self._press = None
+        self.t = self._t(pos.x())         # 빈 곳·눈금 = 재생 위치
+        self.timeChanged.emit(self.t)
+        self.update()
 
     def mouseMoveEvent(self, e):
+        pos = e.position()
+        if self._ov is not None and (e.buttons() & Qt.LeftButton):
+            kind, d, mode, x0, o = self._ov
+            dt = (pos.x() - x0) / self.pps
+            tg = self._snap_targets(d)
+            if kind == "title":
+                t0, t1 = float(o["t0"]), float(o["t1"])
+                if mode == "move":
+                    n0 = max(0.0, t0 + dt)
+                    s0, s1 = self._snap(n0, tg), self._snap(n0 + (t1 - t0), tg) - (t1 - t0)
+                    n0 = s0 if s0 != n0 else s1
+                    d["t0"], d["t1"] = max(0.0, n0), max(0.0, n0) + (t1 - t0)
+                elif mode == "l":
+                    d["t0"] = max(0.0, min(t1 - 0.2, self._snap(t0 + dt, tg)))
+                else:
+                    d["t1"] = max(t0 + 0.2, self._snap(t1 + dt, tg))
+            else:
+                t0, off, ln, dur = float(o["t0"]), float(o.get("off", 0)), float(o["len"]), float(o.get("dur", o["len"]))
+                if mode == "move":
+                    n0 = max(0.0, t0 + dt)
+                    s0, s1 = self._snap(n0, tg), self._snap(n0 + ln, tg) - ln
+                    d["t0"] = max(0.0, s0 if s0 != n0 else s1)
+                elif mode == "l":       # 앞을 자름: 파일 안 시작도 같이
+                    n0 = self._snap(t0 + dt, tg)
+                    n0 = max(t0 - off, min(t0 + ln - 0.2, n0))
+                    d["t0"], d["off"], d["len"] = max(0.0, n0), off + (n0 - t0), ln - (n0 - t0)
+                else:
+                    d["len"] = max(0.2, min(dur - off, self._snap(t0 + ln + dt, tg) - t0))
+            self.ovEdited.emit(kind, d["id"])
+            self._resize()
+            self.update()
+            return
         if not e.buttons():
-            self.setToolTip(self.tooltip_at(e.position().x()))
+            hit = self._ov_at(pos)
+            self.setCursor(Qt.SizeHorCursor if hit and hit[2] in ("l", "r") else
+                           Qt.OpenHandCursor if hit else Qt.ArrowCursor)
+            self.setToolTip(self.tooltip_at(pos.x()) if not hit else "")
         if self._press is not None and (e.buttons() & Qt.LeftButton):
-            if self._drag_x is not None or abs(e.position().x() - self._press[1]) > 6:
-                self._drag_x = e.position().x()
+            if self._drag_x is not None or abs(pos.x() - self._press[1]) > 6:
+                self._drag_x = pos.x()
                 self.update()
+        elif e.buttons() & Qt.LeftButton and self._press is None:
+            self.t = self._t(pos.x())
+            self.timeChanged.emit(self.t)
+            self.update()
 
     def mouseReleaseEvent(self, e):
+        if self._ov is not None:
+            self._ov = None
+            return
         if self._press is not None and self._drag_x is not None:
             src = self._press[0]
             dst = self._drop_index(self._drag_x)
@@ -471,6 +647,10 @@ class SeqTimeline(QWidget):
         self.update()
 
     def mouseDoubleClickEvent(self, e):
+        hit = self._ov_at(e.position())
+        if hit:
+            self.ovActivated.emit(hit[0], hit[1]["id"])
+            return
         i = self._index_at(e.position().x())
         if i >= 0:
             self.activated.emit(self.items[i][0])

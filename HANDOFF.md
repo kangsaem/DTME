@@ -1,8 +1,8 @@
 # HANDOFF — DTME (Diving Tour Movie Editor)
 
-다음 대화는 이 문서를 기준으로 이어서 작업한다. **v0.12.0: 화면 개편 1·2단계 완료(4-1 참고). 진행: 모니터 확대 → 3단계(글자·이미지 줄·글꼴·음악) → 4단계(타임라인 프리뷰). 사용자는 자는 중 — 묻지 말고 진행, 끝나면 테스트·개선점 정리.**
+다음 대화는 이 문서를 기준으로 이어서 작업한다. **v0.13.0: 화면 개편 1·2·3단계 + 모니터 확대 완료(4-1 참고). 진행: 4단계(타임라인 프리뷰). 사용자는 자는 중 — 묻지 말고 진행, 끝나면 테스트·개선점 정리.**
 
-## 1. 현재 상태 — v0.12.0 (2026-11-05)
+## 1. 현재 상태 — v0.13.0 (2026-11-05)
 
 - 저장소: `kangsaem/DTME` (main). push 하면 GitHub Actions 가 Windows 빌드 → Actions → 최신 "Windows build" → Artifacts `DTME-windows`(약 200MB, 30일)
 - Linux 작업 환경에서 엔진·화면(오프스크린) 검증, Actions(Windows)에서 빌드·엔진·exe 실행 점검 통과
@@ -84,6 +84,9 @@
   - 입력란에서 Enter 가 부모로 올라와 ‘렌더리스트로’가 같이 실행되던 문제 수정(eventFilter `_text_key`)
 - **2단계 완료(v0.12.0)**: 색 키프레임 — Source/Segment.gkeys {key: [{f, v}]}(빨강·파랑·색조·채도), smoothstep 보간(`grade_at`), ◆ 버튼(노랑 채움 = 이 프레임에 키, 노랑 글자 = 키 있음), 키가 있는 항목은 슬라이더·숫자 입력이 현재 프레임 키를 만들거나 고침, 소스 바 위쪽 노란 ◆(클릭 = 이동, 우클릭 = 그 프레임 색 키 모두 삭제). 렌더 = `sendcmd` 파일(cache/lut/gk_*.txt, 출력 프레임마다 값) + 이름 붙인 필터(colorchannelmixer@g · huesaturation@g · vibrance@g) — 고정값 렌더와 차이 0.16/255. ★ 장면 표시(M, 다시 누르면 지움, 소스 바 아래 ★)
 - **모니터 확대(v0.12.1 완료)**: Monitor.zoom/center(`_view_rect` 가 모든 그리기·레이어·크롭 좌표 기준), 1.3배 넘게 키워 멈추면 `ff.render_region`(원본 4K 에서 보이는 영역만 잘라 보정, 최대 2560폭) → patch 로 덮음. 100% = 원본 1픽셀 = 화면 1픽셀(DPR 반영). Space 는 뗄 때 재생(누른 채 끌면 이동만). 사용자 확정 사양: 휠 = 마우스 위치 기준, [−][+], 가운데 버튼 드래그 또는 Space 누른 채 드래그 = 이동, 더블클릭 = 맞춤, 오른쪽 아래 비율 표시(누르면 맞춤·100%·200%·400%)
+- **3단계 완료(v0.13.0)**: Project.titles(글자 {text,font,size(1080 기준 px),bold,color,bg none|shadow|band,fade,cx,cy} / 이미지 {img,scale,cx,cy,fade}, t0·t1 = 결과 영상 초), Project.music({path,t0,off,dur,len}), Project.mix({orig None=자동,music,fin,fout}), Project.audios(음악 소스). 타임라인 3줄(SeqTimeline 새로 작성: 겹치는 글자는 줄 나눔(최대 3줄 높이), 끌기·끝 끌기·자석 8px(컷 경계·다른 항목·재생 위치), 우클릭 삭제, 더블클릭 = 글자 창/음악 창, 빈 곳·눈금 클릭 = 재생 위치 빨간 선, 컷 위치는 전환 겹침 반영). 렌더 = [vm][am] 뒤 post_graph: drawtext(글꼴·글자 파일을 cache/lut 로 복사, text_align=C, alpha 페이드) · 이미지 overlay(loop, fade alpha) · 음악 atrim/afade/volume/adelay → amix(normalize=0). 렌더 리스트로(타임라인 전체)일 때만 글자·음악 사본 포함. 글꼴 fonts/(Pretendard·Noto Sans KR·Black Han Sans·Montserrat·Inter, 각 Regular/Bold + 라이선스, ≈15MB) + Windows 맑은 고딕, [글꼴 추가…]. TeX Gyre Heros 는 CTAN 접근 불가, Nimbus Sans 는 AGPL 이라 제외 → Inter(헬베티카 비슷한 OFL)
+  - 이미지 목록 우클릭 = 현재 영상에 얹기 · 타임라인에 넣기 · 불러오기, 음악 목록 클릭 = 음악 줄 끝에 붙임
+  - 보정 패널 커브 높이 = 남는 높이(70~240)
 - 단계: 1 = 재배치·보정 패널·⚙창·출력 크기·채도/디헤이즈/렌즈·흰색 찍기·반반·프리셋·여러 클립 / 2 = 색 키프레임·★·RGB 파형 / 3 = 글자·이미지 줄·글꼴·음악 / 4 = 타임라인 프리뷰·미리보기 렌더
 
 ## 5. 사용자에게 확인 대기 중
@@ -148,6 +151,8 @@ tests/test_ui_trans.py / test_ui_reframe.py  컷편집·크롭 드래그 화면 
 tests/test_gkeys.py      색 키프레임 렌더(sendcmd) — CI
 tests/test_ui_gkeys.py   ◆·★ 화면 점검
 tests/test_ui_zoom.py    확대 보기 점검
+tests/test_titles.py     타임라인 글자·이미지·음악 렌더(4K 비율·음량) — CI
+tests/test_ui_titles.py  글자·이미지·음악 화면(자석·우클릭·렌더)
 tests/test_ui_grade.py   보정 패널(숫자 입력·프리셋 여러 클립·흰색 찍기·출력 크기·반반)
 app/dtme/ui_trans.py     컷편집 창(SVG 샘플)
 .github/workflows/build.yml  Windows 빌드(PyInstaller onedir + BtbN FFmpeg master GPL) → 엔진 점검 → exe 실행 점검 → Artifact
@@ -205,6 +210,7 @@ DTME_SELFTEST=1 DTME_NO_AUDIO=1 QT_QPA_PLATFORM=offscreen python app/main.py   #
 
 ## 11. 변경 이력
 
+- v0.13.0: 3단계 — 타임라인 글자·이미지·음악, 글꼴 포함, 글자·음악 설정 창
 - v0.12.1: 모니터 확대 보기(휠·[−][비율][+]·가운데/Space 끌기·더블클릭 맞춤·확대 영역 원본 고화질)
 - v0.12.0: 색 키프레임 ◆·★ 장면 표시. 렌더 변수 이름 충돌(lens) 수정 — 화면 전환 있는 렌더가 실패하던 문제
 - v0.11.0: 화면 개편 1단계(3열·보정 패널·프리셋·흰색 찍기·반반·RGB·채도·디헤이즈·렌즈 보정·1440/4K·⚙ 렌더 설정·미리보기 렌더)

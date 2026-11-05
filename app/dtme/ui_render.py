@@ -329,6 +329,7 @@ class RenderPanel(QWidget):
         """타임라인 전체(없으면 렌더 리스트 첫 항목)를 960×540 x264 ultrafast 로 → 기본 플레이어로 열기."""
         p = self.state.project
         segs = [g.copy() for g in p.segments] or (p.render_items[0].segs if p.render_items else [])
+        extras = {"titles": p.titles, "music": p.music, "mix": p.mix} if p.segments else {}
         if not segs or self.running:
             return
         out = paths_cache_preview()
@@ -338,7 +339,7 @@ class RenderPanel(QWidget):
 
         def work(prog, cancel):
             ff.render_video(p, segs, str(out), prog, cancel, "preview_v" if orient == "vertical" else "preview",
-                            p.output.audio, fast=True)
+                            p.output.audio, fast=True, extras=extras)
             return str(out)
 
         job = jobs.Job(work, with_progress=True)
@@ -370,8 +371,9 @@ class RenderPanel(QWidget):
         self.status[it.id] = "진행"
         self.progress[it.id] = 0.0
         self.refresh()
+        extras = {"titles": it.titles, "music": it.music, "mix": it.mix}
         job = jobs.Job(lambda prog, cancel: ff.render_video(p, it.segs, str(path), prog, cancel,
-                                                            it.orientation, it.audio), with_progress=True)
+                                                            it.orientation, it.audio, extras=extras), with_progress=True)
 
         def prog(v, iid=it.id):
             self.progress[iid] = v

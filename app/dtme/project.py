@@ -20,6 +20,7 @@ SPEEDS = [2.0, 1.0, 0.5]
 
 MAX_LAYERS = 3                  # 영상 1개에 얹을 수 있는 이미지 레이어 수
 IMAGE_EXT = {".jpg", ".jpeg", ".png"}
+AUDIO_EXT = {".mp3", ".m4a", ".wav", ".flac", ".aac"}
 VIDEO_EXT = {".mp4", ".mov"}
 
 NR_LEVELS = ["off", "weak", "mid", "strong"]   # strong 은 스틸 전용
@@ -317,6 +318,37 @@ def new_layer(img: str, fin: int, fout: int, scale: float = 1.0) -> dict:
     return {"id": _id(), "img": img, "fin": int(fin), "fout": int(fout), "cx": 0.5, "cy": 0.5, "scale": float(scale)}
 
 
+# ------------------------------------------------------------------ 타임라인 글자·이미지 / 음악 (시간 = 결과 영상 초)
+TITLE_DEFAULT_SEC = 3.0
+TITLE_FADE = 0.5
+FONT_DEFAULT = "Pretendard"
+
+
+def new_text(t0: float, t1: float, text: str = "") -> dict:
+    return {"id": _id(), "kind": "text", "t0": float(t0), "t1": float(t1), "text": text, "font": FONT_DEFAULT,
+            "size": 64, "bold": True, "color": "#ffffff", "bg": "shadow", "fade": TITLE_FADE, "cx": 0.5, "cy": 0.82}
+
+
+def new_title_image(img: str, t0: float, t1: float, scale: float = 1.0) -> dict:
+    return {"id": _id(), "kind": "image", "img": img, "t0": float(t0), "t1": float(t1), "fade": TITLE_FADE,
+            "cx": 0.5, "cy": 0.5, "scale": float(scale)}
+
+
+def new_music(path: str, t0: float, dur: float) -> dict:
+    """off = 파일 안 시작 위치(초), len = 타임라인에서 쓰는 길이."""
+    return {"id": _id(), "path": path, "t0": float(t0), "off": 0.0, "dur": float(dur), "len": float(dur)}
+
+
+def default_mix() -> dict:
+    """orig None = 자동(음악 없으면 1.0, 있으면 0.0)."""
+    return {"orig": None, "music": 1.0, "fin": 0.5, "fout": 2.0}
+
+
+def orig_volume(mix: dict, music: list) -> float:
+    v = (mix or {}).get("orig")
+    return (0.0 if music else 1.0) if v is None else float(v)
+
+
 def layer_box(layer: dict, img: "ImageSource", out_w: int, out_h: int) -> tuple[int, int, int, int]:
     """출력 화면에서 레이어 사각형 (x, y, w, h) 픽셀. scale 1 = 1080p 출력에서 원본 픽셀 크기
     (1440·4K 출력은 같은 비율로 커짐)."""
@@ -343,6 +375,9 @@ class RenderItem:
     orientation: str = "horizontal"
     audio: bool = True
     id: str = field(default_factory=_id)
+    titles: list = field(default_factory=list)   # 타임라인 전체를 보낼 때만(사본)
+    music: list = field(default_factory=list)
+    mix: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -364,6 +399,10 @@ class Project:
     render_items: list[RenderItem] = field(default_factory=list)
     samples: list[Marker] = field(default_factory=list)
     stills: list[Marker] = field(default_factory=list)
+    audios: list = field(default_factory=list)       # 음악 소스 [{"id", "path", "dur"}]
+    titles: list = field(default_factory=list)       # 타임라인 글자·이미지 줄
+    music: list = field(default_factory=list)        # 타임라인 음악 줄
+    mix: dict = field(default_factory=default_mix)   # 원본·음악 볼륨, 음악 페이드
     grade: dict = field(default_factory=load_default_grade)
     output: OutputSettings = field(default_factory=OutputSettings)
     file: str = ""
@@ -419,6 +458,7 @@ class Project:
             "render_items": [asdict(r) for r in self.render_items],
             "samples": [asdict(s) for s in self.samples],
             "stills": [asdict(s) for s in self.stills],
+            "titles": self.titles, "music": self.music, "mix": self.mix, "audios": self.audios,
             "grade": self.grade,
             "output": asdict(self.output),
         }
@@ -438,6 +478,10 @@ class Project:
             p.render_items.append(RenderItem(**r))
         p.samples = [Marker(**s) for s in d.get("samples", [])]
         p.stills = [Marker(**s) for s in d.get("stills", [])]
+        p.titles = list(d.get("titles", []))
+        p.audios = list(d.get("audios", []))
+        p.music = list(d.get("music", []))
+        p.mix = {**default_mix(), **d.get("mix", {})}
         g = dict(FACTORY_GRADE)
         g.update(upgrade_grade(dict(d.get("grade", {}))))
         p.grade = g
