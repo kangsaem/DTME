@@ -292,6 +292,13 @@ class SeqTimeline(QWidget):
             x += wd
         return out
 
+    def tooltip_at(self, x):
+        i = self._index_at(x)
+        if i >= 0 and len(self.items[i]) > 5 and self.items[i][5]:
+            n, d = self.items[i][5]
+            return f"{n} {d:.1f}초"
+        return ""
+
     def _index_at(self, x):
         for i, r in enumerate(self._rects()):
             if r.left() <= x <= r.right() + 2:
@@ -306,7 +313,8 @@ class SeqTimeline(QWidget):
         rects = self._rects()
         f = QFont(self.font())
         for i, (it, r) in enumerate(zip(self.items, rects)):
-            sid, sec, label, sp, tag = it
+            sid, sec, label, sp, tag = it[:5]
+            trans = it[5] if len(it) > 5 else None
             dragging = self._press is not None and self._drag_x is not None and self._press[0] == i
             rr = QRectF(r)
             if dragging:
@@ -325,6 +333,13 @@ class SeqTimeline(QWidget):
                 p.drawText(rr.adjusted(4, 2, -4, -2), Qt.AlignHCenter | Qt.AlignVCenter,
                            f"{speed_text(sp)}\n{label}" if rr.width() > 90 else speed_text(sp))
             draw_tag(p, rr, tag)
+            if trans:          # 앞 경계 화면 전환: 경계에 걸친 나비 모양(폭 = 전환 길이)
+                tw = max(8.0, min(rr.width(), trans[1] * self.pps))
+                x0, y0, y1 = rr.left() - 1, rr.top() + rr.height() * 0.62, rr.bottom() - 2
+                p.setPen(Qt.NoPen)
+                p.setBrush(QColor(245, 245, 245, 210))
+                p.drawPolygon(QPolygonF([QPointF(x0 - tw / 2, y0), QPointF(x0 + tw / 2, y1),
+                                         QPointF(x0 + tw / 2, y0), QPointF(x0 - tw / 2, y1)]))
         # 놓일 위치 표시
         if self._press is not None and self._drag_x is not None:
             j = self._drop_index(self._drag_x)
@@ -369,6 +384,8 @@ class SeqTimeline(QWidget):
             self.selected.emit("")
 
     def mouseMoveEvent(self, e):
+        if not e.buttons():
+            self.setToolTip(self.tooltip_at(e.position().x()))
         if self._press is not None and (e.buttons() & Qt.LeftButton):
             if self._drag_x is not None or abs(e.position().x() - self._press[1]) > 6:
                 self._drag_x = e.position().x()

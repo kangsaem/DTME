@@ -255,10 +255,10 @@ class EditTab(QWidget):
         # 타임라인 머리줄: [타임라인 n초] ··· [▼] ··· [확대 ━━] [전체 삭제] [렌더리스트로]
         self.tl_len = QLabel("")
         self.tl_len.setStyleSheet("color:#aaa;")
-        tl_title = QLabel("타임라인")
-        tl_title.setStyleSheet("font-weight:600;")
+        b_trans = _btn("컷편집", "선택한 컷 앞 경계의 화면 전환", self.edit_transition)
+        b_trans.setFixedSize(BTN_W, BTN_H)
         lbox = QHBoxLayout()
-        lbox.addWidget(tl_title)
+        lbox.addWidget(b_trans)
         lbox.addWidget(self.tl_len)
         b_down = _btn("▼", "↓", lambda: self._key("down"), 64, 28)
         b_down.setStyleSheet("QPushButton{font-size:15px; background:#2f3b4d;}")
@@ -706,6 +706,22 @@ class EditTab(QWidget):
         self.sel_cut = ""
         self.state.touch("segments")
 
+    def edit_transition(self):
+        from .ui_trans import TransitionDialog
+        segs = self.state.project.segments
+        i = next((k for k, g in enumerate(segs) if g.id == self.sel_cut), -1)
+        if i < 0:
+            self._say("컷을 선택", C_WARN)
+            return
+        dlg = TransitionDialog(segs[i].trans, first=(i == 0), parent=self)
+
+        def apply(kind, dur, seg=segs[i]):
+            self.state.checkpoint()
+            seg.trans = {} if kind == "none" else {"type": kind, "dur": dur}
+            self.state.touch("segments")
+        dlg.chosen.connect(apply)
+        dlg.exec()
+
     def _on_cut_selected(self, cid):
         self.sel_cut = cid
         self._del_target = "cut"
@@ -911,14 +927,18 @@ class EditTab(QWidget):
     def _refresh_timeline(self):
         p = self.state.project
         items = []
-        for g in p.segments:
+        from .project import TRANS_NAME, plan_transitions
+        segs = [g for g in p.segments if p.source(g.src) and p.source(g.src).frames]
+        lens = [p.seg_out_seconds(g, p.source(g.src).fps) for g in segs]
+        plan = plan_transitions(segs, lens)
+        for g, ln, t in zip(segs, lens, plan):
             s = p.source(g.src)
-            if s and s.frames:
-                items.append((g.id, p.seg_out_seconds(g, s.fps), short_name(s.path)[-4:], g.speed, self._tag(s.id)))
+            items.append((g.id, ln, short_name(s.path)[-4:], g.speed, self._tag(s.id),
+                          (TRANS_NAME[t[0]], t[1]) if t else None))
         if self.sel_cut and not any(i[0] == self.sel_cut for i in items):
             self.sel_cut = ""
         self.timeline.set_items(items, self.sel_cut)
-        tot = sum(i[1] for i in items)
+        tot = p.segs_seconds(segs)
         self.tl_len.setText(f"{tot:.1f}초" if items else "")
 
 
