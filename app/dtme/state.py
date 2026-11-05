@@ -7,7 +7,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, Signal
 
 from . import ff, jobs
-from .project import Project, Source
+from .project import IMAGE_EXT, ImageSource, Project, Source
 
 
 class AppState(QObject):
@@ -20,6 +20,7 @@ class AppState(QObject):
         super().__init__()
         self.project = Project()
         self.status: dict[str, str] = {}      # sid → 상태 문구
+        self.img_status: dict[str, str] = {}  # 이미지 id → "" (정상) | "읽기 오류" | "원본 없음"
         self.proxy_pct: dict[str, float] = {}
         self.errors: dict[str, str] = {}      # sid → 마지막 오류 내용
         self._proxy_jobs: dict[str, jobs.Job] = {}
@@ -54,7 +55,13 @@ class AppState(QObject):
         self.project = p
         self._undo = []
         self.status, self.proxy_pct, self._proxy_jobs = {}, {}, {}
+        self.img_status = {}
         self.dirty = False
+        for m in p.images:
+            if not Path(m.path).exists():
+                self.img_status[m.id] = "원본 없음"
+            elif not m.width:
+                self._queue_image(m)
         for s in p.sources:
             if not Path(s.path).exists():
                 self.status[s.id] = "원본 없음"
@@ -85,6 +92,12 @@ class AppState(QObject):
 
     # ------------------------------------------------------------ 불러오기 (즉시 목록 등록)
     def import_files(self, files: list[str]) -> int:
+        imgs = [f for f in files if Path(f).suffix.lower() in IMAGE_EXT]
+        files = [f for f in files if Path(f).suffix.lower() not in IMAGE_EXT]
+        if imgs:
+            self.import_images(imgs)
+        if not files:
+            return 0
         known = {Path(s.path).resolve() for s in self.project.sources}
         added = 0
         self.checkpoint()
@@ -131,6 +144,55 @@ class AppState(QObject):
         job.signals.done.connect(done)
         job.signals.error.connect(err)
         jobs.submit(jobs.ANALYZE_POOL, job)
+
+    # ------------------------------------------------------------ 스틸 소스(이미지)
+    def import_images(self, files: list[str]) -> int:
+        known = {Path(m.path).resolve() for m in self.project.images}
+        new = []
+        for f in files:
+            pth = Path(f).resolve()
+            if pth not in known:
+                known.add(pth)
+                new.append(ImageSource(path=str(pth)))
+        if not new:
+            return 0
+        self.checkpoint()
+        for m in new:
+            self.project.images.append(m)
+            self._queue_image(m)
+        self.touch("images")
+        return len(new)
+
+    def _queue_image(self, m: ImageSource):
+        job = jobs.Job(lambda: ff.probe_image(m.path))
+
+        def done(info, iid=m.id):
+            im = self.project.image(iid)
+            if im is not None:
+                im.width, im.height, im.orient = info["width"], info["height"], info["orient"]
+                self.img_status[iid] = ""
+                self.changed.emit("images")
+
+        def err(msg, im=m):
+            ff.log_error(f"이미지 {im.path}", msg)
+            self.img_status[im.id] = "읽기 오류"
+            self.changed.emit("images")
+            self.message.emit(f"{im.name}: 읽을 수 없음")
+
+        job.signals.done.connect(done)
+        job.signals.error.connect(err)
+        jobs.submit(jobs.ANALYZE_POOL, job)
+
+    def remove_image(self, iid: str):
+        """이미지와 그 이미지를 쓰는 레이어(소스·타임라인·렌더 리스트)를 모두 지움."""
+        self.checkpoint()
+        p = self.project
+        p.images = [m for m in p.images if m.id != iid]
+        for s in p.sources:
+            s.layers = [l for l in s.layers if l.get("img") != iid]
+        for g in p.segments + [g for r in p.render_items for g in r.segs]:
+            g.layers = [l for l in g.layers if l.get("img") != iid]
+        self.touch("images")
 
     def remove_source(self, sid: str):
         self.checkpoint()

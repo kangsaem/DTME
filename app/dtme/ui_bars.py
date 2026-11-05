@@ -145,6 +145,104 @@ class SourceBar(QWidget):
         self._edge = ""
 
 
+class LayerBar(QWidget):
+    """소스 바 위 얇은 스틸 바(이미지 레이어마다 한 줄, 아래 줄 = 먼저 그려지는 레이어).
+    끝 드래그 = 레이어 인/아웃, 클릭 = 선택, 우클릭 = 레이어 삭제. 소스 바와 같은 가로 비율."""
+    selected = Signal(str)
+    dragStarted = Signal(str)
+    dragged = Signal(str, str, int)       # layer id, "in" | "out", frame
+    dragFinished = Signal()
+    removeRequested = Signal(str)
+
+    ROW = 7      # 줄 높이(간격 1 포함)
+    GRAB = 7
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.frames = 0
+        self.rows = []          # [(id, fin, fout, tip)]
+        self.sel = ""
+        self.playhead = 0
+        self._edge = None       # (id, which)
+        self.setMouseTracking(True)
+        self.setFixedHeight(0)
+
+    def set_data(self, frames, rows, sel):
+        self.frames, self.rows, self.sel = frames, rows, sel
+        self.setFixedHeight(len(rows) * self.ROW + (1 if rows else 0))
+        self.update()
+
+    def set_playhead(self, f):
+        self.playhead = f
+        if self.rows:
+            self.update()
+
+    def _x(self, f):
+        return f / max(1, self.frames) * self.width()
+
+    def _frame_at(self, x):
+        return int(max(0, min(self.frames, round(x / max(1, self.width()) * self.frames))))
+
+    def _row_rect(self, i):
+        y = self.height() - 1 - (i + 1) * self.ROW
+        lid, a, b, _t = self.rows[i]
+        return QRectF(self._x(a), y + 1, max(3.0, self._x(b) - self._x(a)), self.ROW - 1)
+
+    def paintEvent(self, _):
+        if not self.rows:
+            return
+        p = QPainter(self)
+        p.fillRect(self.rect(), QColor("#202020"))
+        for i, (lid, _a, _b, _t) in enumerate(self.rows):
+            r = self._row_rect(i)
+            p.fillRect(r, QColor("#e6e6e6") if lid == self.sel else QColor("#8f8f8f"))
+            p.fillRect(QRectF(r.left(), r.top(), 2, r.height()), QColor("#ffffff"))
+            p.fillRect(QRectF(r.right() - 2, r.top(), 2, r.height()), QColor("#ffffff"))
+        x = self._x(self.playhead)
+        p.setPen(QPen(QColor("#e5484d"), 2))
+        p.drawLine(QPointF(x, 0), QPointF(x, self.height()))
+
+    def _hit(self, pos):
+        """(행 번호, 'in'|'out'|'' ) 또는 (-1, '')"""
+        for i in range(len(self.rows)):
+            r = self._row_rect(i)
+            if r.top() - 1 <= pos.y() <= r.bottom() + 1:
+                x = pos.x()
+                da, db = abs(x - r.left()), abs(x - r.right())
+                if min(da, db) <= self.GRAB:
+                    return i, ("in" if da <= db else "out")
+                if r.left() <= x <= r.right():
+                    return i, ""
+                return -1, ""
+        return -1, ""
+
+    def mousePressEvent(self, e):
+        i, edge = self._hit(e.position())
+        if i < 0:
+            return
+        lid = self.rows[i][0]
+        if e.button() == Qt.RightButton:
+            self.removeRequested.emit(lid)
+            return
+        self.selected.emit(lid)
+        if edge:
+            self._edge = (lid, edge)
+            self.dragStarted.emit(lid)
+
+    def mouseMoveEvent(self, e):
+        if self._edge and (e.buttons() & Qt.LeftButton):
+            self.dragged.emit(self._edge[0], self._edge[1], self._frame_at(e.position().x()))
+            return
+        i, edge = self._hit(e.position())
+        self.setCursor(Qt.SizeHorCursor if edge else Qt.ArrowCursor)
+        self.setToolTip(self.rows[i][3] if i >= 0 else "")
+
+    def mouseReleaseEvent(self, _):
+        if self._edge:
+            self.dragFinished.emit()
+        self._edge = None
+
+
 class SeqTimeline(QWidget):
     """컷들을 결과 길이(배속 반영) 비율로 이어 그림. 클릭=선택, 드래그=순서 변경, 아래 눈금=결과 시간."""
     selected = Signal(str)

@@ -1,26 +1,29 @@
 """편집·보정 화면: 소스 | 모니터·소스 바·조작·타임라인 | 보정 | 렌더 리스트."""
 from __future__ import annotations
 
+import copy
 import os
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QRectF, QSize, Qt, QTimer
-from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QImage, QImageReader, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (QAbstractSpinBox, QApplication, QButtonGroup, QCheckBox, QFileDialog, QFrame,
                                QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
                                QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSlider,
                                QSplitter, QStyle, QStyledItemDelegate, QTextEdit, QVBoxLayout, QWidget)
 
 from . import ff, jobs
-from .project import Marker, RenderItem, Segment, display_name, short_name, speed_label, timecode
+from .project import (MAX_LAYERS, Marker, RenderItem, Segment, display_name, new_layer, short_name, speed_label,
+                      timecode)
 from .state import AppState
-from .ui_bars import SeqTimeline, SourceBar
+from .ui_bars import LayerBar, SeqTimeline, SourceBar
 from .ui_grade import GradePanel
 from .ui_player import Player
 from .ui_render import (ADD_H, ADD_W, BTN_H, BTN_W, RenderPanel, add_shadow, item_base, out_dir,
                         render_list_button, unique)
 
-VIDEO_FILTER = "영상 (*.mp4 *.MP4 *.mov *.MOV)"
+MEDIA_FILTER = "영상·이미지 (*.mp4 *.MP4 *.mov *.MOV *.jpg *.JPG *.jpeg *.JPEG *.png *.PNG)"
+IMG_DISPLAY_MAX = 2048      # 모니터 표시용 이미지 최대 변(렌더는 원본 사용)
 
 # Windows 물리 키(스캔코드) — 한/영 상태와 무관하게 동작
 SCAN = {0x39: "space", 0x24: "j", 0x26: "l", 0x17: "i", 0x18: "o", 0x1A: "i", 0x1B: "o", 0x1F: "s", 0x22: "g",
@@ -90,12 +93,45 @@ class SourceDelegate(QStyledItemDelegate):
         p.restore()
 
 
+class ImageDelegate(QStyledItemDelegate):
+    """스틸 소스 1개 = 연한 회색 바(오류는 빨강), 파일 이름."""
+
+    def __init__(self, tab):
+        super().__init__(tab)
+        self.tab = tab
+
+    def sizeHint(self, option, index):
+        return QSize(option.rect.width(), 26)
+
+    def paint(self, p: QPainter, option, index):
+        iid = index.data(Qt.UserRole)
+        bad = bool(self.tab.state.img_status.get(iid))
+        r = QRectF(option.rect).adjusted(2, 2, -2, -2)
+        p.save()
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor("#7a2a22") if bad else QColor("#a9b0b8"))
+        p.drawRoundedRect(r, 3, 3)
+        if option.state & QStyle.State_Selected:
+            p.setPen(QPen(QColor("#4a8fe0"), 2))
+            p.setBrush(Qt.NoBrush)
+            p.drawRoundedRect(r.adjusted(1, 1, -1, -1), 3, 3)
+        p.setPen(QColor("#dddddd") if bad else QColor("#111"))
+        p.drawText(r.adjusted(10, 0, -6, 0), Qt.AlignVCenter | Qt.AlignLeft,
+                   option.fontMetrics.elidedText(index.data(Qt.DisplayRole), Qt.ElideMiddle, int(r.width()) - 16))
+        p.restore()
+
+
 class EditTab(QWidget):
     def __init__(self, state: AppState, parent=None):
         super().__init__(parent)
         self.state = state
         self.cur_sid = ""
         self.sel_cut = ""
+        self.sel_layer = ""
+        self._del_target = "cut"        # Del 키 대상: "cut" | "layer"
+        self._last_list = "src"         # [제거] 대상: "src" | "img"
+        self._img_cache: dict[str, QImage] = {}
         self.pgen = 0
 
         # ================= 소스
@@ -106,15 +142,26 @@ class EditTab(QWidget):
         self.src_list.currentItemChanged.connect(self._on_src_selected)
         self.src_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.src_list.customContextMenuRequested.connect(lambda _pos: self.add_files())
+        self.src_list.itemPressed.connect(lambda _it: setattr(self, "_last_list", "src"))
+        # 스틸 소스(이미지) — 영상 목록 아래, 클릭 = 현재 영상에 레이어로 얹음
+        self.img_list = QListWidget()
+        self.img_list.setFocusPolicy(Qt.NoFocus)
+        self.img_list.setItemDelegate(ImageDelegate(self))
+        self.img_list.setStyleSheet("QListWidget{background:#1a1a1a; border:none; border-top:1px solid #333;}")
+        self.img_list.itemClicked.connect(self._on_img_clicked)
+        self.img_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.img_list.customContextMenuRequested.connect(lambda _pos: self.add_files())
+        self.img_list.setVisible(False)
         self.load_bar = QProgressBar()
         self.load_bar.setTextVisible(False)
         self.load_bar.setFixedHeight(6)
         left = QVBoxLayout()
         left.setContentsMargins(0, 0, 0, 0)
-        left.addWidget(self.src_list, 1)
+        left.addWidget(self.src_list, 3)
+        left.addWidget(self.img_list, 1)
         left.addWidget(self.load_bar)
         row = QHBoxLayout()
-        for text, fn in (("영상 추가", self.add_files), ("제거", self._remove_source)):
+        for text, fn in (("영상 추가", self.add_files), ("제거", self._remove_selected)):
             b = _btn(text, "", fn)
             b.setFixedSize(ADD_W, ADD_H)
             row.addWidget(b)
@@ -132,10 +179,21 @@ class EditTab(QWidget):
         self.sbar.ioDragStarted.connect(self._io_drag_start)
         self.sbar.ioDragged.connect(self._io_drag)
         self.sbar.ioDragFinished.connect(self._after_io)
+        self.lbar = LayerBar()
+        self.lbar.selected.connect(self._select_layer)
+        self.lbar.dragStarted.connect(lambda _lid: self.state.checkpoint())
+        self.lbar.dragged.connect(self._layer_drag)
+        self.lbar.dragFinished.connect(lambda: setattr(self.state, "dirty", True))
+        self.lbar.removeRequested.connect(self.remove_layer)
+        mon_w = self.player.mon
+        mon_w.layerPressed.connect(self._on_layer_pressed)
+        mon_w.layerChanged.connect(lambda: setattr(self.state, "dirty", True))
+        mon_w.layerSelected.connect(self._select_layer)
         mon = QVBoxLayout()
         mon.setSpacing(0)
         mon.setContentsMargins(0, 0, 0, 0)
         mon.addWidget(self.player, 1)
+        mon.addWidget(self.lbar)
         mon.addWidget(self.sbar)
 
         # 재생 버튼 줄: [정지 시 보정 화면] ··· [◀◀ ◀| ▶ |▶ ▶▶] ··· [시간]
@@ -314,7 +372,10 @@ class EditTab(QWidget):
     def _key(self, name, shift=False):
         p = self.player
         if name == "del":
-            self.delete_cut()
+            if self._del_target == "layer" and self.sel_layer:
+                self.remove_layer(self.sel_layer)
+            else:
+                self.delete_cut()
             return
         src = self._cur()
         if src is None or not src.frames:
@@ -368,15 +429,26 @@ class EditTab(QWidget):
 
     def _apply_aspect(self):
         self.player.set_aspect(9 / 16 if self.state.project.output.orientation == "vertical" else 16 / 9)
+        self._update_monitor_layers()
 
     # ================================================================ 소스
     def add_files(self):
-        files, _ = QFileDialog.getOpenFileNames(self, "영상 추가", "", VIDEO_FILTER)
+        files, _ = QFileDialog.getOpenFileNames(self, "영상 추가", "", MEDIA_FILTER)
         if files:
             self.import_files(files)
 
     def import_files(self, files):
         self.state.import_files(files)
+
+    def _remove_selected(self):
+        if self._last_list == "img" and self.img_list.currentItem() is not None:
+            iid = self.img_list.currentItem().data(Qt.UserRole)
+            m = self.state.project.image(iid)
+            if m and QMessageBox.question(self, "제거", f"{Path(m.path).name} 제거?") == QMessageBox.Yes:
+                self.state.remove_image(iid)
+                self._img_cache.pop(iid, None)
+            return
+        self._remove_source()
 
     def _remove_source(self):
         s = self._cur()
@@ -435,6 +507,7 @@ class EditTab(QWidget):
         if cur is None:
             return
         self.cur_sid = cur.data(Qt.UserRole)
+        self.sel_layer = ""
         self.pgen += 1
         self.player.clear("로딩 중…")      # 이전 소스 화면 즉시 지움
         self.state.prioritize(self.cur_sid)
@@ -469,6 +542,8 @@ class EditTab(QWidget):
         if s:
             self.tc.setText(timecode(f, s.fps))
         self.sbar.set_playhead(f)
+        self.lbar.set_playhead(f)
+        self._update_monitor_layers()
         if not self.player.is_busy():
             self._pv_timer.start()
 
@@ -546,12 +621,9 @@ class EditTab(QWidget):
         a, b = s.io
         if which == "in":
             s.sel_in = max(0, min(f, b - 2))
-            show = s.sel_in
         else:
             s.sel_out = max(a + 2, min(s.frames, f))
-            show = s.sel_out - 1
-        self._refresh_sbar()
-        self.player.seek(show)        # 끝을 옮기는 동안 그 프레임을 보여줌
+        self._refresh_sbar()          # 프리뷰 위치는 그대로(재생 위치·재생 버튼으로만 이동)
 
     def clear_io(self):
         s = self._cur()
@@ -581,9 +653,13 @@ class EditTab(QWidget):
 
     # ================================================================ 보내기
     def _cur_segment(self):
+        """인/아웃 구간 + 그 구간에 걸친 이미지 레이어(사본)."""
         s = self._cur()
         a, b = s.io
-        return Segment(s.id, a, b, s.speed)
+        lays = [copy.deepcopy(l) for l in s.layers if l["fout"] > a and l["fin"] < b]
+        for l in lays:
+            l["id"] = new_layer("", 0, 0)["id"]
+        return Segment(s.id, a, b, s.speed, layers=lays)
 
     def send_to_timeline(self):
         seg = self._cur_segment()
@@ -608,7 +684,7 @@ class EditTab(QWidget):
         if not p.segments:
             return
         self.state.checkpoint()
-        p.render_items.append(self._new_item([Segment(g.src, g.fin, g.fout, g.speed) for g in p.segments]))
+        p.render_items.append(self._new_item([g.copy() for g in p.segments]))
         self.state.touch("render")
 
     # ================================================================ 타임라인
@@ -632,6 +708,7 @@ class EditTab(QWidget):
 
     def _on_cut_selected(self, cid):
         self.sel_cut = cid
+        self._del_target = "cut"
         self._refresh_timeline()
 
     def _on_cut_moved(self, a, b):
@@ -676,6 +753,10 @@ class EditTab(QWidget):
             self._refresh_sbar()
         elif what == "sources":
             self._refresh_sources()
+        if what in ("project", "undo", "images"):
+            self._refresh_images()
+        if what in ("project", "undo", "images", "sources"):
+            self._refresh_layers()
         if what in ("project", "undo", "output"):
             self._apply_aspect()
         if what in ("project", "undo", "sources", "segments", "grade", "output"):
@@ -692,9 +773,140 @@ class EditTab(QWidget):
         p = self.state.project
         if not s or not s.frames:
             self.sbar.set_data(0, (0, 0), False, 1.0, "", [], [])
+            self._refresh_layers()
             return
         self.sbar.set_data(s.frames, s.io, s.io_trimmed, s.speed, self._tag(s.id),
                            [m.frame for m in p.stills if m.src == s.id], [m.frame for m in p.samples if m.src == s.id])
+        self._refresh_layers()
+
+    # ================================================================ 스틸 소스·이미지 레이어
+    def _refresh_images(self):
+        p = self.state.project
+        cur = self.img_list.currentItem().data(Qt.UserRole) if self.img_list.currentItem() else ""
+        self.img_list.clear()
+        for m in p.images:
+            it = QListWidgetItem(Path(m.path).stem)
+            it.setData(Qt.UserRole, m.id)
+            err = self.state.img_status.get(m.id, "")
+            it.setToolTip(m.path + (f"\n{err}" if err else f"\n{m.width}×{m.height}" if m.width else ""))
+            self.img_list.addItem(it)
+            if m.id == cur:
+                self.img_list.setCurrentItem(it)
+        self.img_list.setVisible(bool(p.images))
+        ids = {m.id for m in p.images}
+        for k in [k for k in self._img_cache if k not in ids]:
+            self._img_cache.pop(k)
+
+    def _qimage(self, iid):
+        """모니터 표시용 이미지(EXIF 방향 반영, 큰 이미지는 줄여서 보관)."""
+        if iid in self._img_cache:
+            return self._img_cache[iid]
+        m = self.state.project.image(iid)
+        if m is None:
+            return None
+        r = QImageReader(m.path)
+        r.setAutoTransform(True)
+        img = r.read()
+        if img.isNull():
+            return None
+        if max(img.width(), img.height()) > IMG_DISPLAY_MAX:
+            img = img.scaled(IMG_DISPLAY_MAX, IMG_DISPLAY_MAX, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        img = img.convertToFormat(QImage.Format_ARGB32_Premultiplied)
+        self._img_cache[iid] = img
+        return img
+
+    def _on_img_clicked(self, it):
+        self._last_list = "img"
+        self.add_layer(it.data(Qt.UserRole))
+
+    def add_layer(self, iid):
+        s = self._cur()
+        m = self.state.project.image(iid)
+        if s is None or not s.frames or m is None:
+            return
+        if not m.width or self.state.img_status.get(iid):
+            self._say("이미지를 읽을 수 없음", C_WARN)
+            return
+        if len(s.layers) >= MAX_LAYERS:
+            self._say(f"레이어는 {MAX_LAYERS}개까지", C_WARN)
+            return
+        ow, oh = ff.out_size(self.state.project.output.orientation)
+        scale = min(1.0, ow / m.width, oh / m.height)      # 원본 크기. 출력 화면보다 크면 화면에 맞춤
+        a, b = s.io
+        self.state.checkpoint()
+        lay = new_layer(iid, a, b, scale)
+        s.layers.append(lay)
+        self.state.dirty = True
+        self.sel_layer = lay["id"]
+        self._del_target = "layer"
+        self._refresh_layers()
+
+    def remove_layer(self, lid):
+        s = self._cur()
+        if not s or not any(l["id"] == lid for l in s.layers):
+            return
+        self.state.checkpoint()
+        s.layers = [l for l in s.layers if l["id"] != lid]
+        self.state.dirty = True
+        if self.sel_layer == lid:
+            self.sel_layer = ""
+        self._refresh_layers()
+
+    def _select_layer(self, lid):
+        self.sel_layer = lid
+        if lid:
+            self._del_target = "layer"
+        self._refresh_layers()
+
+    def _on_layer_pressed(self, lid):
+        self.state.checkpoint()
+        if self.sel_layer != lid:
+            self._select_layer(lid)
+        self._del_target = "layer"
+
+    def _layer_drag(self, lid, which, f):
+        s = self._cur()
+        lay = next((l for l in s.layers if l["id"] == lid), None) if s else None
+        if lay is None:
+            return
+        if which == "in":
+            lay["fin"] = max(0, min(f, lay["fout"] - 1))
+        else:
+            lay["fout"] = max(lay["fin"] + 1, min(s.frames, f))
+        self._refresh_layers()         # 프리뷰 위치는 그대로
+
+    def _refresh_layers(self):
+        s = self._cur()
+        if not s or not s.frames:
+            self.lbar.set_data(0, [], "")
+            self.player.mon.set_layers([], "")
+            return
+        if self.sel_layer and not any(l["id"] == self.sel_layer for l in s.layers):
+            self.sel_layer = ""
+        p = self.state.project
+        rows = []
+        for l in s.layers:
+            m = p.image(l["img"])
+            rows.append((l["id"], l["fin"], l["fout"], Path(m.path).name if m else ""))
+        self.lbar.set_data(s.frames, rows, self.sel_layer)
+        self.lbar.set_playhead(self.player.frame)
+        self._update_monitor_layers()
+
+    def _update_monitor_layers(self):
+        s = self._cur()
+        if not s or not s.frames:
+            self.player.mon.set_layers([], "")
+            return
+        f = self.player.frame
+        vis = []
+        for l in s.layers:
+            m = self.state.project.image(l["img"])
+            if m is None or not m.width or not (l["fin"] <= f < l["fout"]):
+                continue
+            img = self._qimage(m.id)
+            if img is not None:
+                vis.append((l, img, (m.width, m.height)))
+        self.player.mon.set_layers(vis, self.sel_layer)
 
     def _refresh_timeline(self):
         p = self.state.project

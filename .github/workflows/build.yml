@@ -51,6 +51,7 @@ jobs:
           & dist/DTME/bin/ffmpeg.exe -hide_banner -v error -f lavfi -i "testsrc2=s=3840x2160:r=60000/1001:d=2,format=yuv420p10le" -f lavfi -i "sine=d=2" -c:v libx265 -preset ultrafast -c:a aac -shortest test4k.mp4
           $env:PATH = "$PWD/dist/DTME/bin;$env:PATH"
           python tests/test_engine_min.py test4k.mp4
+          python tests/test_layers.py test4k.mp4 layer_test
 
       - name: Smoke test (exe 실행)
         shell: pwsh

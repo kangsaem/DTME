@@ -10,7 +10,7 @@ import math
 import os
 from fractions import Fraction
 
-from PySide6.QtCore import QRectF, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer, QVideoSink
 from PySide6.QtWidgets import QSizePolicy, QWidget
@@ -19,13 +19,27 @@ from . import ff, jobs
 
 
 class Monitor(QWidget):
+    """layerPressed(id) = 레이어를 잡기 직전(실행취소 지점), layerChanged = 위치·크기 바뀜, layerSelected(id 또는 '')."""
+    layerPressed = Signal(str)
+    layerChanged = Signal()
+    layerSelected = Signal(str)
+
+    HANDLE = 9
+
     def __init__(self):
         super().__init__()
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.img: QImage | None = None
         self.text = ""
         self.out_aspect = 16 / 9       # 출력 화면비(세로 = 9/16)
+        self.out_wh = (1920, 1080)     # 출력 픽셀(레이어 위치·크기 기준)
         self.smooth = True
+        self.layers = []               # [(layer dict, QImage, (원본 w, h))] 아래 → 위 순서. 현재 프레임에 보이는 것만
+        self.sel_layer = ""
+        self._out_rect = QRectF()
+        self._drag = None              # (mode, layer, press pos, cx, cy, scale)
+        self._wheel_t = 0.0
+        self.setMouseTracking(True)
 
     def sizeHint(self):
         return QSize(960, 540)
@@ -43,12 +57,96 @@ class Monitor(QWidget):
 
     def set_aspect(self, aspect: float):
         self.out_aspect = aspect
+        self.out_wh = (1080, 1920) if aspect < 1 else (1920, 1080)
         self.update()
+
+    def set_layers(self, layers, sel: str):
+        self.layers, self.sel_layer = layers, sel
+        self.update()
+
+    # ---------------------------------------------------------------- 레이어 위치(화면 좌표)
+    def _layer_rect(self, lay, wh) -> QRectF:
+        c = self._out_rect
+        k = c.width() / self.out_wh[0]
+        w, h = wh[0] * lay["scale"] * k, wh[1] * lay["scale"] * k
+        return QRectF(c.left() + lay["cx"] * c.width() - w / 2, c.top() + lay["cy"] * c.height() - h / 2, w, h)
+
+    def _corners(self, r: QRectF):
+        return [r.topLeft(), r.topRight(), r.bottomLeft(), r.bottomRight()]
+
+    def _hit(self, pos):
+        """위에 있는 레이어부터 (mode, layer). mode = 'scale' | 'move'"""
+        if self._out_rect.isEmpty():
+            return None, None
+        for lay, _img, wh in reversed(self.layers):
+            r = self._layer_rect(lay, wh)
+            if lay["id"] == self.sel_layer:
+                for c in self._corners(r):
+                    if abs(pos.x() - c.x()) <= self.HANDLE and abs(pos.y() - c.y()) <= self.HANDLE:
+                        return "scale", lay
+            if r.contains(pos):
+                return "move", lay
+        return None, None
+
+    def mousePressEvent(self, e):
+        if e.button() != Qt.LeftButton:
+            return
+        mode, lay = self._hit(e.position())
+        if lay is None:
+            if self.sel_layer:
+                self.layerSelected.emit("")
+            return
+        self.layerPressed.emit(lay["id"])
+        self._drag = (mode, lay, e.position(), lay["cx"], lay["cy"], lay["scale"])
+
+    def mouseMoveEvent(self, e):
+        pos = e.position()
+        if self._drag and (e.buttons() & Qt.LeftButton):
+            mode, lay, p0, cx, cy, sc = self._drag
+            c = self._out_rect
+            if mode == "move":
+                lay["cx"] = max(0.0, min(1.0, cx + (pos.x() - p0.x()) / c.width()))
+                lay["cy"] = max(0.0, min(1.0, cy + (pos.y() - p0.y()) / c.height()))
+            else:
+                ctr = QPointF(c.left() + cx * c.width(), c.top() + cy * c.height())
+                d0 = math.hypot(p0.x() - ctr.x(), p0.y() - ctr.y())
+                d1 = math.hypot(pos.x() - ctr.x(), pos.y() - ctr.y())
+                if d0 > 2:
+                    lay["scale"] = max(0.02, min(20.0, sc * d1 / d0))
+            self.update()
+            self.layerChanged.emit()
+            return
+        mode, lay = self._hit(pos)
+        if mode == "scale":
+            r = self._layer_rect(lay, next(w for l, _i, w in self.layers if l is lay))
+            diag = (pos.x() < r.center().x()) == (pos.y() < r.center().y())
+            self.setCursor(Qt.SizeFDiagCursor if diag else Qt.SizeBDiagCursor)
+        else:
+            self.setCursor(Qt.SizeAllCursor if mode == "move" else Qt.ArrowCursor)
+
+    def mouseReleaseEvent(self, _):
+        self._drag = None
+
+    def wheelEvent(self, e):
+        """레이어 위에서 휠 = 크기 ±5%"""
+        mode, lay = self._hit(e.position())
+        if lay is None:
+            return
+        import time
+        now = time.monotonic()
+        if now - self._wheel_t > 1.0:
+            self.layerPressed.emit(lay["id"])      # 연속 휠은 실행취소 1번
+        self._wheel_t = now
+        f = 1.05 if e.angleDelta().y() > 0 else 1 / 1.05
+        lay["scale"] = max(0.02, min(20.0, lay["scale"] * f))
+        self.update()
+        self.layerChanged.emit()
 
     def paintEvent(self, _):
         p = QPainter(self)
         p.fillRect(self.rect(), QColor("#0e0e0e"))
         if self.img is None or self.img.isNull():
+            self._out_rect = QRectF()
             if self.text:
                 p.setPen(QColor("#9a9a9a"))
                 p.drawText(self.rect(), Qt.AlignCenter, self.text)
@@ -60,7 +158,10 @@ class Monitor(QWidget):
         p.drawImage(r, self.img)
         # 출력에서 잘리는 영역
         src_aspect = r.width() / r.height()
-        if abs(src_aspect - self.out_aspect) > 0.01:
+        self._out_rect = QRectF(r)
+        if abs(src_aspect - self.out_aspect) <= 0.01:
+            self._paint_layers(p)
+        else:
             if self.out_aspect < src_aspect:
                 cw = r.height() * self.out_aspect
                 c = QRectF(r.center().x() - cw / 2, r.top(), cw, r.height())
@@ -74,7 +175,33 @@ class Monitor(QWidget):
             for m in masks:
                 p.fillRect(m, QColor(0, 0, 0, 160))
             p.setPen(QPen(QColor(255, 255, 255, 140), 1))
+            p.setBrush(Qt.NoBrush)
             p.drawRect(c)
+            self._out_rect = QRectF(c)
+            self._paint_layers(p)
+
+    def _paint_layers(self, p: QPainter):
+        """이미지 레이어(보정 없음, 투명 그대로). 출력 화면 밖은 잘림. 선택한 레이어는 테두리·모서리."""
+        if not self.layers:
+            return
+        c = self._out_rect
+        p.save()
+        p.setClipRect(c)
+        p.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        for lay, img, wh in self.layers:
+            p.drawImage(self._layer_rect(lay, wh), img)
+        p.restore()
+        for lay, _img, wh in self.layers:
+            if lay["id"] != self.sel_layer:
+                continue
+            r = self._layer_rect(lay, wh)
+            p.setPen(QPen(QColor(255, 255, 255, 200), 1, Qt.DashLine))
+            p.setBrush(Qt.NoBrush)
+            p.drawRect(r)
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor("#ffffff"))
+            for pt in self._corners(r):
+                p.drawRect(QRectF(pt.x() - 4, pt.y() - 4, 8, 8))
 
 
 class Player(QWidget):

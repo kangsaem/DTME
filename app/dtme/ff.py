@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import paths
-from .project import OUT_FPS, Marker, Project, Segment, Source
+from .project import OUT_FPS, ImageSource, Marker, Project, Segment, Source, layer_box
 
 NO_WINDOW = 0x08000000 if os.name == "nt" else 0   # Windows 콘솔창 숨김
 
@@ -149,6 +149,56 @@ def probe(path: str) -> dict:
         "pix_fmt": v.get("pix_fmt", ""), "codec": v.get("codec_name", ""),
         "vfr": vfr, "duration": dur,
     }
+
+
+def exif_orientation(path: str) -> int:
+    """JPEG EXIF Orientation(1~8). 없거나 읽지 못하면 1. (ffmpeg 은 이 값을 적용하지 않으므로 직접 처리)"""
+    import struct
+    try:
+        with open(path, "rb") as f:
+            if f.read(2) != b"\xff\xd8":
+                return 1
+            while True:
+                m = f.read(2)
+                if len(m) < 2 or m[0] != 0xFF or m[1] in (0xD9, 0xDA):
+                    return 1
+                ln = struct.unpack(">H", f.read(2))[0]
+                if m[1] != 0xE1:
+                    f.seek(ln - 2, 1)
+                    continue
+                d = f.read(ln - 2)
+                if not d.startswith(b"Exif\x00\x00"):
+                    continue
+                t = d[6:]
+                e = "<" if t[:2] == b"II" else ">"
+                off = struct.unpack(e + "I", t[4:8])[0]
+                n = struct.unpack(e + "H", t[off:off + 2])[0]
+                for i in range(n):
+                    ent = t[off + 2 + i * 12: off + 14 + i * 12]
+                    if struct.unpack(e + "H", ent[:2])[0] == 0x0112:
+                        v = struct.unpack(e + "H", ent[8:10])[0]
+                        return v if 1 <= v <= 8 else 1
+                return 1
+    except Exception:  # noqa: BLE001
+        return 1
+
+
+# EXIF 방향 → ffmpeg 필터 (Qt QImageReader.setAutoTransform 과 같은 결과)
+ORIENT_FILTER = {1: [], 2: ["hflip"], 3: ["hflip", "vflip"], 4: ["vflip"],
+                 5: ["transpose=0"], 6: ["transpose=1"], 7: ["transpose=3"], 8: ["transpose=2"]}
+
+
+def probe_image(path: str) -> dict:
+    """JPG/PNG 크기(방향 반영)·방향."""
+    out = run([paths.ffprobe(), "-v", "error", "-print_format", "json", "-show_streams", path])
+    v = next((s for s in json.loads(out)["streams"] if s.get("codec_type") == "video"), None)
+    if v is None:
+        raise FFError("이미지를 읽을 수 없습니다.")
+    w, h = int(v["width"]), int(v["height"])
+    o = exif_orientation(path)
+    if o >= 5:
+        w, h = h, w
+    return {"width": w, "height": h, "orient": o}
 
 
 # ------------------------------------------------------------------ LUT
@@ -355,6 +405,23 @@ def sharpness_around(src: Source, frame: int, radius: int = 5) -> list[tuple[int
 
 
 # ------------------------------------------------------------------ 영상 렌더
+YUV444_709 = "scale=out_color_matrix=bt709:out_range=tv,format=yuv444p10le"
+OV_CONVERT = "out_color_matrix=bt709:out_range=tv"
+
+
+def seg_layers(project: Project, seg: Segment) -> list[tuple[dict, ImageSource, int, int]]:
+    """컷 범위 안으로 자른 레이어 [(layer, image, fin, fout)]. 이미지 파일이 없으면 건너뜀."""
+    out = []
+    for lay in seg.layers:
+        img = project.image(lay.get("img", ""))
+        if img is None or not img.width or not os.path.exists(img.path):
+            continue
+        lf, lo = max(seg.fin, int(lay["fin"])), min(seg.fout, int(lay["fout"]))
+        if lo > lf:
+            out.append((lay, img, lf, lo))
+    return out
+
+
 def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orientation: str | None = None,
                      audio: bool | None = None) -> tuple[list[str], float, str | None]:
     o = project.output
@@ -364,6 +431,7 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orien
     fparts, labels = [], []
     total = 0.0
     cwd = None
+    img_inputs: list[str] = []          # 이미지 입력은 영상 입력 뒤에 붙임(번호 = len(segs) + k)
     for i, seg in enumerate(segs):
         src = project.source(seg.src)
         g = project.grade_for_source(src.id)
@@ -389,8 +457,27 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orien
         if not sp:
             v += frame_chain(orientation)
         v += grade_chain(g, lut)
-        v += [TO_YUV709, "setsar=1"]
-        fparts.append(f"[{i}:v:0]{','.join(v)}[v{i}]")
+        lays = seg_layers(project, seg)
+        if not lays:
+            v += [TO_YUV709, "setsar=1"]
+            fparts.append(f"[{i}:v:0]{','.join(v)}[v{i}]")
+        else:
+            # 보정 끝난 화면에 이미지 합성(보정 없음). 10bit 4:4:4 에서 합성 후 4:2:0 으로만 바꿈(행렬 재변환 없음)
+            v.append(YUV444_709)
+            fparts.append(f"[{i}:v:0]{','.join(v)}[b{i}_0]")
+            ow, oh = out_size(orientation)
+            e = 0.25 / float(OUT_FPS)
+            for k, (lay, img, lf, lo) in enumerate(lays):
+                ii = len(segs) + len(img_inputs)
+                img_inputs.append(_abs(img.path))
+                x, y, w, h = layer_box(lay, img, ow, oh)
+                pre = ORIENT_FILTER.get(img.orient, [])
+                fparts.append(f"[{ii}:v:0]{','.join(pre + [f'scale=w={w}:h={h}:flags=lanczos:{OV_CONVERT}', 'format=yuva444p10le'])}[l{i}_{k}]")
+                t0 = float(Fraction(lf - seg.fin) / src.fps / Fraction(seg.speed)) - e
+                t1 = float(Fraction(lo - seg.fin) / src.fps / Fraction(seg.speed)) - e
+                fparts.append(f"[b{i}_{k}][l{i}_{k}]overlay=x={x}:y={y}:format=yuv444p10:eof_action=repeat"
+                              f":enable='between(t,{t0:.6f},{t1:.6f})'[b{i}_{k + 1}]")
+            fparts.append(f"[b{i}_{len(lays)}]format=yuv420p,setsar=1[v{i}]")
         lab = f"[v{i}]"
         if audio:
             if src.has_audio:
@@ -403,6 +490,8 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orien
                 fparts.append(f"anullsrc=r=48000:cl=stereo,atrim=duration={out_sec:.6f}[a{i}]")
             lab += f"[a{i}]"
         labels.append(lab)
+    for f in img_inputs:
+        cmd += ["-noautorotate", "-i", f]      # EXIF 회전은 ORIENT_FILTER 로 직접(ffmpeg 버전마다 자동 적용 여부가 다름)
     n = len(segs)
     if audio:
         fparts.append(f"{''.join(labels)}concat=n={n}:v=1:a=1[vo][ao]")

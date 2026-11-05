@@ -1,6 +1,7 @@
 """프로젝트 데이터 구조. 모든 위치는 원본 기준 '프레임 번호'로 저장한다."""
 from __future__ import annotations
 
+import copy
 import json
 import re
 import uuid
@@ -16,6 +17,10 @@ OUTPUT_LIMIT_SEC = 30.0
 OUT_FPS = Fraction(30000, 1001)  # 59.94 원본 → 29.97 출력
 
 SPEEDS = [2.0, 1.0, 0.5]
+
+MAX_LAYERS = 3                  # 영상 1개에 얹을 수 있는 이미지 레이어 수
+IMAGE_EXT = {".jpg", ".jpeg", ".png"}
+VIDEO_EXT = {".mp4", ".mov"}
 
 NR_LEVELS = ["off", "weak", "mid", "strong"]   # strong 은 스틸 전용
 # 옛 디노이즈 단계 → (색 노이즈, 밝기 노이즈) 0~100
@@ -88,6 +93,7 @@ class Source:
     sel_in: int = 0          # 소스 모니터의 인 점(포함)
     sel_out: int = 0         # 아웃 점(제외). 0 = 끝까지
     speed: float = 1.0       # 소스 모니터에서 지정한 배속
+    layers: list = field(default_factory=list)  # 이미지 레이어(new_layer 형식 dict, 아래가 먼저 그려짐)
     id: str = field(default_factory=_id)
 
     @property
@@ -117,10 +123,41 @@ class Segment:
     fout: int         # 아웃 프레임(제외)
     speed: float = 1.0
     id: str = field(default_factory=_id)
+    layers: list = field(default_factory=list)  # 보낼 때 소스 레이어의 사본
 
     @property
     def frames(self) -> int:
         return max(0, self.fout - self.fin)
+
+    def copy(self) -> "Segment":
+        return Segment(self.src, self.fin, self.fout, self.speed, layers=copy.deepcopy(self.layers))
+
+
+@dataclass
+class ImageSource:
+    """스틸 소스(JPG/PNG). 보정·흔들림 보정 없음. width/height 는 EXIF 방향 반영 후 크기."""
+    path: str
+    width: int = 0
+    height: int = 0
+    orient: int = 1          # EXIF Orientation 1~8
+    id: str = field(default_factory=_id)
+
+    @property
+    def name(self) -> str:
+        return Path(self.path).name
+
+
+def new_layer(img: str, fin: int, fout: int, scale: float = 1.0) -> dict:
+    """이미지 레이어. 위치는 출력 화면 기준(cx, cy = 이미지 중심, 0~1), scale 1 = 출력 화면에서 원본 픽셀 크기.
+    fin/fout = 원본 영상 프레임(fout 제외)."""
+    return {"id": _id(), "img": img, "fin": int(fin), "fout": int(fout), "cx": 0.5, "cy": 0.5, "scale": float(scale)}
+
+
+def layer_box(layer: dict, img: "ImageSource", out_w: int, out_h: int) -> tuple[int, int, int, int]:
+    """출력 화면에서 레이어 사각형 (x, y, w, h) 픽셀."""
+    w = max(2, int(round(img.width * layer["scale"])))
+    h = max(2, int(round(img.height * layer["scale"])))
+    return int(round(layer["cx"] * out_w - w / 2)), int(round(layer["cy"] * out_h - h / 2)), w, h
 
 
 @dataclass
@@ -156,6 +193,7 @@ class OutputSettings:
 @dataclass
 class Project:
     sources: list[Source] = field(default_factory=list)
+    images: list[ImageSource] = field(default_factory=list)   # 스틸 소스
     segments: list[Segment] = field(default_factory=list)     # 타임라인
     render_items: list[RenderItem] = field(default_factory=list)
     samples: list[Marker] = field(default_factory=list)
@@ -167,6 +205,9 @@ class Project:
     # ---- 조회 ----
     def source(self, sid: str) -> Source | None:
         return next((s for s in self.sources if s.id == sid), None)
+
+    def image(self, iid: str) -> ImageSource | None:
+        return next((m for m in self.images if m.id == iid), None)
 
     def segments_of(self, sid: str) -> list[Segment]:
         return [g for g in self.segments if g.src == sid]
@@ -205,6 +246,7 @@ class Project:
         return {
             "version": 2,
             "sources": [asdict(s) for s in self.sources],
+            "images": [asdict(m) for m in self.images],
             "segments": [asdict(s) for s in self.segments],
             "render_items": [asdict(r) for r in self.render_items],
             "samples": [asdict(s) for s in self.samples],
@@ -217,6 +259,7 @@ class Project:
     def from_dict(cls, d: dict) -> "Project":
         p = cls()
         p.sources = [Source(**s) for s in d.get("sources", [])]
+        p.images = [ImageSource(**m) for m in d.get("images", [])]
         for s in p.sources:
             upgrade_grade(s.grade)
         p.segments = [Segment(**s) for s in d.get("segments", [])]
