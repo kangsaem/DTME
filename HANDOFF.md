@@ -6,7 +6,8 @@
 
 1단계 전체 구현 완료. Linux에서 엔진·화면 검증, GitHub Actions(Windows)에서 빌드·엔진·exe 실행 점검 통과. **사용자 PC 실기 테스트 대기.**
 
-다운로드: Releases 의 `DTME-v0.1.0-windows.zip` 또는 Actions → Artifacts `DTME-windows` (약 200MB)
+다운로드: Actions → 최신 성공한 "Windows build" → Artifacts `DTME-windows` (약 200MB, 30일 보관).
+Release zip 이 필요하면 GitHub 웹에서 `v0.1.0` 같은 태그로 Release 를 만들면 자동 빌드됨(Claude 세션에서는 태그 push 가 막혀 있음).
 
 ## 확정된 요구사항
 
