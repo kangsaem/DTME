@@ -1,0 +1,70 @@
+name: Windows build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python packages
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Build exe (PyInstaller, onedir)
+        run: |
+          pyinstaller --noconfirm --windowed --name DTME --paths app `
+            --collect-submodules dtme `
+            --exclude-module PySide6.QtWebEngineCore --exclude-module PySide6.QtWebEngineWidgets `
+            --exclude-module PySide6.QtQuick --exclude-module PySide6.QtQml --exclude-module PySide6.Qt3DCore `
+            --exclude-module tkinter `
+            app/main.py
+
+      - name: Add FFmpeg (BtbN GPL build, NVENC/CUDA 포함)
+        shell: pwsh
+        run: |
+          $url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
+          Invoke-WebRequest $url -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg_x
+          $bin = Get-ChildItem ffmpeg_x -Recurse -Filter ffmpeg.exe | Select-Object -First 1
+          New-Item -ItemType Directory -Force dist/DTME/bin | Out-Null
+          Copy-Item $bin.FullName dist/DTME/bin/
+          Copy-Item (Join-Path $bin.DirectoryName "ffprobe.exe") dist/DTME/bin/
+          New-Item -ItemType Directory -Force dist/DTME/luts | Out-Null
+          Copy-Item luts/README.txt dist/DTME/luts/
+          Copy-Item README.md dist/DTME/사용법.md
+          & dist/DTME/bin/ffmpeg.exe -hide_banner -version | Select-Object -First 1
+
+      - name: Smoke test (engine)
+        shell: pwsh
+        run: |
+          & dist/DTME/bin/ffmpeg.exe -hide_banner -v error -f lavfi -i "testsrc2=s=3840x2160:r=60000/1001:d=2,format=yuv420p10le" -f lavfi -i "sine=d=2" -c:v libx265 -preset ultrafast -c:a aac -shortest test4k.mp4
+          $env:PATH = "$PWD/dist/DTME/bin;$env:PATH"
+          python tests/test_engine_min.py test4k.mp4
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DTME-windows
+          path: dist/DTME
+          retention-days: 30
+
+      - name: Zip for release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: Compress-Archive -Path dist/DTME -DestinationPath DTME-${{ github.ref_name }}-windows.zip
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: DTME-${{ github.ref_name }}-windows.zip

@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+cache/
+bin/
+dist/
+build/
+*.spec
+settings.json
+luts/*
+!luts/README.txt
+test_out/
+*.MP4
+*.mp4
+*.tif
