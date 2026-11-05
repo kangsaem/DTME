@@ -46,7 +46,7 @@ def render_list_button(fn, tip=""):
     from PySide6.QtCore import QSize
     b = QPushButton()
     b.setIcon(arrow_icon())
-    b.setIconSize(QSize(30, 16))
+    b.setIconSize(QSize(24, 13))      # 화살표 20% 축소
     b.setFixedSize(BTN_W, BTN_H)
     b.setFocusPolicy(Qt.NoFocus)
     b.setStyleSheet(RED_BTN)
