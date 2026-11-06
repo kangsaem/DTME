@@ -55,6 +55,37 @@ FACTORY_GRADE = {
 }
 
 
+# 보정 없음(LUT만) — 새로 불러온 클립 · [리셋]. LUT 는 프로젝트 기본값을 따름(사용자 2026-11-06: 액션을 해야 보정 시작)
+NEUTRAL = {"r_gain": 1.0, "b_gain": 1.0, "hue": 0.0, "sat": 1.0, "water": 0, "gy": 0, "curve": [[0.0, 0.0], [1.0, 1.0]],
+           "nr_chroma": 0, "nr_luma": 0, "wnr": 0, "sharpen": 0.0, "dehaze": 0, "lens": 0, "stab": 0}
+OFFABLE = [k for k in NEUTRAL if k != "curve"]        # 이름을 눌러 잠시 끌 수 있는 항목(슬라이더)
+
+
+def plain_grade() -> dict:
+    return copy.deepcopy(NEUTRAL)
+
+
+def apply_off(g: dict, off) -> dict:
+    """잠시 끈 항목 = 보정 없음 값으로."""
+    if not off:
+        return g
+    g = dict(g)
+    for k in off:
+        if k in NEUTRAL:
+            g[k] = copy.deepcopy(NEUTRAL[k])
+    return g
+
+
+def is_plain(s) -> bool:
+    """아직 아무 보정도 안 한 클립(LUT만)."""
+    return not s.gkeys and not getattr(s, "off", None) and {k: v for k, v in s.grade.items() if k != "lut"} == NEUTRAL
+
+
+def has_clip_grade(s) -> bool:
+    """클립 값(C)이 있음 — 보정 없음(LUT만)은 제외."""
+    return bool(s.grade or s.gkeys or getattr(s, "off", None)) and not is_plain(s)
+
+
 def upgrade_grade(g: dict) -> dict:
     """옛 'nr'(끔/약/중/강) → nr_chroma/nr_luma."""
     if "nr" in g:
@@ -179,6 +210,7 @@ class Source:
     stars: list = field(default_factory=list)    # ★ 장면 표시(프레임)
     auto: dict = field(default_factory=dict)     # AUTO·프리셋 기록 {"preset": 키, "by": "auto"|"user", "rec": 인식 키, "nkeys": n}
     out: str = ""                                # AUTO 전체렌더 출력(orientation). "" = 프로젝트 출력
+    off: list = field(default_factory=list)      # 이름을 눌러 잠시 끈 보정 항목(미리보기·보낼 때 빼고 적용)
     id: str = field(default_factory=_id)
 
     @property
@@ -212,6 +244,7 @@ class Segment:
     trans: dict = field(default_factory=dict)   # 이 컷 '앞 경계'의 화면 전환 {"type", "dur"}
     reframe: list = field(default_factory=list)  # 보낼 때 소스 세로 크롭 키프레임의 사본
     gkeys: dict = field(default_factory=dict)    # 보낼 때 소스 색 키프레임의 사본
+    off: list = field(default_factory=list)      # 보낼 때 잠시 꺼 둔 보정 항목의 사본(렌더에서 빼고 적용)
 
     @property
     def frames(self) -> int:
@@ -219,7 +252,8 @@ class Segment:
 
     def copy(self) -> "Segment":
         return Segment(self.src, self.fin, self.fout, self.speed, layers=copy.deepcopy(self.layers),
-                       trans=dict(self.trans), reframe=copy.deepcopy(self.reframe), gkeys=copy.deepcopy(self.gkeys))
+                       trans=dict(self.trans), reframe=copy.deepcopy(self.reframe), gkeys=copy.deepcopy(self.gkeys),
+                       off=list(self.off))
 
 
 # 세로 크롭 위치 이동(리프레이밍). 4K 기준 ±540px(그 이상은 액션캠 가장자리 왜곡)
@@ -423,14 +457,17 @@ class Project:
         return [g for g in self.segments if g.src == sid]
 
     # ---- 보정값 병합: 기본값 → 클립 → (스틸) ----
-    def grade_for_source(self, sid: str, frame: float | None = None) -> dict:
-        """기본값 → 클립. frame 을 주면 색 키프레임까지 반영."""
+    def grade_for_source(self, sid: str, frame: float | None = None, off=True, seg=None) -> dict:
+        """기본값 → 클립. frame 을 주면 색 키프레임까지 반영.
+        off=True 면 잠시 끈 항목을 뺌(seg 를 주면 그 컷에 복사된 꺼짐 목록, 아니면 클립의 지금 목록)."""
         g = dict(self.grade)
         s = self.source(sid)
         if s:
             g.update(s.grade)
             if frame is not None and s.gkeys:
                 g = grade_at(g, s.gkeys, frame)
+            if off:
+                g = apply_off(g, seg.off if seg is not None else s.off)
         return g
 
     def grade_for_still(self, still: Marker) -> dict:

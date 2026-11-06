@@ -74,7 +74,7 @@ def make_pool(n: int) -> QThreadPool:
 
 
 ANALYZE_POOL = make_pool(4)   # ffprobe
-PROXY_POOL = make_pool(1)     # GPU 디코딩 경합 방지
+PROXY_POOL = make_pool(2)     # 동시에 2개(사용자 PC 32코어·RTX 4090 기준, 2026-11-06)
 PREVIEW_POOL = make_pool(4)
 GRAB_POOL = make_pool(2)      # 프록시 프레임 즉시 표시
 RENDER_POOL = make_pool(1)

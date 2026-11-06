@@ -40,6 +40,7 @@ class Monitor(QWidget):
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.img: QImage | None = None
         self.text = ""
+        self.loading = None          # 프록시 준비 진행(0~1) — 모니터 가운데 표시
         self.out_aspect = 16 / 9       # 출력 화면비(세로 = 9/16)
         self.out_wh = (1920, 1080)     # 출력 픽셀(레이어 위치·크기 기준)
         self.smooth = True
@@ -537,9 +538,10 @@ class Monitor(QWidget):
         p.fillRect(self.rect(), QColor("#0e0e0e"))
         if self.img is None or self.img.isNull():
             self._out_rect = QRectF()
-            if self.text:
+            if self.text and self.loading is None:
                 p.setPen(QColor("#9a9a9a"))
                 p.drawText(self.rect(), Qt.AlignCenter, self.text)
+            self._paint_loading(p)
             return
         r = self._view_rect()
         p.setRenderHint(QPainter.SmoothPixmapTransform, self.smooth or self.zoom > 1)
@@ -584,6 +586,29 @@ class Monitor(QWidget):
             self._paint_layers(p)
         self._paint_titles(p)
         self._paint_scope(p)
+        self._paint_loading(p)
+
+    def set_loading(self, pct):
+        """프록시(재생용) 준비 중이면 0~1, 끝나면 None. 정지 화면·보정은 그동안에도 됨."""
+        if pct != self.loading:
+            self.loading = pct
+            self.update()
+
+    def _paint_loading(self, p: QPainter):
+        if self.loading is None:
+            return
+        w, h = 200, 46
+        box = QRectF(self.width() / 2 - w / 2, self.height() / 2 - h / 2, w, h)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(0, 0, 0, 170))
+        p.drawRoundedRect(box, 6, 6)
+        p.setPen(QColor("#e0e0e0"))
+        p.drawText(QRectF(box.left(), box.top() + 4, w, 22), Qt.AlignCenter, f"로딩 중 {int(self.loading * 100)}%")
+        bar = QRectF(box.left() + 16, box.bottom() - 13, w - 32, 4)
+        p.setBrush(QColor("#3a3a3a"))
+        p.drawRoundedRect(bar, 2, 2)
+        p.setBrush(QColor("#4a8fe0"))
+        p.drawRoundedRect(QRectF(bar.left(), bar.top(), bar.width() * max(0.0, min(1.0, self.loading)), bar.height()), 2, 2)
 
     def _scope_calc(self):
         import numpy as np

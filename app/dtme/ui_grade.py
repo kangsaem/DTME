@@ -100,6 +100,26 @@ class ValueEdit(QLineEdit):
         self.submitted.emit(v)
 
 
+class NameLabel(QLabel):
+    """보정 항목 이름. 누르면 그 항목을 잠시 끔/켬(꺼짐 = 흐린 글자 + 가운데 줄)."""
+    clicked = Signal()
+
+    def __init__(self, text, parent=None):
+        super().__init__(text, parent)
+        self.setCursor(Qt.PointingHandCursor)
+        self.set_off(False)
+
+    def set_off(self, off):
+        self.off = off
+        self.setStyleSheet("QLabel{color:#5e5e5e; text-decoration:line-through;}" if off else "")
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self.clicked.emit()
+            return
+        super().mousePressEvent(e)
+
+
 class Section(QWidget):
     """제목 줄을 누르면 펴고 접는 묶음. 상태는 settings.json 'sections' 에 기억."""
 
@@ -162,11 +182,12 @@ class GradePanel(QWidget):
         self.targets_fn = None                   # 여러 클립 선택 → 프리셋 적용 대상(EditTab 이 지정)
         self.sliders: dict[str, QSlider] = {}
         self.vals: dict[str, ValueEdit] = {}
+        self.names: dict[str, NameLabel] = {}
 
         # --- 머리: 리셋 · 기본값 ··· 기본값으로 저장
         head = QHBoxLayout()
         b_reset = fix_size(QPushButton("리셋"))
-        b_reset.setToolTip("이 클립의 조정값을 초기값으로 (LUT 유지)")
+        b_reset.setToolTip("보정 없음 (LUT만)")
         b_reset.clicked.connect(self._reset_clip)
         b_base = fix_size(QPushButton("기본값"))
         b_base.setToolTip("이 클립을 기본값으로 되돌림")
@@ -348,7 +369,9 @@ class GradePanel(QWidget):
         lo, hi, sc, _fmt = SLIDERS[key]
         row = QHBoxLayout()
         row.setSpacing(6)
-        lab = QLabel(name)
+        lab = NameLabel(name)
+        lab.clicked.connect(lambda k=key: self.toggle_off(k))
+        self.names[key] = lab
         lab.setFixedWidth(lw)
         lab.setAlignment(align | Qt.AlignVCenter)
         s = QSlider(Qt.Horizontal)
@@ -374,6 +397,28 @@ class GradePanel(QWidget):
             self.kbtn[key] = kb
             row.addWidget(kb)
         return row
+
+    # ------------------------------------------------------------ 이름 클릭 = 잠시 끔
+    def toggle_off(self, key):
+        s = self._src()
+        if not s:
+            return
+        self.state.checkpoint()
+        if key in s.off:
+            s.off.remove(key)
+        else:
+            s.off.append(key)
+        self.state.dirty = True
+        self._load_controls()
+        self._emit_change()
+
+    def _turn_on(self, key):
+        """꺼 둔 항목을 직접 조절하면 다시 켬."""
+        s = self._src()
+        if s and key in s.off:
+            s.off.remove(key)
+            if key in self.names:
+                self.names[key].set_off(False)
 
     # ------------------------------------------------------------ 색 키프레임 ◆
     def _src(self):
@@ -412,6 +457,7 @@ class GradePanel(QWidget):
 
     def _write(self, key, value):
         """키프레임이 있는 항목이면 현재 프레임 키를 만들거나 고침, 아니면 클립 값."""
+        self._turn_on(key)
         s = self._src()
         if s and key in KEYABLE and s.gkeys.get(key):
             ks = s.gkeys[key]
@@ -454,7 +500,7 @@ class GradePanel(QWidget):
         kind, tid = self.target
         p = self.state.project
         if kind == "src" and p.source(tid):
-            return p.grade_for_source(tid)
+            return p.grade_for_source(tid, off=False)      # 조절값은 꺼 둔 항목도 원래 값으로 보여 줌
         return dict(p.grade)
 
     def view_mode(self) -> str:
@@ -563,6 +609,7 @@ class GradePanel(QWidget):
                 s = p.source(sid)
                 s.grade = {} if g is None else {k: v for k, v in g.items() if p.grade.get(k) != v}
                 s.gkeys = {}
+                s.off = []
                 s.auto = {} if g is None else {"preset": key, "by": "user"}
             self.keysChanged.emit()
         elif g is not None:
@@ -593,6 +640,7 @@ class GradePanel(QWidget):
             rec = r["preset"] if key == "auto" else auto.recommend(smp, base)["preset"]
             s.grade = {k: v for k, v in r["grade"].items() if p.grade.get(k) != v}
             s.gkeys = r["gkeys"]
+            s.off = []
             s.auto = {"preset": r["preset"], "by": "auto" if key == "auto" else "user", "rec": rec,
                       "nkeys": len(r["gkeys"].get("r_gain", []))}
             self.state.dirty = True
@@ -699,6 +747,10 @@ class GradePanel(QWidget):
         for w in widgets:
             w.blockSignals(False)
         self.curve.set_points(e["curve"])
+        src = self._src()
+        off = set(src.off) if src else set()
+        for k, lab in self.names.items():
+            lab.set_off(k in off)
         self._update_labels()
         self._fill_presets()
 
@@ -739,27 +791,28 @@ class GradePanel(QWidget):
         self._target_dict().clear()
         if self._src():
             self._src().gkeys = {}
+            self._src().off = []
             self.keysChanged.emit()
         self._load_controls()
         self._emit_change()
 
     def _reset_clip(self):
-        """조정값 초기화(LUT 는 유지)."""
-        from .project import FACTORY_GRADE
+        """보정 없음(LUT만) = 새로 불러온 상태. LUT 는 유지."""
+        from .project import FACTORY_GRADE, plain_grade
         self.state.checkpoint()
         d = self._target_dict()
         lut = self._effective().get("lut", "")
         if self.target[0] == "src":
             d.clear()
-            d.update({k: v for k, v in FACTORY_GRADE.items() if k != "lut"})
-            d["nr_chroma"], d["nr_luma"], d["sharpen"], d["stab"] = 0, 0, 0.0, 0
+            d.update(plain_grade())
+            if lut != self.state.project.grade.get("lut", ""):
+                d["lut"] = lut
         else:
             d.update({k: v for k, v in FACTORY_GRADE.items() if k != "lut"})
             d["nr_chroma"], d["nr_luma"], d["sharpen"] = 0, 0, 0.0
-        if self.target[0] == "src" and lut != self.state.project.grade.get("lut", ""):
-            d["lut"] = lut
         if self._src():
             self._src().gkeys = {}
+            self._src().off = []
             self.keysChanged.emit()
         self._load_controls()
         self._emit_change()

@@ -8,7 +8,7 @@ os.environ["QT_QPA_PLATFORM"] = "offscreen"; os.environ["DTME_NO_AUDIO"] = "1"
 from PySide6.QtWidgets import QApplication, QDialog
 import main as M
 import test_auto as TA
-from dtme import paths, ui_auto
+from dtme import paths, ui_auto, project as P
 from dtme.ui_main import MainWindow
 T4K, WORK = sys.argv[1:3]
 work = Path(WORK); work.mkdir(parents=True, exist_ok=True)
@@ -75,8 +75,8 @@ ui_auto.SampleDialog.__init__ = init
 e._auto_sample(dlg)
 assert wait(240, lambda: sdir.exists() and len(list(sdir.glob("*.jpg"))) >= 18 and not dlg.busy)
 names = sorted(x.name for x in sdir.glob("*.jpg"))
-print("샘플:", len(names), names[:2], "… 클립 값 그대로:", a.grade == {})
-assert len(names) == 18 and a.grade == {} and names[0].startswith("BOHOL_")
+print("샘플:", len(names), names[:2], "… 클립 값 그대로:", P.is_plain(a))
+assert len(names) == 18 and P.is_plain(a) and names[0].startswith("BOHOL_")
 # [시작] 개별 보정
 def _no_ask(title=""):
     raise AssertionError("[보정만]은 저장폴더를 묻지 않아야 함")
@@ -90,7 +90,7 @@ for s_ in (a, b, c):
 assert a.auto["preset"] == "shallow" and b.auto == {**b.auto, "preset": "night", "by": "user"} and b.out == "vertical"
 assert c.gkeys and d.grade == {"r_gain": 1.3} and p.output.prefix == "BOHOL"
 assert gp.view_mode() == "split"
-w.undo(); wait(0.5); print("실행취소 → 값 없음:", st.project.sources[0].grade == {}); assert st.project.sources[0].grade == {}
+w.undo(); wait(0.5); print("실행취소 → 보정 없음:", P.is_plain(st.project.sources[0])); assert P.is_plain(st.project.sources[0])
 w.redo = None
 p = st.project; a, b, c, d = p.sources
 

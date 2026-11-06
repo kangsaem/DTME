@@ -1,8 +1,8 @@
 # HANDOFF — DTME (Diving Tour Movie Editor)
 
-다음 대화는 이 문서를 기준으로 이어서 작업한다. **v0.15.3 완료(보정만 폴더·기본 채도·파랑 따라가기). 상의 중: 프리셋 6개로 줄이기, 렌즈 보정 방향. v0.15.2(물 노이즈, AUTO 버튼 정리). v0.15.1(떨림·분석 실패·버튼 통일·보정값 재조정). v0.15.0 완료(AUTO · 프리셋 창 · 추천 보정 · 물빛/녹황 · RGB 그래프 도움 · 반반 샘플). 다음: 사용자 PC 실기 확인 → 실제 수중 샘플로 기준값 조정 → 4-6 개선 후보. MOSCO 에 같은 UI 를 만들 때 = `design/AUTO_UI.md`(4-6 마지막 항목). 패널 떼어내기(독)는 v0.16 후보.**
+다음 대화는 이 문서를 기준으로 이어서 작업한다. **v0.16.1 완료(불러오면 보정 없음·LUT만, 실행취소 화면 갱신, 이름 클릭 = 잠시 끔, 모니터 로딩 표시, AUTO 프록시 안 기다림, 프록시 동시 2개·GPU 축소, AUTO 창 기존 보정·키프레임 위로 + 렌즈·흔들림 슬라이더). 답 대기: ① 반반·샘플 왼쪽을 Log 원본 → LUT만으로 바꿀지(가 추천) ② 렌더 파란 물 얼룩(10bit HEVC 출력 추천, 원본 5~10초 받아 비교 렌더 제안). 다음: 사용자 PC 실기 확인(프록시 속도 = cache/dtme.log ‘프록시 … GPU 축소 n초’). MOSCO 에 같은 UI 를 만들 때 = `design/AUTO_UI.md`.**
 
-## 1. 현재 상태 — v0.15.0 (2026-11-06)
+## 1. 현재 상태 — v0.16.1 (2026-11-06)
 
 - 저장소: `kangsaem/DTME` (main). push 하면 GitHub Actions 가 Windows 빌드 → Actions → 최신 "Windows build" → Artifacts `DTME-windows`(약 200MB, 30일)
 - Linux 작업 환경에서 엔진·화면(오프스크린) 검증, Actions(Windows)에서 빌드·엔진·exe 실행 점검 통과
@@ -216,6 +216,18 @@ UI 시안: Claude Design 캔버스 https://claude.ai/artifact/C4YHhA1vrZEKLp76BF
   - 측정(이 환경 2코어, 960px 프록시): 프레임 표시 80ms → 2ms, 120프레임 구간 디코딩 ≈ 0.6초. 정확성 = 한 장씩 디코딩과 같은 화면(`tests/test_framecache.py`)
   - 한계: 보정 미리보기(원본 4K 디코딩 + 필터) 자체 속도는 그대로 — 처음 보는 프레임·값 바꾼 직후는 예전과 같음. 보정을 프로그램 안에서 다시 구현(MOSCO 3단계)은 안 함
 
+### v0.16.1 (2026-11-06, 사용자 확정)
+- **불러오면 보정 없음(LUT만)**: 새 소스 `grade = plain_grade()`(project.NEUTRAL: 빨강·파랑 1 · 색조 0 · 채도 1 · 물빛·녹황 0 · 커브 직선 · 노이즈·샤픈·디헤이즈·렌즈·흔들림 0, LUT 는 프로젝트 기본값). AUTO·프리셋·[기본값]·슬라이더부터 보정. 소스 바 표시 없음(`is_plain` → 태그 ""), C 는 `has_clip_grade`(보정 없음 제외). 렌더 = 그 화면 그대로(LUT만). **[리셋] = 보정 없음(LUT만)** 으로 바뀜. 옛 프로젝트 소스(grade {})는 예전처럼 기본값(E)
+- **실행취소 후 화면 갱신**: `EditTab._on_state('undo')` → `request_preview()`(값만 돌아가고 화면 그대로이던 문제). 프리셋 화면 안 바뀜은 이 환경에서 재현 안 됨 — 프리셋 → Ctrl+Z 비교 때 이 버그 때문이었을 가능성
+- **이름 클릭 = 잠시 끔**(ui_grade.NameLabel, 슬라이더 13개: 빨강~흔들림): `Source.off` 목록, 꺼짐 = 흐린 글자·가운데 줄, 숫자는 원래 값 그대로, 그 항목을 직접 조절하면 다시 켬, 프리셋·AUTO·리셋·기본값은 off 비움. `grade_for_source(off=True)` 가 보정 없음 값으로 바꿈(미리보기·샘플·스틸·흰색 찍기 기준). 보정 패널 조절값은 `off=False`. **보낼 때(▼·➜·AUTO 렌더) `Segment.off` 에 사본** → 렌더는 `grade_for_source(seg=seg)` + sendcmd 키 값도 `apply_off`. 이미 보낸 컷은 다시 켜도 꺼진 채
+- **모니터 로딩 표시**: 프록시(재생용) 준비 중이면 가운데 `로딩 중 n%` + 파란 막대(`Monitor.set_loading`, `EditTab._sync_loading`). 그동안 정지 화면(원본에서 보정)·보정·AUTO 는 됨, 재생만 안 됨
+- **AUTO 가 프록시를 기다리지 않음**: 파일 정보(frames)만 있으면 분석(원본에서 샘플). 줄의 `로딩 중` 글자도 정보 읽기 전까지만
+- **프록시 빠르게**: PROXY_POOL 2. make_proxy 순서 = ① `-hwaccel cuda -hwaccel_output_format cuda` + `scale_cuda=960:h:interp_algo=bilinear,hwdownload,format=p010le|nv12`(4K 프레임을 CPU 로 안 내림) → 실패 시 ② GPU 디코딩 + CPU 축소 → ③ CPU. 성공 방식·시간을 cache/dtme.log 에 기록. **GPU 경로는 이 환경·CI 에 GPU 가 없어 미검증**(폴백 순서만 확인)
+- **AUTO 창**: [기존 보정 유지|무시][키프레임 유지|자동] = 오른쪽 맨 위([프리셋 자동] 위), 아래 줄은 버튼 4개만. **렌즈 보정·흔들림 보정 슬라이더**(이름 아래, 0~100, 체크된 클립 결과 값에 넣음, settings `auto.lens/stab`)
+- 테스트: tests/test_ui_v161.py(위 전부), test_ui_auto 는 새 클립 = 보정 없음 기준으로 수정
+- 미반영(사용자 답 대기): 반반·샘플·[원본] 보기 왼쪽 = 지금 Log 원본(LUT 없음). 선택지 가 LUT만(추천) / 나 그대로 / 다 샘플만 LUT
+- 렌더 얼룩(사용자 스크린샷: 블루워터 짙은 파랑 자글자글·덩어리): 출력 = H.264 8bit 4:2:0 NVENC 40M cq19 → 비트레이트보다 원본 압축 노이즈 증폭·노이즈 제거 뭉침·8bit 계단 가능성 높다고 답함. 제안: 원본 5~10초로 비교 렌더(지금/노이즈 끔/10bit/2배 비트레이트) + 10bit HEVC(hevc_nvenc main10) 출력 선택 추가
+
 ### v0.15.0 한계 · 개선 후보 (사용자에게 보고)
 1. **기준값은 합성 화면으로만 맞춤** — 실제 수중 영상(라이트/얕은/깊은/블루워터/야간 각 5~10초)이 있어야 SCENE_BASE·판단 기준을 조정할 수 있음
 2. 깊은 수심: 명암 S커브(암부를 누름)와 빨강 살리기가 서로 반대 → 합성 깊은 구간 빨강 24→26 정도로만 올라감. 실제 영상 보고 깊은 곳 S 를 더 약하게 할지 결정
@@ -297,6 +309,7 @@ app/dtme/auto.py         자동 보정 분석(샘플·통계·장면 판단·값
 app/dtme/ui_auto.py      AUTO 창 · 보정 탭 프리셋 창 · 샘플 창 · 공통 부품(PresetGrid, Seg, DetailBox)
 tests/test_auto.py       자동 보정 엔진(합성 장면) — CI
 tests/test_ui_auto.py    AUTO·프리셋·RGB·반반 샘플 화면 점검
+tests/test_ui_v161.py    보정 없음·실행취소 화면·이름 클릭 끄기·로딩 표시·AUTO 창 위치/렌즈·흔들림·프록시 폴백
 design/AUTO_UI.md        AUTO 화면 기준서(MOSCO 등 다른 프로그램용) · design/gen/ 시안 그림 스크립트
 .github/workflows/build.yml  Windows 빌드(PyInstaller onedir + BtbN FFmpeg master GPL) → 엔진 점검 → exe 실행 점검 → Artifact
 ```
@@ -353,6 +366,7 @@ DTME_SELFTEST=1 DTME_NO_AUDIO=1 QT_QPA_PLATFORM=offscreen python app/main.py   #
 
 ## 11. 변경 이력
 
+- v0.16.1: 불러오면 보정 없음(LUT만)·리셋도 같음, 실행취소 화면 갱신, 이름 클릭 = 잠시 끔(보낸 컷에 사본), 모니터 로딩 표시, AUTO 프록시 안 기다림, 프록시 동시 2개·GPU 축소(폴백), AUTO 창 기존 보정·키프레임 위로·렌즈/흔들림 슬라이더
 - v0.16.0: 프리셋 6개, 깊은·블루워터 암부 강조(중간), 녹황 빼기, 렌즈 보정 방향 수정(당기고 자동 확대), 미리보기 RAM 캐시
 - v0.15.3: [보정만] 폴더 안 물음, 기본 채도 1.1·색조 +5(AUTO 포함), 파랑 ≥ 빨강×0.9
 - v0.15.2: 물 노이즈(파란 영역 붉은 노이즈만 정리), AUTO [프리셋 자동]·[보정만]·[보정+렌더], 이후 줄 삭제

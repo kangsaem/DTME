@@ -7,7 +7,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, Signal
 
 from . import ff, jobs
-from .project import AUDIO_EXT, IMAGE_EXT, ImageSource, Project, Source, _id
+from .project import AUDIO_EXT, IMAGE_EXT, ImageSource, Project, Source, _id, plain_grade
 
 
 class AppState(QObject):
@@ -116,7 +116,7 @@ class AppState(QObject):
             if pth in known:
                 continue
             known.add(pth)
-            src = Source(path=str(pth), frames=0)
+            src = Source(path=str(pth), frames=0, grade=plain_grade())     # 보정 없음(LUT만) — AUTO·프리셋·조작부터 보정
             self.project.sources.append(src)
             self._queue_analyze(src)
             added += 1

@@ -2,7 +2,7 @@
 
 공통 부품(PresetGrid): [모두 자동] / 줄마다 [자동](장면 고정·피사체 자동) + 피사체 4 / 기타(블루워터·야간) / 강도 / 세부 정보.
 AUTO 창: 왼쪽 클립 목록(체크·C·프리셋·인식·◆·출력, 분석 진행 = 줄 배경) · 오른쪽 프리셋·강도·출력·이름·세부 정보 ·
-아래 진행 막대 · 기존 값 [기존 보정 유지|무시] [키프레임 유지|자동] · 이후 [바로 렌더|개별 보정] · [취소][샘플][시작].
+오른쪽 맨 위 [기존 보정 유지|무시] [키프레임 유지|자동] · 아래 진행 막대 · [취소][샘플][보정만][보정+렌더].
 """
 from __future__ import annotations
 
@@ -13,10 +13,10 @@ from PySide6.QtCore import QEvent, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import (QButtonGroup, QDialog, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
                                QLineEdit, QListWidget, QListWidgetItem, QMenu, QProgressBar, QPushButton,
-                               QStyle, QStyledItemDelegate, QVBoxLayout, QWidget)
+                               QSlider, QStyle, QStyledItemDelegate, QVBoxLayout, QWidget)
 
 from . import auto, ff, jobs
-from .project import (OUTPUTS, Segment, display_name, get_setting, grade_at, list_presets, load_preset, set_setting,
+from .project import (OUTPUTS, Segment, display_name, has_clip_grade, get_setting, grade_at, list_presets, load_preset, set_setting,
                       short_name)
 
 # ------------------------------------------------------------------ 색·모양 (DTME 공통)
@@ -372,7 +372,7 @@ class AutoDelegate(QStyledItemDelegate):
         x = cb.right() + 8
         p.drawText(QRectF(x, r.top(), 78, r.height()), Qt.AlignVCenter | Qt.AlignLeft, display_name(src.path) if src else "")
         x += 80
-        if src and (src.grade or src.gkeys):
+        if src and has_clip_grade(src):
             p.setPen(QColor(YELLOW))
             p.drawText(QRectF(x, r.top(), 12, r.height()), Qt.AlignVCenter, "C")
         x += 16
@@ -435,7 +435,7 @@ class AutoDialog(QDialog):
         after = st.get("after", "render")
         self.rows: list[AutoRow] = []
         for s in p.sources:
-            has_c = bool(s.grade or s.gkeys)
+            has_c = has_clip_grade(s)
             rec = s.auto or {}
             choice = auto.normalize_key(rec.get("preset", "")) if rec.get("by") == "user" else "auto"
             bad = state.status.get(s.id) in ("읽기 오류", "원본 없음")
@@ -477,6 +477,9 @@ class AutoDialog(QDialog):
         self.detail = DetailBox()
         right = QVBoxLayout()
         right.setSpacing(12)
+        self._top_opts = QHBoxLayout()           # [기존 보정 유지|무시] [키프레임 유지|자동] — [프리셋 자동] 위 (사용자 2026-11-06)
+        self._top_opts.setSpacing(5)
+        right.addLayout(self._top_opts)
         right.addWidget(self.grid)
         line = QFrame()
         line.setFrameShape(QFrame.HLine)
@@ -485,6 +488,10 @@ class AutoDialog(QDialog):
         right.addLayout(labeled("강도", self.strength))
         right.addLayout(labeled("출력", self.out))
         right.addLayout(labeled("이름", nrow))
+        self.lens_s = self._slider(st.get("lens", 0))     # 렌즈 보정·흔들림 보정 0~100 — 체크된 클립 모두에(사용자 2026-11-06)
+        self.stab_s = self._slider(st.get("stab", 0))
+        right.addLayout(labeled("렌즈 보정", self.lens_s.box))
+        right.addLayout(labeled("흔들림 보정", self.stab_s.box))
         right.addStretch(1)
         dl = QHBoxLayout()
         dl.addSpacing(81)
@@ -507,9 +514,6 @@ class AutoDialog(QDialog):
         self.keys = Seg([("keep", "키프레임 유지"), ("auto", "키프레임 자동")], keys)
         self.keys.changed.connect(lambda _k: self.list.viewport().update())
         self.mode = after if after in ("render", "each") else "render"   # [보정만] = each, [보정+렌더] = render
-        for sgm in (self.keep, self.keys):
-            for b in sgm.btns.values():
-                b.setMinimumWidth(110)
         self.b_cancel = main_button("취소")
         self.b_cancel.clicked.connect(self.cancel)
         self.b_sample = main_button("샘플", ORANGE_BTN)
@@ -520,14 +524,13 @@ class AutoDialog(QDialog):
         self.b_start = main_button("보정+렌더", RED_BTN)
         self.b_start.setToolTip("클립에 값을 넣고 바로 렌더")
         self.b_start.clicked.connect(lambda: self._go("render"))
-        # 아래 줄: 왼쪽 = 클립 목록 폭 안 가운데 [기존 보정 유지|무시] [키프레임 유지|자동] / 오른쪽 = 버튼 4개
-        lw = QHBoxLayout()
-        lw.setSpacing(5)
-        lw.addStretch(1)
-        lw.addWidget(self.keep)
-        lw.addSpacing(16)
-        lw.addWidget(self.keys)
-        lw.addStretch(1)
+        # 기존 보정·키프레임 = 오른쪽 맨 위, 아래 줄 = 오른쪽 버튼 4개
+        self._top_opts.addWidget(self.keep)
+        self._top_opts.addStretch(1)
+        self._top_opts.addWidget(self.keys)
+        for sgm in (self.keep, self.keys):
+            for b in sgm.btns.values():
+                b.setMinimumWidth(100)
         rb = QHBoxLayout()
         rb.setSpacing(8)
         rb.addStretch(1)
@@ -539,7 +542,7 @@ class AutoDialog(QDialog):
         rb.setContentsMargins(0, 0, 0, 0)
         r1 = QHBoxLayout()
         r1.setSpacing(16)
-        r1.addLayout(lw, 1)
+        r1.addStretch(1)
         r1.addWidget(rbw)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(16, 16, 16, 16)
@@ -556,19 +559,50 @@ class AutoDialog(QDialog):
         state.sourceStatus.connect(self._src_status)      # 영상을 막 넣었으면 로딩이 끝나는 대로 분석
         QTimer.singleShot(0, self.analyze_all)
 
+    def _slider(self, v):
+        sl = QSlider(Qt.Horizontal)
+        sl.setRange(0, 100)
+        sl.setValue(int(v or 0))
+        sl.setFocusPolicy(Qt.NoFocus)
+        val = QLabel()
+        val.setFixedWidth(30)
+        val.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        box = QHBoxLayout()
+        box.setSpacing(8)
+        box.addWidget(sl, 1)
+        box.addWidget(val)
+        sl.box = box
+
+        def show(x, lab=val):
+            lab.setText(str(x))
+        show(sl.value())
+        sl.valueChanged.connect(show)
+        sl.sliderReleased.connect(self._lens_stab)
+        sl.valueChanged.connect(lambda _x, s_=sl: None if s_.isSliderDown() else self._lens_stab())
+        return sl
+
+    def _lens_stab(self):
+        for r in self.rows:
+            if r.result:
+                r.result["grade"]["lens"] = self.lens_s.value()
+                r.result["grade"]["stab"] = self.stab_s.value()
+        self._show_detail()
+
     def _src_status(self, sid):
         if any(r.sid == sid for r in self.rows):
             self.list.viewport().update()
-            if self.state.status.get(sid) == "준비":
+            s = self.state.project.source(sid)
+            if s is not None and s.frames:              # 정보만 읽으면 바로(프록시는 재생용이라 기다리지 않음)
                 self.analyze_all()
 
     def loading(self, r) -> str:
         """로딩 중이면 표시 글자(프록시 n%), 아니면 ''."""
         st = self.state.status.get(r.sid, "")
-        if st == "준비":
-            return ""
-        if st in ("읽기 오류", "원본 없음", "프록시 오류"):
+        if st in ("읽기 오류", "원본 없음"):
             return st
+        s = self.state.project.source(r.sid)
+        if st == "준비" or (s is not None and s.frames):    # 분석은 원본에서 → 프록시(재생용)를 기다리지 않음
+            return ""
         pct = self.state.proxy_pct.get(r.sid, 0.0)
         return f"로딩 중 {int(pct * 100)}%" if pct > 0 else "로딩 중"
 
@@ -663,7 +697,7 @@ class AutoDialog(QDialog):
     def _keep(self, k):
         for r in self.rows:
             s = self.state.project.source(r.sid)
-            if s and (s.grade or s.gkeys) and s.frames:
+            if s and has_clip_grade(s) and s.frames:
                 r.checked = k != "keep"
         self.list.viewport().update()
         self._row_changed()
@@ -682,6 +716,8 @@ class AutoDialog(QDialog):
         base.update({k: v for k, v in s.grade.items() if k in ("lut", "sharpen", "lens")})
         sc, sb = choice_args(r.choice)
         r.result = auto.recommend(smp, base, sc, sb, self.strength.value() or "mid")
+        r.result["grade"]["lens"] = self.lens_s.value()
+        r.result["grade"]["stab"] = self.stab_s.value()
         r.rec = auto.recommend(smp, base)["preset"]
 
     def analyze_all(self):
@@ -689,8 +725,6 @@ class AutoDialog(QDialog):
         for i, r in enumerate(self.rows):
             s = p.source(r.sid)
             if not r.checked or s is None or not s.frames or r.result is not None or r.prog > 0 or r.error:
-                continue
-            if self.state.status.get(s.id) != "준비":      # 로딩(분석·프록시) 끝난 뒤에
                 continue
             lut = p.grade_for_source(s.id).get("lut", "")
             r.prog = 0.01
@@ -751,14 +785,14 @@ class AutoDialog(QDialog):
 
     def settings(self):
         return {"strength": self.strength.value(), "keep": self.keep.value(), "keys": self.keys.value(),
-                "after": self.mode}
+                "after": self.mode, "lens": self.lens_s.value(), "stab": self.stab_s.value()}
 
     def chosen_rows(self):
         return [r for r in self.rows if r.checked and r.result]
 
     def set_busy(self, on, color=None):
         self.busy = on
-        for w in (self.grid, self.strength, self.out, self.name, self.keep, self.keys, self.b_sample,
+        for w in (self.grid, self.strength, self.out, self.name, self.keep, self.keys, self.b_sample, self.lens_s, self.stab_s,
                   self.b_each, self.b_start, self.list):
             w.setEnabled(not on)
         if color:

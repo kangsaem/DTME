@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (QAbstractSpinBox, QApplication, QButtonGroup, QCh
                                QSplitter, QStyle, QStyledItemDelegate, QTextEdit, QVBoxLayout, QWidget)
 
 from . import ff, jobs
-from .project import (MAX_LAYERS, TITLE_DEFAULT_SEC, Marker, RenderItem, Segment, display_name, grade_at, new_layer,
+from .project import (MAX_LAYERS, TITLE_DEFAULT_SEC, Marker, RenderItem, Segment, display_name, grade_at, has_clip_grade, is_plain, new_layer,
                       new_music, new_text, new_title_image, reframe_at, reframe_max, short_name,
                       speed_label, timecode)
 from .state import AppState
@@ -116,7 +116,7 @@ class SourceDelegate(QStyledItemDelegate):
             label = short_preset(rec)
             left = r.left() + 10 + nw + 8
             parts = []
-            if src.grade or src.gkeys:
+            if has_clip_grade(src):
                 parts.append(("C", YELLOW))
             nk = len({k["f"] for ks in src.gkeys.values() for k in ks}) if src.gkeys else 0
             if nk:
@@ -680,6 +680,7 @@ class EditTab(QWidget):
                 it.setToolTip(tip)
         if sid != self.cur_sid:
             return
+        self._sync_loading()
         s = self._cur()
         if s is None:
             return
@@ -702,8 +703,18 @@ class EditTab(QWidget):
         self.grade.set_current_source(self.cur_sid)
         QTimer.singleShot(0, self._load_current)
 
+    def _sync_loading(self):
+        """모니터 가운데 '로딩 중 n%' (재생용 프록시 준비 중). 정지 화면·보정·AUTO 는 그동안에도 됨."""
+        s = self._cur()
+        st = self.state.status.get(s.id, "") if s else ""
+        if s is None or st in ("준비", "읽기 오류", "원본 없음", "프록시 오류"):
+            self.player.mon.set_loading(None)
+        else:
+            self.player.mon.set_loading(self.state.proxy_pct.get(s.id, 0.0) if st.startswith("프록시 ") else 0.0)
+
     def _load_current(self):
         s = self._cur()
+        self._sync_loading()
         if s is None:
             return
         if not s.frames:
@@ -1010,7 +1021,8 @@ class EditTab(QWidget):
         lays = [copy.deepcopy(l) for l in s.layers if l["fout"] > a and l["fin"] < b]
         for l in lays:
             l["id"] = new_layer("", 0, 0)["id"]
-        return Segment(s.id, a, b, s.speed, layers=lays, reframe=copy.deepcopy(s.reframe), gkeys=copy.deepcopy(s.gkeys))
+        return Segment(s.id, a, b, s.speed, layers=lays, reframe=copy.deepcopy(s.reframe), gkeys=copy.deepcopy(s.gkeys),
+                       off=list(s.off))
 
     def send_to_timeline(self):
         seg = self._cur_segment()
@@ -1123,6 +1135,9 @@ class EditTab(QWidget):
             self.grade.set_current_source(self.cur_sid)
             self._sync_speed_buttons()
             self._refresh_sbar()
+            if what == "undo" and self.cur_sid:      # 실행취소 = 값만 돌아가고 화면은 그대로이던 문제 → 보정 화면 다시
+                self._refresh_marks()
+                self.request_preview()
         elif what == "sources":
             self._refresh_sources()
         if what in ("project", "undo", "images"):
@@ -1146,7 +1161,9 @@ class EditTab(QWidget):
 
     def _tag(self, sid):
         s = self.state.project.source(sid)
-        return "C" if s and (s.grade or s.gkeys) else "E"
+        if s and is_plain(s):
+            return ""                         # 보정 없음(LUT만) = 표시 없음
+        return "C" if s and has_clip_grade(s) else "E"
 
     def _refresh_sbar(self):
         s = self._cur()
@@ -1739,6 +1756,7 @@ class EditTab(QWidget):
             s = p.source(r.sid)
             res = r.result
             s.grade = {k: v for k, v in res["grade"].items() if p.grade.get(k) != v}
+            s.off = []
             if st["keys"] == "auto":
                 s.gkeys = copy.deepcopy(res["gkeys"])
             s.auto = {"preset": res["preset"], "by": "auto" if r.choice == "auto" else "user", "rec": r.rec,
@@ -1755,7 +1773,7 @@ class EditTab(QWidget):
             for r in rows:
                 s = p.source(r.sid)
                 a, b = s.io
-                it = RenderItem(name=short_name(s.path), segs=[Segment(s.id, a, b, 1.0, gkeys=copy.deepcopy(s.gkeys))],
+                it = RenderItem(name=short_name(s.path), segs=[Segment(s.id, a, b, 1.0, gkeys=copy.deepcopy(s.gkeys), off=list(s.off))],
                                 orientation=r.out, audio=True)
                 items.append(it)
             p.render_items += items

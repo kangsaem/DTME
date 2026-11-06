@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import paths
-from .project import (KEYABLE, OUT_FPS, ImageSource, Marker, Project, Segment, Source, grade_at, layer_box,
+from .project import (KEYABLE, OUT_FPS, ImageSource, Marker, Project, Segment, Source, apply_off, grade_at, layer_box,
                       orig_volume, plan_transitions, reframe_max)
 
 NO_WINDOW = 0x08000000 if os.name == "nt" else 0   # Windows 콘솔창 숨김
@@ -391,7 +391,7 @@ def gkey_cmds(g: dict, seg: Segment, src: Source, n_out: int, frames_per_sec: fl
     lines, last = [], None
     for n in range(n_out):
         t = n / float(OUT_FPS)
-        v = grade_at(g, seg.gkeys, seg.fin + t * frames_per_sec)
+        v = apply_off(grade_at(g, seg.gkeys, seg.fin + t * frames_per_sec), getattr(seg, "off", None))
         cur = (round(v["r_gain"], 4), round(v["b_gain"], 4), round(v["hue"], 2), round(max(-2, min(2, v["sat"] - 1)), 3),
                round(float(v.get("water", 0)), 2), round(-float(v.get("gy", 0)) / 100, 4))
         if cur == last:
@@ -540,34 +540,58 @@ def proxy_path(src_path: str) -> Path:
     return d / f"{Path(src_path).stem}_{h}.mp4"
 
 
+def _proxy_pix(path: str) -> str:
+    try:
+        out = run([paths.ffprobe(), "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=pix_fmt",
+                   "-of", "csv=p=0", _abs(path)])
+        return out.decode("utf-8", "replace").strip()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def make_proxy(src: Source, lut: str, gpu: bool, on_progress=None, cancel=None) -> str:
-    """960 폭, 모든 프레임 키프레임(H.264) → 프레임 단위 탐색이 빠름. LUT 를 미리 입혀 보기 좋게."""
+    """960 폭, 모든 프레임 키프레임(H.264) → 프레임 단위 탐색이 빠름. LUT 를 미리 입혀 보기 좋게.
+    GPU 켜짐: ① 디코딩·축소 모두 GPU(scale_cuda, 4K 프레임을 CPU 로 안 내림) → 실패하면 ② GPU 디코딩 + CPU 축소 → ③ CPU.
+    걸린 시간은 cache/dtme.log 에 남김(사용자 PC 속도 확인용)."""
+    import time
     out = proxy_path(src.path)
     if out.exists() and out.stat().st_size > 0:
         return str(out)
     tmp = out.with_suffix(".part.mp4")
     ref = lut_ref(lut) if lut else None
-    vf = ["scale=960:-2:flags=bilinear"]
-    if ref:
-        vf += ["format=gbrp16le", f"lut3d=file={ref[1]}"]
-    vf += [TO_YUV709]
-    cmd = [paths.ffmpeg(), "-y", *_hw(gpu), "-i", _abs(src.path), "-map", "0:v:0"]
+    color = ["format=gbrp16le", f"lut3d=file={ref[1]}"] if ref else []
+    pw = 960
+    ph = max(2, int(round(pw * (src.height or 2160) / (src.width or 3840) / 2)) * 2)
+    tail = []
     if src.has_audio:
-        cmd += ["-map", "0:a:0?", "-c:a", "aac", "-b:a", "128k"]
-    cmd += ["-vf", ",".join(vf), "-fps_mode", "passthrough",
-            "-c:v", "libx264", "-preset", "ultrafast", "-tune", "fastdecode",
-            "-g", "1", "-crf", "23", "-colorspace", "bt709", "-color_primaries", "bt709",
-            "-color_trc", "bt709", "-color_range", "tv", "-movflags", "+faststart", _abs(tmp)]
-    try:
-        run_progress(cmd, src.frames / float(src.fps), on_progress, cancel, cwd=ref[0] if ref else None)
-    except FFError:
-        if not gpu:
-            raise
-        # GPU 디코딩 실패 시 CPU 로 재시도
-        cmd = [c for c in cmd if c not in ("-hwaccel", "cuda")]
-        run_progress(cmd, src.frames / float(src.fps), on_progress, cancel, cwd=ref[0] if ref else None)
-    replace_retry(tmp, out)
-    return str(out)
+        tail += ["-map", "0:a:0?", "-c:a", "aac", "-b:a", "128k"]
+    tail += ["-fps_mode", "passthrough", "-c:v", "libx264", "-preset", "ultrafast", "-tune", "fastdecode",
+             "-g", "1", "-crf", "23", "-colorspace", "bt709", "-color_primaries", "bt709",
+             "-color_trc", "bt709", "-color_range", "tv", "-movflags", "+faststart", _abs(tmp)]
+    tries = []
+    if gpu:
+        dl = "p010le" if "10" in _proxy_pix(src.path) else "nv12"
+        tries.append(("GPU 축소", ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"],
+                      [f"scale_cuda={pw}:{ph}:interp_algo=bilinear", "hwdownload", f"format={dl}"]))
+        tries.append(("GPU 디코딩", ["-hwaccel", "cuda"], [f"scale={pw}:{ph}:flags=bilinear"]))
+    tries.append(("CPU", [], [f"scale={pw}:{ph}:flags=bilinear"]))
+    dur = src.frames / float(src.fps)
+    last = None
+    for i, (name, hw, pre) in enumerate(tries):
+        cmd = [paths.ffmpeg(), "-y", *hw, "-i", _abs(src.path), "-map", "0:v:0", "-vf", ",".join(pre + color + [TO_YUV709]), *tail]
+        t0 = time.monotonic()
+        try:
+            run_progress(cmd, dur, on_progress, cancel, cwd=ref[0] if ref else None)
+        except FFError as e:
+            if cancel is not None and cancel.is_set():
+                raise
+            last = e
+            log_error(f"프록시 {name} 실패 → 다음 방식", str(e)[-300:])
+            continue
+        log_error("프록시", f"{Path(src.path).name} {name} {time.monotonic() - t0:.1f}초 (영상 {dur:.0f}초)")
+        replace_retry(tmp, out)
+        return str(out)
+    raise last
 
 
 # ------------------------------------------------------------------ 미리보기용 프레임 캐시 (메모리)
@@ -888,7 +912,7 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orien
     lens: list[float] = []
     for i, seg in enumerate(segs):
         src = project.source(seg.src)
-        g = project.grade_for_source(src.id)
+        g = project.grade_for_source(src.id, seg=seg)       # 보낼 때 꺼 둔 항목은 빼고
         lcwd, lut = _lut_for(g)
         cwd = cwd or lcwd
         seg_src_sec = float(Fraction(seg.frames) / src.fps)
@@ -1007,7 +1031,7 @@ def render_video(project: Project, segs: list[Segment], out_file: str, on_progre
     todo = []
     for seg in segs:
         src = project.source(seg.src)
-        gg = project.grade_for_source(src.id)
+        gg = project.grade_for_source(src.id, seg=seg)
         sp = stab_params(gg)
         if sp and not fast and not stab_file(src, seg, orient, sp[0], lens_chain(gg, src.width, src.height)).exists():
             todo.append((src, seg, sp[0], lens_chain(gg, src.width, src.height)))
