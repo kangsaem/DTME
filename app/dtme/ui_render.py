@@ -24,6 +24,29 @@ MAIN_W, MAIN_H = 88, 32        # 주요 버튼: ▶/❚❚ · ▼ · 렌더리�
 ADD_W, ADD_H = BTN_W, BTN_H    # 영상 추가 · 삭제(소스)
 
 
+class DragMove:
+    """테두리 없는 창: 빈 바탕을 잡고 끌면 창이 움직임(버튼·목록·입력란 위는 원래 동작)."""
+    _drag_off = None
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self._drag_off = e.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            e.accept()
+            return
+        super().mousePressEvent(e)
+
+    def mouseMoveEvent(self, e):
+        if self._drag_off is not None and e.buttons() & Qt.LeftButton:
+            self.move(e.globalPosition().toPoint() - self._drag_off)
+            e.accept()
+            return
+        super().mouseMoveEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        self._drag_off = None
+        super().mouseReleaseEvent(e)
+
+
 def fix_size(b, main=False):
     """주요 버튼 = 고정 88×32. 일반 버튼 = 높이 28, 폭 56~76(자리가 모자라면 줄어듦 → 노트북에서 겹치지 않음)."""
     if main:
@@ -510,7 +533,7 @@ class RenderSettings(QWidget):
             self.folder.setText(d)
 
 
-class RenderSettingsDialog(QDialog):
+class RenderSettingsDialog(DragMove, QDialog):
     """⚙ 렌더 설정 창: 테두리 없는 어두운 창(AUTO 창과 같은 모양) + [취소][확인]."""
 
     def __init__(self, state, parent=None):

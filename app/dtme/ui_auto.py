@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (QButtonGroup, QDialog, QFileDialog, QFrame, QGrid
                                QSlider, QStyle, QStyledItemDelegate, QVBoxLayout, QWidget)
 
 from . import auto, ff, jobs
+from .ui_render import DragMove
 from .project import (OUTPUTS, Segment, display_name, has_clip_grade, get_setting, grade_at, list_presets, load_preset, set_setting,
                       short_name)
 
@@ -415,7 +416,7 @@ class AutoDelegate(QStyledItemDelegate):
         return False
 
 
-class AutoDialog(QDialog):
+class AutoDialog(DragMove, QDialog):
     """AUTO 창. start(이후 'render'|'each') 와 샘플은 EditTab 이 받아 처리(저장폴더·적용·렌더)."""
     startRequested = Signal()
     sampleRequested = Signal()
@@ -829,7 +830,7 @@ def sample_name(cfg: dict, src, k: int, preset: str = "") -> str:
     return "_".join(parts) + f".{ext}"
 
 
-class SampleDialog(QDialog):
+class SampleDialog(DragMove, QDialog):
     def __init__(self, name: str, folder: str, parent=None):
         super().__init__(parent, Qt.Dialog | Qt.FramelessWindowHint)
         self.setObjectName("SampleDialog")
@@ -854,6 +855,9 @@ class SampleDialog(QDialog):
         self.fmt = Seg(SAMPLE_FMTS, cfg.get("fmt", "png8"))
         self.fmt.changed.connect(self._eg)
         v.addLayout(labeled("형식", self.fmt))
+        self.layout_seg = Seg([("side", "나란히"), ("tb", "위아래"), ("lr", "좌우")], cfg.get("layout", "side"))
+        self.layout_seg.setToolTip("나란히 = 보정 전·후 전체 화면 2장 / 위아래·좌우 = 반반")
+        v.addLayout(labeled("배치", self.layout_seg))
         line = QFrame()
         line.setFrameShape(QFrame.HLine)
         line.setStyleSheet("color:#3a3a3a;")
@@ -898,7 +902,7 @@ class SampleDialog(QDialog):
 
     def config(self) -> dict:
         return {"size": int(self.size.value() or 1920), "fmt": self.fmt.value() or "png8", "name": self.name.text().strip(),
-                "attach": [k for k, b in self.att.items() if b.isChecked()]}
+                "attach": [k for k, b in self.att.items() if b.isChecked()], "layout": self.layout_seg.value() or "side"}
 
     def _eg(self, *_):
         c = self.config()

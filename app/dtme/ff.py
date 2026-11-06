@@ -1104,28 +1104,38 @@ def grab_proxy_frame(proxy: str, fps: Fraction, frame: int) -> bytes:
 
 
 # ------------------------------------------------------------------ 반반 샘플 파일 (왼쪽 보정 전 = LUT만 · 오른쪽 보정)
-def split_vf(g: dict, lut: str | None, orientation: str, size: int, fmt: str, src_wh=(0, 0)) -> str:
-    """filter_complex: 보정 전(LUT만)과 보정을 같은 크기로 → 왼쪽 반 보정 전 + 오른쪽 반 보정 + 가운데 흰 선."""
+def split_vf(g: dict, lut: str | None, orientation: str, size: int, fmt: str, src_wh=(0, 0), layout: str = "lr") -> str:
+    """filter_complex: 보정 전(LUT만)과 보정 후를 같은 크기로 → 한 장.
+    layout: lr = 왼쪽 반 전 · 오른쪽 반 후 / tb = 위 반 전 · 아래 반 후 /
+            side = 나란히(전체 화면 2장: 가로 영상은 위(전)·아래(후), 세로 영상은 왼쪽(전)·오른쪽(후)). 경계에 흰 선 2px."""
     vert = is_vertical(orientation)
     sc = f"scale=-2:{size}:flags=lanczos" if vert else f"scale={size}:-2:flags=lanczos"
     lens = lens_chain(g, *src_wh)
     pre = ",".join(lens + [crop_filter(orientation), sc])
-    gr = graph(grade_chain(g, lut, size * 9 // 16 if vert else size) +
-               ["format=gbrp16le", "crop=iw-trunc(iw/4)*2:ih:trunc(iw/4)*2:0"], "[sb]", "[sr]", "s")
+    gr = graph(grade_chain(g, lut, size * 9 // 16 if vert else size) + ["format=gbrp16le"], "[sb]", "[sr0]", "s")
     out = {"png16": SRGB_TAG + ",format=rgb48be", "jpg": "format=yuvj444p"}.get(fmt, SRGB_TAG + ",format=rgb24")
-    left = f"format=gbrp16le,lut3d=file={lut}:interp=tetrahedral" if lut else "format=gbrp16le"     # 왼쪽 = LUT만
-    return (f"[0:v]{pre},split=2[sa][sb];[sa]{left},crop=trunc(iw/4)*2:ih:0:0[sl];{gr};"
-            f"[sl][sr]hstack=2,drawbox=x=trunc(iw/4)*2-1:y=0:w=2:h=ih:color=white@0.9:t=fill,{out}[so]")
+    left = f"format=gbrp16le,lut3d=file={lut}:interp=tetrahedral" if lut else "format=gbrp16le"     # 보정 전 = LUT만
+    head = f"[0:v]{pre},split=2[sa][sb];[sa]{left}[sl0];{gr};"
+    line = "color=white@0.9:t=fill"
+    if layout == "tb":
+        return (head + "[sl0]crop=iw:trunc(ih/4)*2:0:0[sl];[sr0]crop=iw:ih-trunc(ih/4)*2:0:trunc(ih/4)*2[sr];"
+                f"[sl][sr]vstack=2,drawbox=x=0:y=trunc(ih/4)*2-1:w=iw:h=2:{line},{out}[so]")
+    if layout == "side":
+        if vert:
+            return head + f"[sl0][sr0]hstack=2,drawbox=x=iw/2-1:y=0:w=2:h=ih:{line},{out}[so]"
+        return head + f"[sl0][sr0]vstack=2,drawbox=x=0:y=ih/2-1:w=iw:h=2:{line},{out}[so]"
+    return (head + "[sl0]crop=trunc(iw/4)*2:ih:0:0[sl];[sr0]crop=iw-trunc(iw/4)*2:ih:trunc(iw/4)*2:0[sr];"
+            f"[sl][sr]hstack=2,drawbox=x=trunc(iw/4)*2-1:y=0:w=2:h=ih:{line},{out}[so]")
 
 
 def export_split(src: Source, frame: int, g: dict, out_file: str, size: int = 1920, fmt: str = "png8",
-                 orientation: str = "horizontal", gpu: bool = False) -> None:
+                 orientation: str = "horizontal", gpu: bool = False, layout: str = "lr") -> None:
     """반반 샘플 1장 저장(png8 · png16 · jpg). 앞 3프레임을 넣어 시간축 노이즈 제거가 동작."""
     cwd, lut = _lut_for(g)
     lead = min(3, frame)
     codec = (["-c:v", "mjpeg", "-q:v", "2"] if fmt == "jpg" else ["-c:v", "png", "-compression_level", "3"])
     cmd = [paths.ffmpeg(), "-v", "error", "-y", *_hw(gpu), "-ss", _seek(frame - lead, src.fps), "-i", _abs(src.path),
-           "-frames:v", str(lead + 1), "-an", "-filter_complex", split_vf(g, lut, orientation, size, fmt, (src.width, src.height)), "-map", "[so]",
+           "-frames:v", str(lead + 1), "-an", "-filter_complex", split_vf(g, lut, orientation, size, fmt, (src.width, src.height), layout), "-map", "[so]",
            "-update", "1", *codec, _abs(out_file)]
     try:
         run(cmd, cwd=cwd)

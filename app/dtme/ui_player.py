@@ -55,6 +55,8 @@ class Monitor(QWidget):
         self._img_rect = QRectF()
         self.before: QImage | None = None      # 반반 보기: 왼쪽에 그릴 원본
         self.split_x = 0.5
+        self.split_y = 0.5
+        self.split_v = True          # True = 좌우(세로 선) · False = 위아래(가로 선). 선 우클릭으로 바꿈
         self._split_drag = False
         self.pick_mode = False                  # 흰색 찍기
         self.scope = False                      # RGB 파형
@@ -397,6 +399,14 @@ class Monitor(QWidget):
         r = self._img_rect
         return r.left() + r.width() * self.split_x
 
+    def _split_hit(self, pos) -> bool:
+        r = self._img_rect
+        if self.before is None or r.isEmpty():
+            return False
+        if self.split_v:
+            return abs(pos.x() - self._split_px()) <= 8
+        return abs(pos.y() - (r.top() + r.height() * self.split_y)) <= 8
+
     def mousePressEvent(self, e):
         pos = e.position()
         if e.button() == Qt.MiddleButton or (e.button() == Qt.LeftButton and self.space_pan):
@@ -404,13 +414,17 @@ class Monitor(QWidget):
             self.space_moved = self.space_pan or self.space_moved
             self.setCursor(Qt.ClosedHandCursor)
             return
+        if e.button() == Qt.RightButton and self._split_hit(pos):     # 반반 선 우클릭 = 좌우 ↔ 위아래
+            self.split_v = not self.split_v
+            self.update()
+            return
         if e.button() != Qt.LeftButton:
             return
         r = self._img_rect
         if self.pick_mode and not r.isEmpty() and r.contains(pos):
             self.whitePicked.emit((pos.x() - r.left()) / r.width(), (pos.y() - r.top()) / r.height())
             return
-        if self.before is not None and not r.isEmpty() and abs(pos.x() - self._split_px()) <= 8:
+        if self._split_hit(pos):
             self._split_drag = True
             return
         tt = self._title_hit(pos) if self.titles else None
@@ -452,14 +466,17 @@ class Monitor(QWidget):
             return
         if self._split_drag and (e.buttons() & Qt.LeftButton):
             r = self._img_rect
-            self.split_x = max(0.02, min(0.98, (pos.x() - r.left()) / max(1.0, r.width())))
+            if self.split_v:
+                self.split_x = max(0.02, min(0.98, (pos.x() - r.left()) / max(1.0, r.width())))
+            else:
+                self.split_y = max(0.02, min(0.98, (pos.y() - r.top()) / max(1.0, r.height())))
             self.update()
             return
         if self.pick_mode:
             self.setCursor(Qt.CrossCursor)
             return
-        if self.before is not None and abs(pos.x() - self._split_px()) <= 8:
-            self.setCursor(Qt.SplitHCursor)
+        if self._split_hit(pos):
+            self.setCursor(Qt.SplitHCursor if self.split_v else Qt.SplitVCursor)
             return
         if self._drag and (e.buttons() & Qt.LeftButton):
             mode, lay, p0, cx, cy, sc = self._drag
@@ -549,16 +566,22 @@ class Monitor(QWidget):
         if self.patch is not None and self.patch_rect and not self.patch.isNull():     # 확대 영역 고화질
             x, y, w, h = self.patch_rect
             p.drawImage(QRectF(r.left() + x * r.width(), r.top() + y * r.height(), w * r.width(), h * r.height()), self.patch)
-        if self.before is not None and not self.before.isNull():      # 반반: 왼쪽 = 원본
-            sx = r.width() * self.split_x
-            src = QRectF(0, 0, self.before.width() * self.split_x, self.before.height())
-            p.drawImage(QRectF(r.left(), r.top(), sx, r.height()), self.before, src)
-            x = r.left() + sx
+        if self.before is not None and not self.before.isNull():      # 반반: 왼쪽(또는 위) = 보정 전
+            if self.split_v:
+                sx = r.width() * self.split_x
+                src = QRectF(0, 0, self.before.width() * self.split_x, self.before.height())
+                p.drawImage(QRectF(r.left(), r.top(), sx, r.height()), self.before, src)
+                a, b = QPointF(r.left() + sx, r.top()), QPointF(r.left() + sx, r.bottom())
+            else:
+                sy = r.height() * self.split_y
+                src = QRectF(0, 0, self.before.width(), self.before.height() * self.split_y)
+                p.drawImage(QRectF(r.left(), r.top(), r.width(), sy), self.before, src)
+                a, b = QPointF(r.left(), r.top() + sy), QPointF(r.right(), r.top() + sy)
             p.setPen(QPen(QColor("#ffffff"), 2))
-            p.drawLine(QPointF(x, r.top()), QPointF(x, r.bottom()))
+            p.drawLine(a, b)
             p.setPen(QPen(QColor("#1b1b1b"), 2))
             p.setBrush(QColor("#ffffff"))
-            p.drawEllipse(QPointF(x, r.center().y()), 9, 9)
+            p.drawEllipse((a + b) / 2, 9, 9)
         # 출력에서 잘리는 영역
         src_aspect = r.width() / r.height()
         self._out_rect = QRectF(r)

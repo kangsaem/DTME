@@ -1826,13 +1826,13 @@ class EditTab(QWidget):
         dlg.set_busy(True, "#d9822b")
         dlg.bar.setValue(0)
         gpu = p.output.gpu_decode
-        size, fmt = int(cfg.get("size", 1920)), cfg.get("fmt", "png8")
+        size, fmt, layout = int(cfg.get("size", 1920)), cfg.get("fmt", "png8"), cfg.get("layout", "side")
 
         def work(prog, cancel):
             for i, (s, f, g, out, orient) in enumerate(todo):
                 if cancel.is_set():
                     raise ff.Cancelled()
-                ff.export_split(s, f, g, out, size, fmt, "vertical" if orient == "vertical" else "horizontal", gpu)
+                ff.export_split(s, f, g, out, size, fmt, "vertical" if orient == "vertical" else "horizontal", gpu, layout)
                 prog((i + 1) / len(todo))
             return len(todo)
         job = jobs.Job(work, with_progress=True)
