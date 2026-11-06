@@ -15,7 +15,7 @@ from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer, QVideoSink
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
-from . import ff, jobs
+from . import ff, framecache, jobs
 
 
 class Monitor(QWidget):
@@ -777,8 +777,21 @@ class Player(QWidget):
             self.player.setPosition(self._ms(f))
 
     # ---------------------------------------------------------------- 프록시 프레임
+    def _from_cache(self, frame: int, smooth: bool) -> bool:
+        """RAM 캐시에 있으면 바로 표시(ffmpeg 안 띄움). 없으면 그 구간부터 채우도록 요청."""
+        fc = framecache.cache()
+        fc.request(self.proxy, self.fps, self.frames, frame)
+        e = fc.get(self.proxy, frame)
+        if e is None:
+            return False
+        if self.overlay_frame != frame:
+            self.mon.set_image(framecache.qimage(e), smooth=smooth)
+        return True
+
     def _grab(self, frame: int, force=False):
         if not self.proxy:
+            return
+        if self._from_cache(frame, smooth=not self._back.isActive()):
             return
         if self._grab_busy:
             self._grab_want = frame
@@ -889,18 +902,22 @@ class Player(QWidget):
             return
         self._frame = max(0, self._frame - step)
         self.frameChanged.emit(self._frame)
+        if self._from_cache(self._frame, smooth=False):
+            return
         if self._grab_busy:
             self._grab_want = self._frame
         else:
             self._grab_back(self._frame)
 
     def _grab_back(self, frame):
+        if self._from_cache(frame, smooth=False):
+            return
         self._grab_busy = True
         proxy, fps, tok = self.proxy, self.fps, self._token
         job = jobs.Job(lambda: ff.grab_proxy_frame(proxy, fps, frame))
 
         def done(data):
-            if tok == self._token and not self.is_playing():
+            if tok == self._token and not self.is_playing() and frame == self._frame:
                 img = QImage.fromData(data, "BMP")
                 if not img.isNull():
                     self.mon.set_image(img, smooth=False)

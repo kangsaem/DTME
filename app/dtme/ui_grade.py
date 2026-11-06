@@ -257,8 +257,8 @@ class GradePanel(QWidget):
         lb.addWidget(b1)
         s_col.lay.addLayout(lb)
         for key, name, tip in (("r_gain", "빨강", ""), ("b_gain", "파랑", ""), ("hue", "색조", ""), ("sat", "채도", ""),
-                               ("water", "물빛", "청록·녹색만 파랑 쪽으로"), ("gy", "녹황", "녹색·노란색 채도만 줄임")):
-            s_col.lay.addLayout(self._row(key, name, 30, Qt.AlignLeft, tip))
+                               ("water", "물빛", "청록·녹색만 파랑 쪽으로"), ("gy", "녹황 빼기", "녹색·노란색 채도만 줄임(클수록 더 뺌)")):
+            s_col.lay.addLayout(self._row(key, name, 54, Qt.AlignLeft, tip))
         s_col.lay.setSpacing(3)
         self.curve = CurveEditor()
         self.curve.changed.connect(lambda pts: self._set("curve", pts))
@@ -277,7 +277,7 @@ class GradePanel(QWidget):
                                ("nr_luma", "밝기 노이즈", ""), ("wnr", "물 노이즈", "파란 물 영역의 붉은 점·색 노이즈만 정리")):
             s_det.lay.addLayout(self._row(key, name, 72, Qt.AlignRight, tip))
         s_lens = Section("lens", "렌즈 · 흔들림")
-        s_lens.lay.addLayout(self._row("lens", "렌즈 보정", 72, Qt.AlignRight, "액션캠 휘어짐 보정"))
+        s_lens.lay.addLayout(self._row("lens", "렌즈 보정", 72, Qt.AlignRight, "액션캠 외곽 늘어짐 줄이기(가운데를 조금 확대)"))
         s_lens.lay.addLayout(self._row("stab", "흔들림 보정", 72, Qt.AlignRight, "렌더에만 적용"))
 
         # --- 묶음: 샘플
@@ -544,7 +544,7 @@ class GradePanel(QWidget):
         except Exception:  # noqa: BLE001
             pass
         sids = [sid for sid in self._sids() if p.source(sid)]
-        if key == "auto" or key.startswith("scene:"):
+        if key == "auto":
             self.recommend(sids, key, strength)
             return
         if key == "base":

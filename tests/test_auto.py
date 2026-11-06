@@ -56,18 +56,14 @@ def scene(kind):
 
 def check_classify():
     ok = True
-    for kind, want in (("shallow", "shallow"), ("coral", "shallow"), ("deep", "deep"), ("light", "light"),
+    for kind, want in (("shallow", "shallow"), ("coral", "coral"), ("deep", "deep"), ("light", "light"),
                        ("night", "night"), ("bluewater", "bluewater")):
         samples = [(i * 100, scene(kind)) for i in range(3)]
         r = auto.recommend(samples, dict(lut=""))
         g = r["grade"]
-        print(f"{kind:10s} → {r['scene']:9s} {r['subject'] or '-':6s} 빨강 {g['r_gain']:.2f} 파랑 {g['b_gain']:.2f} "
+        print(f"{kind:10s} → {r['scene']:9s} 빨강 {g['r_gain']:.2f} 파랑 {g['b_gain']:.2f} "
               f"물빛 {g['water']} 녹황 {g['gy']} 커브 {g['curve'][1:-1]}")
-        ok &= r["scene"] == want
-        if kind == "coral":
-            ok &= r["subject"] == "coral"
-        if kind == "shallow":
-            ok &= r["subject"] == "fish"
+        ok &= r["scene"] == want and g["b_gain"] >= 0.9 * g["r_gain"] - 1e-6
     assert ok, "장면 판단 틀림"
     # 강도: 강 > 중 > 약 (빨강)
     s = [(0, scene("shallow"))]
@@ -79,7 +75,10 @@ def check_classify():
     # 프리셋 14개
     keys = auto.preset_keys()
     print("기본 프리셋:", len(keys), [auto.preset_label(k, True) for k in keys])
-    assert len(keys) == 14 and auto.preset_label("deep/turtle") == "깊은 수심 · 거북이"
+    assert keys == ["light", "coral", "shallow", "deep", "bluewater", "night"]
+    # 옛 키(v0.15.0~0.15.3) 변환
+    assert auto.preset_label("deep/turtle") == "깊은 수심" and auto.preset_label("shallow/coral") == "산호"
+    assert auto.normalize_key("scene:light") == "light" and auto.preset_label("user:x") == ""
 
 
 def make_video(path, kinds, sec_each=2.0, fps=30):

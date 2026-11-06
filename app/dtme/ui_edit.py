@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import copy
+import json
 import os
+from collections import OrderedDict
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QRectF, QSize, Qt, QTimer
@@ -49,6 +51,10 @@ def _btn(text, tip, fn, main=False):
     b.setFocusPolicy(Qt.NoFocus)
     b.clicked.connect(fn)
     return fix_size(b, main)
+
+
+PREVIEW_LRU: "OrderedDict[tuple, tuple]" = OrderedDict()   # 보정 미리보기 PNG (최근 120장 ≈ 200MB)
+PREVIEW_LRU_MAX = 120
 
 
 class SourceDelegate(QStyledItemDelegate):
@@ -767,11 +773,27 @@ class EditTab(QWidget):
         mode = self.grade.view_mode()
         full = self.state.project.grade_for_source(s.id, frame)
         grade = None if mode == "raw" else full
+        key = (s.path, frame, mode, json.dumps(grade, sort_keys=True, default=str))
+        hit = PREVIEW_LRU.get(key)
+        if hit is not None:                      # 같은 프레임·같은 보정은 다시 안 만듦
+            try:
+                PREVIEW_LRU.move_to_end(key)
+            except KeyError:
+                pass
+            self._on_preview(gen, frame, tok, hit)
+            return
 
         def work():
             c = ff.cached_frame(s, frame)
             out = ff.render_preview(c, grade)
-            return (out, ff.render_preview(c, None)) if mode == "split" else (out, None)
+            res = (out, ff.render_preview(c, None)) if mode == "split" else (out, None)
+            PREVIEW_LRU[key] = res
+            while len(PREVIEW_LRU) > PREVIEW_LRU_MAX:
+                try:
+                    PREVIEW_LRU.popitem(last=False)
+                except KeyError:
+                    break
+            return res
         job = jobs.Job(work)
         job.signals.done.connect(lambda data, g=gen, fr=frame, t=tok: self._on_preview(g, fr, t, data))
         job.signals.error.connect(lambda msg: (ff.log_error("미리보기", msg), self._say(f"미리보기 오류: {msg[-160:]}", C_WARN)))

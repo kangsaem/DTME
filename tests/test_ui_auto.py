@@ -48,10 +48,10 @@ for r in dlg.rows[:3]:
 assert dlg.rows[0].result["scene"] == "shallow" and dlg.rows[1].result["scene"] == "deep" and dlg.rows[2].result["gkeys"]
 # 2번째 줄 선택 → 깊은 수심 · 거북이 직접 지정, 출력 세로
 dlg.list.setCurrentRow(1); wait(0.1)
-dlg.grid.btns["deep/turtle"].click(); dlg.out.btns["vertical"].click(); wait(0.1)
+dlg.grid.btns["night"].click(); dlg.out.btns["vertical"].click(); wait(0.1)
 lab, fixed, sub = dlg.row_text(dlg.rows[1])
 print("직접 지정:", lab, fixed, sub, dlg.rows[1].out)
-assert lab == "깊은 수심 · 거북이" and fixed and dlg.rows[1].out == "vertical"
+assert lab == "야간" and fixed and dlg.rows[1].out == "vertical"
 print("세부 정보:", dlg.detail.title.text(), dlg.detail.vals["r_gain"].text(), dlg.detail.vals["gy"].text(), "물 노이즈", dlg.detail.vals["wnr"].text())
 # 버튼 글자 가운데 정렬·크기
 for bt in (dlg.b_cancel, dlg.b_sample, dlg.b_each, dlg.b_start):
@@ -87,7 +87,7 @@ print("적용:", [(s.auto.get("preset"), s.auto.get("by"), len(s.gkeys.get("r_ga
 for s_ in (a, b, c):
     g_ = st.project.grade_for_source(s_.id)
     assert g_["b_gain"] >= 0.9 * g_["r_gain"] - 1e-6 and g_["hue"] == 5.0, (g_["r_gain"], g_["b_gain"], g_["hue"])
-assert a.auto["preset"] == "shallow/fish" and b.auto == {**b.auto, "preset": "deep/turtle", "by": "user"} and b.out == "vertical"
+assert a.auto["preset"] == "shallow" and b.auto == {**b.auto, "preset": "night", "by": "user"} and b.out == "vertical"
 assert c.gkeys and d.grade == {"r_gain": 1.3} and p.output.prefix == "BOHOL"
 assert gp.view_mode() == "split"
 w.undo(); wait(0.5); print("실행취소 → 값 없음:", st.project.sources[0].grade == {}); assert st.project.sources[0].grade == {}
@@ -111,8 +111,10 @@ gp.apply_choice("night", "mid"); wait(0.3)
 g = p.grade_for_source(p.sources[1].id)
 print("프리셋 야간:", g["r_gain"], g["water"], g["nr_chroma"], gp.preset.text())
 assert g["water"] == 0 and "야간" in gp.preset.text()
+# 옛 키로 저장된 프로젝트도 이름이 나옴
+p.sources[1].auto = {"preset": "shallow/turtle", "by": "user"}; gp._fill_presets(); print("옛 키 →", gp.preset.text()); assert "얕은 수심" in gp.preset.text()
 pd = ui_auto.PresetDialog(p.grade, "night", "mid", gp); pd.show(); wait(0.2)
-pd.grid.hovered.emit("deep/diver"); wait(0.1); print("프리셋 창 세부:", pd.detail.title.text(), pd.detail.vals["r_gain"].text())
+pd.grid.hovered.emit("deep"); wait(0.1); print("프리셋 창 세부:", pd.detail.title.text(), pd.detail.vals["r_gain"].text())
 pd.grab().save(str(work / "shot_preset.png")); pd.close()
 gp.apply_choice("auto", "strong")
 assert wait(60, lambda: "추천 →" in e.status.text())

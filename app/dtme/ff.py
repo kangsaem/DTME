@@ -47,12 +47,30 @@ def sharpen_chain(g: dict, width: int = 1920) -> list[str]:
     return f
 
 
-def lens_chain(g: dict) -> list[str]:
-    """액션캠 휘어짐 보정(원본 크기에서, 크롭·축소 전). 가장자리는 늘어나며 검은 모서리는 생기지 않음."""
+LENS_K1 = 0.15      # 렌즈 보정 100 일 때 왜곡 계수(+ = 외곽을 안쪽으로 당김)
+
+
+def lens_zoom(g: dict) -> float:
+    v = float(g.get("lens", 0))
+    return 1.0 + LENS_K1 * v / 100 if v >= 0.5 else 1.0
+
+
+def lens_chain(g: dict, w: int = 0, h: int = 0) -> list[str]:
+    """액션캠 외곽 늘어짐 줄이기(원본 크기에서, 크롭·축소 전). 외곽을 안쪽으로 당기고(k1 > 0),
+    생기는 검은 모서리는 가운데를 1+k1 배로 살짝 확대해 잘라냄. w·h = 들어오는 화면 크기(정확히 원래 크기로 되돌림).
+    v0.15.3 까지는 반대 방향(k1 < 0, 외곽을 더 늘림)이었음 — 사용자 지적으로 수정(격자 실측)."""
     v = float(g.get("lens", 0))
     if v < 0.5:
         return []
-    return [f"lenscorrection=k1={-0.24 * v / 100:.4f}:k2={0.05 * v / 100:.4f}:i=bilinear"]
+    k1 = LENS_K1 * v / 100
+    z = 1.0 + k1                          # 크롭 모서리 r0/z → 원본 r0(1+k1/z²)/z < r0 : 검은 부분 없음
+    f = [f"lenscorrection=k1={k1:.4f}:k2=0:i=bilinear"]
+    if w and h:
+        cw, ch = int(w / z) // 2 * 2, int(h / z) // 2 * 2
+        f += [f"crop={cw}:{ch}:{(w - cw) // 2}:{(h - ch) // 2}", f"scale={w}:{h}:flags=bicubic"]
+    else:
+        f += [f"crop=trunc(iw/{z:.5f}/2)*2:trunc(ih/{z:.5f}/2)*2", f"scale=iw*{z:.5f}:ih*{z:.5f}:flags=bicubic"]
+    return f
 
 
 # RGB → YUV 변환 시 BT.709 를 명시하지 않으면 BT.601 로 변환돼 색이 틀어진다(실측 평균 4.8 → 2.5 차이).
@@ -560,8 +578,8 @@ _FRAME_CACHE_MAX = 48
 
 
 class CachedFrame:
-    def __init__(self, data: bytes, lead: int):
-        self.data, self.lead = data, lead
+    def __init__(self, data: bytes, lead: int, size=(0, 0)):
+        self.data, self.lead, self.size = data, lead, size
 
 
 _frame_cache: "dict[str, CachedFrame]" = {}
@@ -582,7 +600,8 @@ def cached_frame(src: Source, frame: int, gpu: bool = False) -> CachedFrame:
         data = run([paths.ffmpeg(), "-v", "error", *_hw(gpu), "-ss", _seek(frame - lead, src.fps), "-i", _abs(src.path),
                     "-frames:v", str(lead + 1), "-an", "-vf", "scale=1280:-2:flags=lanczos,format=yuv420p10le",
                     "-c:v", "ffv1", "-f", "nut", "-"])
-        c = CachedFrame(data, lead)
+        ch = int(round(1280 * (src.height or 2160) / (src.width or 3840) / 2)) * 2
+        c = CachedFrame(data, lead, (1280, ch))
         with _cache_lock:
             _frame_cache[key] = c
             while len(_frame_cache) > _FRAME_CACHE_MAX:
@@ -597,7 +616,7 @@ def render_preview(cached: CachedFrame, g: dict | None) -> bytes:
         vf = []
     else:
         cwd, lut = _lut_for(g)
-        vf = lens_chain(g) + grade_chain(g, lut, 1280)
+        vf = lens_chain(g, *cached.size) + grade_chain(g, lut, 1280)
     vf += [f"select=gte(n\\,{cached.lead})", "format=rgb24"]
     return run([paths.ffmpeg(), "-v", "error", "-f", "nut", "-i", "-", "-filter_complex", graph(vf, "[0:v]", "[po]"),
                 "-map", "[po]", "-frames:v", "1", "-f", "image2pipe", "-c:v", "png", "-"], cwd=cwd, data=cached.data)
@@ -611,7 +630,7 @@ def render_region(src: Source, frame: int, g: dict | None, rect, max_w: int = 25
     cx, cy = min(W - cw, int(x * W)) // 2 * 2, min(H - ch, int(y * H)) // 2 * 2
     lead = min(PREVIEW_LEAD, frame)
     cwd, lut = (None, None)
-    vf = (lens_chain(g) if g else []) + [f"crop={cw}:{ch}:{cx}:{cy}"]
+    vf = (lens_chain(g, W, H) if g else []) + [f"crop={cw}:{ch}:{cx}:{cy}"]
     if cw > max_w:
         vf.append(f"scale={max_w}:-2:flags=lanczos")
     if g is not None:
@@ -877,7 +896,7 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orien
         total += out_sec
         cmd += [*_hw(o.gpu_decode), "-ss", _seek(seg.fin, src.fps), "-t", f"{seg_src_sec + 0.5:.6f}", "-i", _abs(src.path)]
         v = [f"trim=end_frame={seg.frames}", "setpts=PTS-STARTPTS"]
-        lensf = lens_chain(g)
+        lensf = lens_chain(g, src.width, src.height)
         sp = None if fast else stab_params(g)       # 미리보기 렌더는 흔들림 보정 생략(분석이 느림)
         if sp:
             ow, oh = out_size(orientation)
@@ -990,8 +1009,8 @@ def render_video(project: Project, segs: list[Segment], out_file: str, on_progre
         src = project.source(seg.src)
         gg = project.grade_for_source(src.id)
         sp = stab_params(gg)
-        if sp and not fast and not stab_file(src, seg, orient, sp[0], lens_chain(gg)).exists():
-            todo.append((src, seg, sp[0], lens_chain(gg)))
+        if sp and not fast and not stab_file(src, seg, orient, sp[0], lens_chain(gg, src.width, src.height)).exists():
+            todo.append((src, seg, sp[0], lens_chain(gg, src.width, src.height)))
     share = 0.4 if todo else 0.0
     for k, (src, seg, shk, lens) in enumerate(todo):
         def sub(v, k=k):
@@ -1023,7 +1042,7 @@ def export_still(src: Source, frame: int, g: dict, out_file: str, gpu: bool = Fa
     lead = min(3, frame)
     start = frame - lead
     is_png = str(out_file).lower().endswith(".png")
-    vf = lens_chain(g) + grade_chain(g, lut, 3840) + [SRGB_TAG, "format=rgb48be" if is_png else "format=rgb48le"]
+    vf = lens_chain(g, src.width, src.height) + grade_chain(g, lut, 3840) + [SRGB_TAG, "format=rgb48be" if is_png else "format=rgb48le"]
     codec = ["-c:v", "png", "-compression_level", "3"] if is_png else ["-c:v", "tiff", "-compression_algo", "deflate"]
     cmd = [paths.ffmpeg(), "-v", "error", "-y", *_hw(gpu), "-ss", _seek(start, src.fps), "-i", _abs(src.path),
            "-frames:v", str(lead + 1), "-an", "-filter_complex", graph(vf, "[0:v]", "[so]"), "-map", "[so]",
@@ -1048,11 +1067,11 @@ def grab_proxy_frame(proxy: str, fps: Fraction, frame: int) -> bytes:
 
 
 # ------------------------------------------------------------------ 반반 샘플 파일 (왼쪽 원본 · 오른쪽 보정)
-def split_vf(g: dict, lut: str | None, orientation: str, size: int, fmt: str) -> str:
+def split_vf(g: dict, lut: str | None, orientation: str, size: int, fmt: str, src_wh=(0, 0)) -> str:
     """filter_complex: 원본(Log)과 보정을 같은 크기로 → 왼쪽 반 원본 + 오른쪽 반 보정 + 가운데 흰 선."""
     vert = is_vertical(orientation)
     sc = f"scale=-2:{size}:flags=lanczos" if vert else f"scale={size}:-2:flags=lanczos"
-    lens = lens_chain(g)
+    lens = lens_chain(g, *src_wh)
     pre = ",".join(lens + [crop_filter(orientation), sc])
     gr = graph(grade_chain(g, lut, size * 9 // 16 if vert else size) +
                ["format=gbrp16le", "crop=iw-trunc(iw/4)*2:ih:trunc(iw/4)*2:0"], "[sb]", "[sr]", "s")
@@ -1068,7 +1087,7 @@ def export_split(src: Source, frame: int, g: dict, out_file: str, size: int = 19
     lead = min(3, frame)
     codec = (["-c:v", "mjpeg", "-q:v", "2"] if fmt == "jpg" else ["-c:v", "png", "-compression_level", "3"])
     cmd = [paths.ffmpeg(), "-v", "error", "-y", *_hw(gpu), "-ss", _seek(frame - lead, src.fps), "-i", _abs(src.path),
-           "-frames:v", str(lead + 1), "-an", "-filter_complex", split_vf(g, lut, orientation, size, fmt), "-map", "[so]",
+           "-frames:v", str(lead + 1), "-an", "-filter_complex", split_vf(g, lut, orientation, size, fmt, (src.width, src.height)), "-map", "[so]",
            "-update", "1", *codec, _abs(out_file)]
     try:
         run(cmd, cwd=cwd)

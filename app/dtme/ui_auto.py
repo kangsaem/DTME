@@ -41,7 +41,7 @@ SEG_BTN = ON_BTN              # [a|b] 도 격자 버튼과 같은 모양(떨어�
 MAIN_W, MAIN_H = 88, 32
 OUT_SHORT = {"horizontal": "1080", "horizontal1440": "1440", "horizontal2160": "4K", "vertical": "세로"}
 VALUE_ROWS = [("r_gain", "빨강", "{:.2f}"), ("b_gain", "파랑", "{:.2f}"), ("hue", "색조", "{:.1f}°"), ("sat", "채도", "{:.2f}"),
-              ("water", "물빛", "{:+.0f}°"), ("gy", "녹황", "{:.0f}"), ("curve", "명암 S", ""), ("dehaze", "디헤이즈", "{:.0f}"),
+              ("water", "물빛", "{:+.0f}°"), ("gy", "녹황 빼기", "{:.0f}"), ("curve", "명암 S", ""), ("dehaze", "디헤이즈", "{:.0f}"),
               ("nr_chroma", "색 노이즈", "{:.0f}"), ("nr_luma", "밝기 노이즈", "{:.0f}"), ("wnr", "물 노이즈", "{:.0f}")]
 
 
@@ -108,13 +108,10 @@ def grab_job(src, lut, gpu, on_done, on_error=None, on_progress=None, pool=None)
 
 
 def choice_args(choice: str):
-    """'auto' | 'scene:shallow' | 'shallow/coral' | 'bluewater' → (scene, subject)."""
+    """'auto' | 프리셋 키(옛 키도 됨) → (scene, None)."""
     if not choice or choice == "auto":
         return None, None
-    if choice.startswith("scene:"):
-        return choice[6:], None
-    sc, sb = auto.split_key(choice)
-    return sc, (sb if sc in auto.SUBJECT_SCENES else None)
+    return auto.normalize_key(choice) or None, None
 
 
 # ------------------------------------------------------------------ 공통 부품
@@ -193,7 +190,7 @@ class DetailBox(QFrame):
 
 
 class PresetGrid(QWidget):
-    """[모두 자동] / 라이트·얕은·깊은 [자동] + 피사체 4 / 기타. chosen('auto'|'scene:x'|키), hovered(키 또는 '')."""
+    """[프리셋 자동] / [라이트][산호][얕은 수심] / [깊은 수심][블루워터][야간]. chosen('auto'|키), hovered(키 또는 '')."""
     chosen = Signal(str)
     hovered = Signal(str)
 
@@ -204,24 +201,10 @@ class PresetGrid(QWidget):
         g.setHorizontalSpacing(5)
         g.setVerticalSpacing(5)
         self.btns: dict[str, QPushButton] = {}
-        b = self._btn("auto", "프리셋 자동", ON_BTN, 30, tip="클립마다 프리셋을 자동 인식으로")   # 고르기(실행 아님)
-        g.addWidget(b, 0, 1, 1, 5)
-        for r, sc in enumerate(auto.SUBJECT_SCENES, start=1):
-            lab = QLabel(auto.SCENE_NAME[sc])
-            lab.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            g.addWidget(lab, r, 0)
-            g.addWidget(self._btn(f"scene:{sc}", "자동", AUTO_BTN, 30, tip=f"{auto.SCENE_NAME[sc]} · 피사체 자동"), r, 1)
-            for c, (sb, name) in enumerate(auto.SUBJECTS, start=2):
-                g.addWidget(self._btn(f"{sc}/{sb}", name, ON_BTN, 30), r, c)
-        lab = QLabel("기타")
-        lab.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        r = len(auto.SUBJECT_SCENES) + 1
-        g.addWidget(lab, r, 0)
-        g.addWidget(self._btn("bluewater", "블루워터", ON_BTN, 30), r, 2, 1, 2)
-        g.addWidget(self._btn("night", "야간", ON_BTN, 30), r, 4, 1, 2)
-        g.setColumnMinimumWidth(0, 70)
-        g.setColumnMinimumWidth(1, 52)
-        for c in range(2, 6):
+        g.addWidget(self._btn("auto", "프리셋 자동", ON_BTN, 30, tip="클립마다 프리셋을 자동 인식으로"), 0, 0, 1, 3)   # 고르기(실행 아님)
+        for i, (k, name) in enumerate(auto.SCENES):
+            g.addWidget(self._btn(k, name, ON_BTN, 30), 1 + i // 3, i % 3)
+        for c in range(3):
             g.setColumnStretch(c, 1)
 
     def _btn(self, key, text, style, h, tip=""):
@@ -325,10 +308,10 @@ class PresetDialog(QDialog):
 
     def _hover(self, key):
         self._last_hover = key
-        if key and "/" in key or key in ("bluewater", "night"):
+        if key in auto.SCENE_NAME:
             self.detail.show_values(auto.preset_label(key), auto.builtin_grade(key, self.base, self.strength.value()))
         elif key:
-            self.detail.show_values("프리셋 자동" if key == "auto" else f"{auto.SCENE_NAME.get(key[6:], '')} · 자동", None)
+            self.detail.show_values("프리셋 자동" if key == "auto" else "", None)
         else:
             self.detail.show_values("", None)
 
@@ -342,7 +325,7 @@ class AutoRow:
     def __init__(self, src, checked, choice, out):
         self.sid = src.id
         self.checked = checked
-        self.choice = choice          # 'auto' | 'scene:x' | 키
+        self.choice = choice          # 'auto' | 프리셋 키
         self.out = out
         self.prog = 0.0               # 분석 진행 0~1
         self.result = None            # 이 클립에 들어갈 값(recommend)
@@ -454,7 +437,7 @@ class AutoDialog(QDialog):
         for s in p.sources:
             has_c = bool(s.grade or s.gkeys)
             rec = s.auto or {}
-            choice = rec.get("preset", "") if rec.get("by") == "user" and not rec.get("preset", "").startswith("user:") else "auto"
+            choice = auto.normalize_key(rec.get("preset", "")) if rec.get("by") == "user" else "auto"
             bad = state.status.get(s.id) in ("읽기 오류", "원본 없음")
             self.rows.append(AutoRow(s, not bad and not (keep == "keep" and has_c), choice or "auto",
                                      s.out or p.output.orientation))
@@ -605,8 +588,6 @@ class AutoDialog(QDialog):
         fixed = row.choice != "auto"
         if row.result:
             label = auto.preset_label(row.result["preset"])
-        elif row.choice.startswith("scene:"):
-            label = f"{auto.SCENE_NAME[row.choice[6:]]} · 자동"
         elif fixed:
             label = auto.preset_label(row.choice)
         else:
@@ -651,7 +632,7 @@ class AutoDialog(QDialog):
             self.detail.show_values("", None)
 
     def _hover(self, key):
-        if key and ("/" in key or key in ("bluewater", "night")):
+        if key in auto.SCENE_NAME:
             self.detail.show_values(auto.preset_label(key), auto.builtin_grade(key, self.state.project.grade, self.strength.value()))
         else:
             self._show_detail()

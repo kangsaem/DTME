@@ -1,7 +1,7 @@
 """자동 보정(추천 · AUTO): 샘플 추출 → 색 통계 → 장면·피사체 판단 → 값 계산 → (필요하면) 색 키프레임.
 
 AI 가 아닌 색 통계 휴리스틱이다. 출발점 용도.
-- 수심·라이트·야간은 색 통계로 꽤 맞힘. 피사체는 산호초(따뜻한 색 면적)만 추정, 나머지는 '물고기'.
+- 프리셋 6개: 라이트·산호·얕은 수심·깊은 수심·블루워터·야간. 산호는 따뜻한 색 면적으로 추정.
 - 값 = 장면 프리셋 기준값 + 영상별 흰색(빨강·파랑)·명암(커브) 미세 조정.
 """
 from __future__ import annotations
@@ -11,34 +11,40 @@ import numpy as np
 from . import ff, paths
 from .project import FACTORY_GRADE, Source
 
-# ------------------------------------------------------------------ 장면·피사체·프리셋
-SCENES = [("light", "라이트"), ("shallow", "얕은 수심"), ("deep", "깊은 수심"), ("bluewater", "블루워터"), ("night", "야간")]
-SUBJECTS = [("fish", "물고기"), ("coral", "산호초"), ("turtle", "거북이"), ("diver", "다이버")]
-SUBJECT_SCENES = ("light", "shallow", "deep")       # 피사체로 나누는 장면(나머지 2개는 하나씩)
-SCENE_NAME, SUBJECT_NAME = dict(SCENES), dict(SUBJECTS)
+# ------------------------------------------------------------------ 프리셋 6개 (사용자 2026-11-06: 피사체 구분 없앰)
+# 거북이·다이버·물고기는 색 통계로 구별 불가 + 값 차이가 작아 없앰. 산호 = 산호초(보통 라이트를 비춰 찍음)
+SCENES = [("light", "라이트"), ("coral", "산호"), ("shallow", "얕은 수심"), ("deep", "깊은 수심"),
+          ("bluewater", "블루워터"), ("night", "야간")]
+SCENE_NAME = dict(SCENES)
 STRENGTH = {"weak": 0.6, "mid": 1.0, "strong": 1.3}
 STRENGTH_NAME = {"weak": "약", "mid": "중", "strong": "강"}
 
-# 장면 기준값. r/b = 고정 프리셋 게인, k = 영상별 흰색 맞춤 정도, ref = 흰색 기준(밝은 쪽 비율), s = 커브 S 세기
 SCENE_BASE = {
     # 실제 수중 샘플(2026-11-06, 보홀) 보고 조정. 원칙(사용자): 물속은 원래 파랗고 어느 정도 뿌연 것.
     # 원색(특히 빨강)을 되살리거나 그랑블루로 만들 필요 없음 — **색이 틀어지거나 노이즈가 나오지 않는 것이 먼저**.
     # 파란 물의 빨간 점·노이즈 = 빨강 게인·커브 늘이기·채도가 원인 → 셋 다 작게, 색 노이즈 제거는 강하게(60 이상 = 색 채널 미디언)
     # r/b = 고정 프리셋 게인, rmax = 빨강 최대, k = 영상별 흰색 맞춤 정도, ref = 흰색 기준(밝은 쪽 비율),
-    # s = 커브 S 세기, lo = 검정점 배율, sh = 샤픈, wnr = 물 노이즈(파란 영역 붉은 노이즈 정리)
+    # s = 커브 S 세기, lo = 검정점 배율, sh = 샤픈, wnr = 물 노이즈(파란 영역 붉은 노이즈 정리),
+    # sd = 암부만 더 어둡게(깊은 수심·블루워터: “안 하면 물이 뿌옇게 보임” → v0.15.3 과 강조안의 중간)
     "light":     dict(r=1.05, b=1.00, rmax=1.15, k=0.25, ref=0.10, water=8, gy=25, sat=1.00, nrc=60, nrl=30, dehaze=0, s=0.04, lo=0.8, sh=0.15, wnr=30),
+    "coral":     dict(r=1.05, b=1.00, rmax=1.12, k=0.20, ref=0.10, water=8, gy=25, sat=1.00, nrc=65, nrl=30, dehaze=0, s=0.04, lo=0.8, sh=0.15, wnr=45),
     "shallow":   dict(r=1.10, b=1.00, rmax=1.20, k=0.40, ref=0.30, water=8, gy=30, sat=1.00, nrc=60, nrl=30, dehaze=0, s=0.04, lo=0.8, sh=0.15, wnr=40),
-    "deep":      dict(r=1.15, b=1.00, rmax=1.28, k=0.40, ref=0.50, water=8, gy=30, sat=1.00, nrc=65, nrl=35, dehaze=0, s=0.03, lo=0.5, sh=0.10, wnr=65),
-    "bluewater": dict(r=1.00, b=1.00, rmax=1.08, k=0.15, ref=0.30, water=12, gy=40, sat=1.00, nrc=65, nrl=30, dehaze=5, s=0.05, lo=0.8, sh=0.10, wnr=70),
+    "deep":      dict(r=1.15, b=1.00, rmax=1.28, k=0.40, ref=0.50, water=8, gy=30, sat=1.00, nrc=65, nrl=35, dehaze=0, s=0.03, lo=0.75, sh=0.10, wnr=65, sd=0.035),
+    "bluewater": dict(r=1.00, b=1.00, rmax=1.08, k=0.15, ref=0.30, water=12, gy=40, sat=1.00, nrc=65, nrl=30, dehaze=5, s=0.05, lo=0.975, sh=0.10, wnr=70, sd=0.04),
     "night":     dict(r=1.00, b=1.00, rmax=1.10, k=0.25, ref=0.10, water=0, gy=20, sat=1.00, nrc=65, nrl=40, dehaze=0, s=0.04, lo=0.8, sh=0.10, wnr=50),
 }
-# 피사체별 차이(더하기). 산호초 = 보통 라이트를 비춰 찍음 → 빨강 덜, 거북이 = 등껍질(노란 갈색) 지키려고 녹황 약하게, 다이버 = 피부
-SUBJECT_DELTA = {
-    "fish": {},
-    "coral": dict(r=-0.05, rmax=-0.08, k=-0.15, gy=-5),
-    "turtle": dict(gy=-20, rmax=-0.05),
-    "diver": dict(sat=-0.05, gy=-10),
-}
+SUBJECT_SCENES = ()      # 옛 코드 호환(피사체 구분 없음)
+
+
+def normalize_key(key: str) -> str:
+    """옛 프리셋 키(v0.15.0~0.15.3: 장면/피사체) → 6개 중 하나. '얕은 수심 · 산호초' → 산호, '깊은 수심 · 거북이' → 깊은 수심."""
+    k = (key or "").strip()
+    if k.startswith("scene:"):
+        k = k[6:]
+    sc, _, sb = k.partition("/")
+    if sb == "coral":
+        return "coral"
+    return sc if sc in SCENE_NAME else ""
 
 
 BASE_HUE, BASE_SAT = 5.0, 1.1      # 사용자 기본: 색조 +5, 채도 1.1 (장면별 채도는 이 값에서 더하고 뺌)
@@ -51,38 +57,28 @@ def follow_blue(r: float, b: float) -> float:
 
 
 def preset_keys() -> list[str]:
-    """기본 프리셋 14개: light/fish … deep/diver, bluewater, night"""
-    return [f"{sc}/{sb}" for sc in SUBJECT_SCENES for sb, _ in SUBJECTS] + ["bluewater", "night"]
+    """기본 프리셋 6개."""
+    return [k for k, _ in SCENES]
 
 
 def split_key(key: str) -> tuple[str, str]:
-    sc, _, sb = (key or "").partition("/")
-    return sc, (sb or "fish")
+    return normalize_key(key), ""
 
 
 def preset_label(key: str, short: bool = False) -> str:
-    sc, sb = split_key(key)
-    if sc not in SCENE_NAME:
-        return ""
-    name = SCENE_NAME[sc]
-    if sc not in SUBJECT_SCENES:
-        return name
-    if short:
-        name = name.replace(" 수심", "")
-    return f"{name}{'·' if short else ' · '}{SUBJECT_NAME.get(sb, '')}"
+    name = SCENE_NAME.get(normalize_key(key), "")
+    return name.replace(" 수심", "") if short else name
 
 
-def scene_params(scene: str, subject: str, strength: str = "mid") -> dict:
-    b = dict(SCENE_BASE.get(scene, SCENE_BASE["shallow"]))
-    if scene in SUBJECT_SCENES:
-        for k, v in SUBJECT_DELTA.get(subject, {}).items():
-            b[k] = b[k] + v
+def scene_params(scene: str, subject=None, strength: str = "mid") -> dict:
+    b = dict(SCENE_BASE.get(normalize_key(scene) or "shallow"))
     b["st"] = STRENGTH.get(strength, 1.0)
     return b
 
 
-def s_curve(lo: float, hi: float, s: float, min_range: float = 0.75) -> list:
-    """명암: 암부 lo → 거의 0, 명부 hi → 거의 1, 사이는 S자(s). 포인트는 양 끝 포함 최대 7개(중간 5개)."""
+def s_curve(lo: float, hi: float, s: float, min_range: float = 0.75, sd: float = 0.0) -> list:
+    """명암: 암부 lo → 거의 0, 명부 hi → 거의 1, 사이는 S자(s). sd = 암부만 더 어둡게(깊은 수심·블루워터: 물이 뿌옇지 않게).
+    포인트는 양 끝 포함 최대 7개(중간 5개)."""
     lo, hi = max(0.0, min(0.45, lo)), max(0.4, min(1.0, hi))
     if hi - lo < min_range:               # 너무 좁으면 늘이는 양 제한(노이즈가 커짐)
         c = min(1 - min_range / 2, max(min_range / 2, (lo + hi) / 2))
@@ -91,7 +87,7 @@ def s_curve(lo: float, hi: float, s: float, min_range: float = 0.75) -> list:
     pts = [[0.0, 0.0]]
     if lo > 0.02:
         pts.append([round(lo, 4), 0.012])
-    pts.append([round(lo + 0.25 * d, 4), round(max(0.03, 0.25 - s), 4)])
+    pts.append([round(lo + 0.25 * d, 4), round(max(0.03, 0.25 - s - sd), 4)])
     pts.append([round(lo + 0.75 * d, 4), round(min(0.97, 0.75 + s), 4)])
     if hi < 0.98:
         pts.append([round(hi, 4), 0.985])
@@ -101,15 +97,14 @@ def s_curve(lo: float, hi: float, s: float, min_range: float = 0.75) -> list:
 
 def builtin_grade(key: str, base: dict | None = None, strength: str = "mid") -> dict:
     """기본 프리셋(고정값). base 의 LUT·샤픈·렌즈 등은 그대로."""
-    sc, sb = split_key(key)
-    p = scene_params(sc, sb, strength)
+    p = scene_params(key, None, strength)
     st = p["st"]
     g = dict(base or FACTORY_GRADE)
     r = round(min(2.0, 1 + (p["r"] - 1) * st), 3)
     g.update(r_gain=r, b_gain=follow_blue(r, round(1 + (p["b"] - 1) * st, 3)), hue=BASE_HUE,
              sat=round(BASE_SAT + (p["sat"] - 1) * st, 3), water=int(round(p["water"] * st)), gy=int(round(min(100, p["gy"] * st))),
              nr_chroma=int(p["nrc"]), nr_luma=int(p["nrl"]), dehaze=int(round(p["dehaze"] * st)),
-             curve=s_curve(0.04, 0.95, p["s"] * st), stab=0, sharpen=p.get("sh", 0.15),
+             curve=s_curve(0.04 * p.get("lo", 0.9) / 0.9, 0.95, p["s"] * st, sd=p.get("sd", 0) * st), stab=0, sharpen=p.get("sh", 0.15),
              wnr=int(p.get("wnr", 0)))
     return g
 
@@ -283,17 +278,16 @@ def recommend(samples: list[tuple[int, np.ndarray]], base: dict, scene: str | No
               strength: str = "mid") -> dict:
     """샘플 → {"grade": 클립 값(전체), "gkeys": 색 키프레임 또는 {}, "scene", "subject", "preset"}"""
     sts = [stats(a) for _f, a in samples]
-    sc = scene if scene in SCENE_NAME else classify(sts)
-    p0 = scene_params(sc, "fish", strength)
-    g0 = [gains_for(s, p0) for s in sts]
-    if subject in SUBJECT_NAME:
-        sb = subject
-    else:
-        warm = float(np.median([warm_fraction(a, r, b) for (_f, a), (r, b) in zip(samples, g0)]))
-        sb = "coral" if warm > 0.08 else "fish"
-    if sc not in SUBJECT_SCENES:
-        sb = ""
-    p = scene_params(sc, sb or "fish", strength)
+    scene = normalize_key(scene or "")
+    sc = scene or classify(sts)
+    if not scene and sc in ("light", "shallow", "deep"):      # 산호 = 게인 후 따뜻한 색(빨강·주황·분홍) 면적 8% 넘음
+        p0 = scene_params(sc, None, strength)
+        g0 = [gains_for(s_, p0) for s_ in sts]
+        warm = float(np.median([warm_fraction(a_, r, b_) for (_f, a_), (r, b_) in zip(samples, g0)]))
+        if warm > 0.08:
+            sc = "coral"
+    sb = ""
+    p = scene_params(sc, None, strength)
     gains = [gains_for(s, p) for s in sts]
     lo, hi = tone_for(samples, gains)
     # 커브는 클립 전체 1개 → 깊은 구간이 섞여 있으면 깊은 곳 기준(S·검정점 약하게). 깊은 곳은 빨강이 암부에 있음
@@ -302,10 +296,10 @@ def recommend(samples: list[tuple[int, np.ndarray]], base: dict, scene: str | No
     lo *= pd.get("lo", 0.9)
     s_amt = min(p["s"], pd["s"]) * (0.6 if mixed else 1.0)
     st = p["st"]
-    g = builtin_grade(f"{sc}/{sb}" if sb else sc, base, strength)
+    g = builtin_grade(sc, base, strength)
     rs, bs = _med3([x[0] for x in gains]), _med3([x[1] for x in gains])
     g.update(r_gain=round(float(np.median(rs)), 3), b_gain=round(float(np.median(bs)), 3),
-             curve=s_curve(lo - 0.01, hi + 0.01, s_amt * st))
+             curve=s_curve(lo - 0.01, hi + 0.01, s_amt * st, sd=p.get("sd", 0) * st))
     gkeys = {}
     frames = [f for f, _a in samples]
     if len(frames) >= 2 and (max(rs) - min(rs) > KEY_TOL_R or max(bs) - min(bs) > KEY_TOL_B):
@@ -314,7 +308,7 @@ def recommend(samples: list[tuple[int, np.ndarray]], base: dict, scene: str | No
             idx = [idx[int(round(i * (len(idx) - 1) / 5))] for i in range(6)]
         gkeys = {"r_gain": [{"f": frames[i], "v": round(rs[i], 3)} for i in idx],
                  "b_gain": [{"f": frames[i], "v": round(bs[i], 3)} for i in idx]}
-    return {"grade": g, "gkeys": gkeys, "scene": sc, "subject": sb, "preset": f"{sc}/{sb}" if sb else sc}
+    return {"grade": g, "gkeys": gkeys, "scene": sc, "subject": sb, "preset": sc}
 
 
 def analyze_source(src: Source, base: dict, scene=None, subject=None, strength="mid", gpu=False,
