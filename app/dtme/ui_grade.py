@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (QButtonGroup, QComboBox, QFileDialog, QFrame, QGr
                                QLabel, QLineEdit, QListWidget, QListWidgetItem, QMenu, QMessageBox, QPushButton,
                                QScrollArea, QSizePolicy, QSlider, QVBoxLayout, QWidget)
 
-from . import ff, jobs, paths
+from . import ff, jobs, paths, ui_style
 from .project import (KEYABLE, OUTPUTS, delete_preset, get_setting, grade_at, keep_lut, list_presets, load_preset,
                       rename_preset, save_default_grade, save_preset, set_setting, timecode)
 from .state import AppState
@@ -23,7 +23,7 @@ BASE = ("base", "")
 N_SAMPLES = 6
 TILE_W, TILE_H = 150, 84
 SIDE_W = 60            # 오른쪽 버튼(저장… · 오디오 · RGB) 폭
-ON_STYLE = ("QPushButton:checked{background:#2f4f78; border:1px solid #4a8fe0; color:#fff;}")   # 켜짐 = 반반과 같은 파랑
+ON_STYLE = ""          # 켜짐 = 앱 기본(파랑, ui_style)
 
 # key: (슬라이더 최소, 최대, 값 = 슬라이더 / scale, 표시 형식)
 SLIDERS = {
@@ -130,9 +130,7 @@ class Section(QWidget):
         self.head.setCheckable(True)
         self.head.setFocusPolicy(Qt.NoFocus)
         self.head.setFixedHeight(22)
-        self.head.setStyleSheet("QPushButton{background:#2b2b2b; border:none; border-radius:3px; color:#e0e0e0;"
-                                "font-weight:700; text-align:left; padding:0 8px;}"
-                                "QPushButton:checked{background:#2b2b2b;}")
+        self.head.setStyleSheet(ui_style.HEAD)
         self.head.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.title = title
         self.body = QWidget()
@@ -207,7 +205,7 @@ class GradePanel(QWidget):
         self.preset = QPushButton("프리셋 ▾")
         self.preset.setFixedHeight(26)
         self.preset.setFocusPolicy(Qt.NoFocus)
-        self.preset.setStyleSheet("QPushButton{text-align:left; padding:0 8px;}")
+        self.preset.setStyleSheet(ui_style.PRESET)          # 왼쪽 정렬(같은 입체감)
         self.preset.clicked.connect(self.open_presets)
         self.strength = get_setting("preset_strength", "mid") or "mid"
         self._rec_jobs = 0
@@ -243,7 +241,7 @@ class GradePanel(QWidget):
             b.setFixedHeight(26)
             b.setToolTip(tip)
             b.setProperty("key", k)
-            b.setStyleSheet("QPushButton{border-radius:0; background:#2a2a2a;} QPushButton:checked{background:#2f4f78; color:#fff;}")
+            b.setMinimumWidth(40)                                  # 입체감·켜짐 = 앱 기본(BevelStyle)
             self.view.addButton(b, i)
             vbox.addWidget(b, 1)
         self.view.button(0).setChecked(True)
@@ -736,8 +734,7 @@ class GradePanel(QWidget):
         for k, b in self.kbtn.items():
             ks = (s.gkeys.get(k) or []) if s else []
             on = any(x["f"] == self.frame for x in ks)
-            b.setStyleSheet("QPushButton{background:#5a4a1a; border:1px solid #f2c94c; color:#f2c94c; padding:0;}" if on else
-                            "QPushButton{color:#f2c94c; padding:0;}" if ks else "QPushButton{color:#777; padding:0;}")
+            ui_style.tone(b, "key_on") if on else ui_style.tone(b, fg="#f2c94c" if ks else "#777777")
         widgets = [self.lut, *self.sliders.values()]
         for w in widgets:
             w.blockSignals(True)

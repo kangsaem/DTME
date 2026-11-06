@@ -42,7 +42,9 @@ class TextDialog(QDialog):
         self.bold.setCheckable(True)
         self.bold.setChecked(bool(title.get("bold")))
         self.bold.setFixedSize(30, 26)
-        self.bold.setStyleSheet("QPushButton{font-weight:700;} QPushButton:checked{background:#2f4f78; color:#fff;}")
+        bf = self.bold.font()
+        bf.setBold(True)
+        self.bold.setFont(bf)                    # 입체감·켜짐 = 앱 기본(BevelStyle)
         self.bold.toggled.connect(lambda v: self._set("bold", v))
         fr.addWidget(self.font, 1)
         fr.addWidget(self.bold)
@@ -84,7 +86,7 @@ class TextDialog(QDialog):
             b = QPushButton(n)
             b.setCheckable(True)
             b.setProperty("key", k)
-            b.setStyleSheet("QPushButton{border-radius:0;} QPushButton:checked{background:#2f4f78; color:#fff;}")
+            b.setMinimumWidth(40)
             b.setChecked(title.get("bg", "shadow") == k)
             self.bg.addButton(b, i)
             brow.addWidget(b, 1)
@@ -118,8 +120,8 @@ class TextDialog(QDialog):
     def _paint_swatches(self):
         cur = (self.t.get("color") or "#ffffff").lower()
         for c, b in self.sw:
-            b.setStyleSheet(f"QPushButton{{background:{c}; border:{'2px solid #4a8fe0' if c == cur else '1px solid #555'};"
-                            "border-radius:3px;}")
+            from . import ui_style
+            ui_style.tone(b, color=c if len(c) == 7 else "#808080", sel=c == cur)    # 글자 색 칩(입체감 · 고른 색 = 파란 테두리)
 
     def _color(self, c):
         self._set("color", c)
@@ -165,7 +167,7 @@ class MusicDialog(QDialog):
         self.auto.setCheckable(True)
         self.auto.setChecked(mix.get("orig") is None)
         self.auto.setToolTip("음악이 없으면 원본 100%, 있으면 0%")
-        self.auto.setStyleSheet("QPushButton:checked{background:#5a4a1a; border-color:#f2c94c; color:#f2c94c;}")
+        # 켜짐 = 앱 기본(파랑) — 예전 노란 켜짐 통일(v0.16.5)
         self.auto.toggled.connect(self._auto)
         g.addWidget(self.auto, len(rows), 1, 1, 2, Qt.AlignRight)
         g.setColumnStretch(1, 1)

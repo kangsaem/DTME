@@ -12,7 +12,8 @@ from dtme.ui_main import MainWindow  # noqa: E402
 
 
 def dark(app: QApplication):
-    app.setStyle("Fusion")
+    from dtme import ui_style
+    app.setStyle(ui_style.BevelStyle())      # Fusion + 모든 버튼 입체감(그림자 없음, v0.16.5)
     p = QPalette()
     c = {QPalette.Window: "#232323", QPalette.WindowText: "#e6e6e6", QPalette.Base: "#1a1a1a",
          QPalette.AlternateBase: "#262626", QPalette.Text: "#e6e6e6", QPalette.Button: "#2e2e2e",

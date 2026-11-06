@@ -1,0 +1,171 @@
+"""버튼 모양 한 곳에서(v0.16.5, 사용자: 버튼 아래 그림자 없음 · 버튼 안 입체감은 모두).
+
+방식: Qt 기본(Fusion) 스타일을 그대로 쓰고 '버튼 바탕 그리기'만 바꿈(BevelStyle) → 버튼 크기 계산은 예전과 같음.
+(앱 전체 스타일시트를 쓰면 Fusion 의 '글자 버튼 최소 폭 80px'이 사라지고, min-width 를 넣으면 고정 크기 버튼까지 커져서 버림)
+색 있는 버튼은 tone(b, "red") 처럼 이름으로. 왼쪽 정렬이 필요한 버튼 2종(묶음 머리 · 프리셋)만 같은 모양의 스타일시트(bevel()).
+
+입체감 = 위 → 아래 밝음 → 어두움 그라데이션 + 위 테두리 밝게 · 아래 테두리 어둡게. 눌림 = 그라데이션 뒤집음.
+켜짐 = 파랑(#2f4f78 · 테두리 #4a8fe0). 꺼짐(비활성) = 어둡게.
+"""
+from __future__ import annotations
+
+from PySide6.QtCore import QRectF
+from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPalette, QPen
+from PySide6.QtWidgets import QProxyStyle, QStyle, QStyleFactory, QStyleOptionButton
+
+SEL_BLUE, EDGE_BLUE = "#2f4f78", "#4a8fe0"
+BASE = "#383838"        # 일반 버튼 바탕
+
+# 이름 → (바탕, 글자, 굵게)
+TONES = {
+    "red": ("#c0392b", "#ffffff", True),       # 렌더 · AUTO · 렌더리스트로 · 보정+렌더
+    "orange": ("#d9822b", "#ffffff", True),    # 샘플
+    "light": ("#c9c9c9", "#111111", True),     # 보정만
+    "blue": (SEL_BLUE, "#ffffff", True),       # 확인
+    "navy": ("#2f3b4d", "#e6e6e6", False),     # ▼ 타임라인으로
+    "cut": ("#3a3a26", "#e6e6e6", False),      # [ 컷인 · 컷아웃 ]
+    "key_on": ("#5a4a1a", "#f2c94c", False),   # ◆ 이 프레임에 키
+    "overlay": ("#262626", "#dddddd", False),  # 모니터 위 버튼(반투명)
+}
+
+
+def _rgb(c: str):
+    c = c.lstrip("#")
+    return int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16)
+
+
+def shade(c: str, d: int) -> str:
+    """색을 d 만큼 밝게(+)/어둡게(−)."""
+    r, g, b = (max(0, min(255, x + d)) for x in _rgb(c))
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+def _light(bg: str) -> int:
+    return 10 if sum(_rgb(bg)) > 450 else 22           # 밝은 버튼은 위쪽 하이라이트를 덜
+
+
+def _steps(bg: str, state: str):
+    """상태별 (위, 아래) 밝기 차."""
+    lt = _light(bg)
+    return {"normal": (lt, -16), "hover": (lt + 10, -6), "pressed": (-18, lt // 2), "disabled": (0, -24)}[state]
+
+
+def _stops(bg: str, top: int, bottom: int):
+    return [(0.0, shade(bg, top)), (0.48, shade(bg, top // 3)), (0.52, shade(bg, 0)), (1.0, shade(bg, bottom))]
+
+
+# ------------------------------------------------------------------ 스타일시트(왼쪽 정렬 버튼용) — 그리기와 같은 값
+def _qgrad(bg: str, top: int, bottom: int) -> str:
+    st = ", ".join(f"stop:{pos} {c}" for pos, c in _stops(bg, top, bottom))
+    return f"qlineargradient(x1:0,y1:0,x2:0,y2:1, {st})"
+
+
+def bevel(bg: str = BASE, fg: str = "#e6e6e6", bold: bool = False, radius: int = 3, extra: str = "") -> str:
+    """BevelStyle 과 같은 모양의 스타일시트(크기가 고정되거나 늘어나는 버튼에만: 묶음 머리 · 프리셋)."""
+    lt = _light(bg)
+    w = "font-weight:700;" if bold else ""
+    return (f"QPushButton{{color:{fg}; {w} border:1px solid {shade(bg, -28)}; border-top-color:{shade(bg, lt + 14)};"
+            f" border-bottom-color:{shade(bg, -42)}; border-radius:{radius}px; background:{_qgrad(bg, *_steps(bg, 'normal'))}; {extra}}}"
+            f"QPushButton:hover{{background:{_qgrad(bg, *_steps(bg, 'hover'))};}}"
+            f"QPushButton:pressed{{background:{_qgrad(bg, *_steps(bg, 'pressed'))}; border-top-color:{shade(bg, -42)};"
+            f" border-bottom-color:{shade(bg, lt)};}}")
+
+
+HEAD = bevel("#2b2b2b", "#e0e0e0", bold=True, extra="text-align:left; padding:0 8px;")   # 접는 묶음 머리
+PRESET = bevel(BASE, extra="text-align:left; padding:0 8px;")                             # [프리셋: 이름 ▾]
+
+
+# ------------------------------------------------------------------ 그리기
+def _col(c: str, alpha: int) -> QColor:
+    q = QColor(c)
+    q.setAlpha(alpha)
+    return q
+
+
+def paint_bevel(p: QPainter, r: QRectF, bg: str, state: str, alpha: int = 255, radius: float = 3.0, edge: str | None = None):
+    top, bottom = _steps(bg, state)
+    g = QLinearGradient(r.topLeft(), r.bottomLeft())
+    for pos, c in _stops(bg, top, bottom):
+        g.setColorAt(pos, _col(c, alpha))
+    p.setRenderHint(QPainter.Antialiasing)
+    rr = r.adjusted(0.5, 0.5, -0.5, -0.5)
+    p.setPen(QPen(_col(edge, 255) if edge else _col(shade(bg, -28), alpha), 1))
+    p.setBrush(g)
+    p.drawRoundedRect(rr, radius, radius)
+    if edge:                                   # 켜짐 · 고른 색 = 파란 테두리(위만 조금 밝게)
+        p.setPen(QPen(_col(shade(edge, 30), 255), 1))
+        p.drawLine(int(rr.left() + radius), int(rr.top()), int(rr.right() - radius), int(rr.top()))
+        return
+    lt = _light(bg)
+    sunk = state == "pressed"
+    p.setPen(QPen(_col(shade(bg, -42 if sunk else lt + 14), alpha), 1))     # 위 테두리
+    p.drawLine(int(rr.left() + radius), int(rr.top()), int(rr.right() - radius), int(rr.top()))
+    p.setPen(QPen(_col(shade(bg, lt if sunk else -42), alpha), 1))          # 아래 테두리
+    p.drawLine(int(rr.left() + radius), int(rr.bottom()), int(rr.right() - radius), int(rr.bottom()))
+
+
+def _state(opt) -> str:
+    st = opt.state
+    if not (st & QStyle.State_Enabled):
+        return "disabled"
+    if st & QStyle.State_Sunken:
+        return "pressed"
+    if st & QStyle.State_MouseOver:
+        return "hover"
+    return "normal"
+
+
+class BevelStyle(QProxyStyle):
+    """Fusion 그대로 + 버튼 바탕만 입체 그라데이션(모든 QPushButton · bevel 속성이 있는 QToolButton)."""
+
+    def __init__(self):
+        super().__init__(QStyleFactory.create("Fusion"))
+
+    def drawPrimitive(self, el, opt, p, w=None):
+        if w is not None and (el == QStyle.PE_PanelButtonCommand or (el == QStyle.PE_PanelButtonTool and w.property("bevel"))):
+            tone_ = w.property("tone") or ""
+            color = w.property("tone_color") or ""
+            bg = color or TONES.get(tone_, (BASE,))[0]
+            alpha = 225 if tone_ == "overlay" else 255
+            on = bool(opt.state & QStyle.State_On) and not color
+            st = _state(opt)
+            p.save()
+            if on:                              # 켜짐 = 파랑
+                paint_bevel(p, QRectF(opt.rect), SEL_BLUE, st if st != "disabled" else "normal", alpha, edge=EDGE_BLUE)
+            else:
+                paint_bevel(p, QRectF(opt.rect), bg, st, alpha, edge=EDGE_BLUE if w.property("tone_sel") else None)
+            p.restore()
+            return
+        return super().drawPrimitive(el, opt, p, w)
+
+    def drawControl(self, el, opt, p, w=None):
+        if el == QStyle.CE_PushButtonLabel and w is not None:
+            fg = TONES.get(w.property("tone") or "", (None, None))[1]
+            if opt.state & QStyle.State_On and not w.property("tone_color"):
+                fg = "#ffffff"
+            if w.property("fg"):
+                fg = w.property("fg")
+            if fg:
+                o = QStyleOptionButton(opt)
+                pal = QPalette(o.palette)
+                c = QColor(fg)
+                if not (opt.state & QStyle.State_Enabled):
+                    c = c.darker(160)
+                pal.setColor(QPalette.ButtonText, c)
+                o.palette = pal
+                return super().drawControl(el, o, p, w)
+        return super().drawControl(el, opt, p, w)
+
+
+def tone(b, name: str = "", color: str = "", fg: str = "", sel: bool = False):
+    """버튼 색 종류(크기 계산은 그대로). name = TONES 키 / color = 임의 바탕(글자 색 칩) / fg = 글자 색만 / sel = 파란 테두리."""
+    b.setProperty("tone", name or None)
+    b.setProperty("tone_color", color or None)
+    b.setProperty("fg", fg or None)
+    b.setProperty("tone_sel", bool(sel))
+    if name in TONES and TONES[name][2]:
+        f = b.font()
+        f.setBold(True)
+        b.setFont(f)
+    b.update()
+    return b

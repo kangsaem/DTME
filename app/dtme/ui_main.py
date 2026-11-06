@@ -40,6 +40,12 @@ class MainWindow(QMainWindow):
             a.setToolTip(QKeySequence(key).toString())
             a.triggered.connect(fn)
             tb.addAction(a)
+        from PySide6.QtWidgets import QToolButton
+        for act in tb.actions():                    # 맨 위 줄도 다른 버튼과 같은 입체감(늘 보이게, 그림자 없음)
+            btn = tb.widgetForAction(act)
+            if isinstance(btn, QToolButton):
+                btn.setAutoRaise(False)
+                btn.setProperty("bevel", True)
 
         self.edit = EditTab(self.state)
         self.setCentralWidget(self.edit)

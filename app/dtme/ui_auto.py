@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (QButtonGroup, QComboBox, QDialog, QFileDialog, QF
                                QLineEdit, QListWidget, QListWidgetItem, QMenu, QProgressBar, QPushButton,
                                QSlider, QStyle, QStyledItemDelegate, QVBoxLayout, QWidget)
 
-from . import auto, ff, jobs
+from . import auto, ff, jobs, ui_style
 from .ui_render import DragMove
 from .project import (OUTPUTS, Segment, auto_lut, display_name, has_clip_grade, get_setting, grade_at, list_presets, load_preset, set_setting,
                       short_name)
@@ -29,15 +29,8 @@ AUTO_FILL = "#5d7896"        # 분석 진행(줄 배경)
 REND_FILL = "#8a5a54"        # 렌더 진행(줄 배경)
 YELLOW = "#f2c94c"
 SUB = "#c4cad1"              # 자동 인식 글자(흐린 흰색)
-RED_BTN = ("QPushButton{color:white; background:#c0392b; border:none; border-radius:3px; font-weight:700;}"
-           "QPushButton:hover{background:#d64535;} QPushButton:disabled{background:#7a2a22; color:#ddd;}")
-LIGHT_BTN = ("QPushButton{color:#111; background:#c9c9c9; border:1px solid #dcdcdc; border-radius:3px; font-weight:700;}"
-             "QPushButton:hover{background:#d6d6d6;} QPushButton:disabled{background:#6a6a6a; color:#bbb;}")
-ORANGE_BTN = ("QPushButton{color:white; background:#d9822b; border:none; border-radius:3px; font-weight:700;}"
-              "QPushButton:hover{background:#e8964a;} QPushButton:disabled{background:#7a4a1a; color:#ddd;}")
-ON_BTN = (f"QPushButton{{background:#2e2e2e;}} QPushButton:checked{{background:{SEL_BLUE}; border:1px solid {EDGE_BLUE}; color:#fff;}}")
-AUTO_BTN = ("QPushButton{border:1px dashed #666; color:#bbb; background:#2e2e2e;}"
-            f"QPushButton:checked{{border:1px solid {YELLOW}; color:{YELLOW}; background:#3a3420;}}")
+RED_BTN, LIGHT_BTN, ORANGE_BTN = "red", "light", "orange"    # 버튼 색 이름(ui_style.tone) — 모양은 ui_style 한 곳에서
+ON_BTN = ""                   # 일반 버튼 = 앱 기본(입체감 · 켜짐 파랑)
 SEG_BTN = ON_BTN              # [a|b] 도 격자 버튼과 같은 모양(떨어진 둥근 버튼, 켜짐 = 파랑)
 MAIN_W, MAIN_H = 88, 32
 OUT_SHORT = {"horizontal": "1080", "horizontal1440": "1440", "horizontal2160": "4K", "vertical": "세로"}
@@ -47,13 +40,11 @@ VALUE_ROWS = [("r_gain", "빨강", "{:.2f}"), ("b_gain", "파랑", "{:.2f}"), ("
 
 
 def main_button(text, style=None, w=MAIN_W):
-    from .ui_render import add_shadow
     b = QPushButton(text)
     b.setFixedSize(w, MAIN_H)
     b.setFocusPolicy(Qt.NoFocus)
     if style:
-        b.setStyleSheet(style)
-        add_shadow(b)
+        ui_style.tone(b, style)
     return b
 
 
@@ -861,9 +852,7 @@ N_SAMPLE = 6
 
 def sample_name(cfg: dict, src, k: int, preset: str = "") -> str:
     parts = [cfg.get("name", "").strip() or "DTME"]
-    att = cfg.get("attach", ["date", "num"])
-    if "date" in att:
-        parts.append(short_name(src.path))
+    att = cfg.get("attach", ["num"])           # 날짜시간은 v0.16.5 에서 뺌(사용자). 옛 설정의 'date' 는 무시
     if "preset" in att and preset:
         parts.append(preset.replace(" · ", "_").replace(" ", ""))
     if "num" in att:
@@ -914,13 +903,13 @@ class SampleDialog(DragMove, QDialog):
         ar = QHBoxLayout()
         ar.setSpacing(6)
         self.att = {}
-        for k, t in (("date", "날짜시간"), ("preset", "프리셋"), ("num", "번호")):
+        for k, t in (("preset", "프리셋"), ("num", "번호")):
             bt = QPushButton(t)
             bt.setCheckable(True)
             bt.setFixedHeight(28)
             bt.setStyleSheet(ON_BTN)
             bt.setFocusPolicy(Qt.NoFocus)
-            bt.setChecked(k in cfg.get("attach", ["date", "num"]))
+            bt.setChecked(k in cfg.get("attach", ["num"]))
             bt.toggled.connect(self._eg)
             self.att[k] = bt
             ar.addWidget(bt)

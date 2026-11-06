@@ -17,8 +17,7 @@ from .project import short_name
 ORIENT_TXT = {"horizontal": "가로", "horizontal1440": "가로 1440", "horizontal2160": "가로 4K", "vertical": "세로"}
 
 
-RED_BTN = ("QPushButton{color:white; background:#c0392b; border:none; border-radius:3px; font-weight:700;}"
-           "QPushButton:hover{background:#d64535;} QPushButton:disabled{background:#7a2a22; color:#ddd;}")
+from . import ui_style  # noqa: E402  버튼 모양은 ui_style 한 곳에서
 BTN_W, BTN_H = 76, 28          # 모든 일반 버튼
 MAIN_W, MAIN_H = 88, 32        # 주요 버튼: ▶/❚❚ · ▼ · 렌더리스트로 · 렌더
 ADD_W, ADD_H = BTN_W, BTN_H    # 영상 추가 · 삭제(소스)
@@ -87,21 +86,11 @@ def render_list_button(fn, tip=""):
     b.setIconSize(QSize(24, 13))      # 화살표 20% 축소
     b.setFixedSize(MAIN_W, MAIN_H)
     b.setFocusPolicy(Qt.NoFocus)
-    b.setStyleSheet(RED_BTN)
+    ui_style.tone(b, "red")
     if tip:
         b.setToolTip(tip)
-    add_shadow(b)
     b.clicked.connect(fn)
     return b
-
-
-def add_shadow(w):
-    from PySide6.QtWidgets import QGraphicsDropShadowEffect
-    e = QGraphicsDropShadowEffect(w)
-    e.setBlurRadius(10)
-    e.setOffset(0, 2)
-    e.setColor(QColor(0, 0, 0, 170))
-    w.setGraphicsEffect(e)
 
 
 def out_dir(project) -> Path:
@@ -276,8 +265,7 @@ class RenderPanel(QWidget):
         self.b_render = QPushButton("렌더")
         self.b_render.setFixedSize(MAIN_W, MAIN_H)
         self.b_render.setFocusPolicy(Qt.NoFocus)
-        self.b_render.setStyleSheet(RED_BTN)
-        add_shadow(self.b_render)
+        ui_style.tone(self.b_render, "red")
         self.b_render.clicked.connect(self.render)
         self.dlg = RenderSettingsDialog(state, self)
         self.settings = self.dlg.settings
@@ -549,8 +537,7 @@ class RenderSettingsDialog(DragMove, QDialog):
         for b in (self.b_cancel, self.b_ok):
             fix_size(b, main=True)
             b.setFocusPolicy(Qt.NoFocus)
-        self.b_ok.setStyleSheet("QPushButton{color:#fff; background:#2f4f78; border:1px solid #4a8fe0; border-radius:3px;"
-                                " font-weight:700;} QPushButton:hover{background:#3a5f8e;}")
+        ui_style.tone(self.b_ok, "blue")
         self.b_cancel.clicked.connect(self.reject)
         self.b_ok.clicked.connect(self.accept)
         br = QHBoxLayout()

@@ -91,8 +91,12 @@ class Monitor(QWidget):
             b.setFocusPolicy(Qt.NoFocus)
             b.setFixedHeight(22)
             b.setProperty("key", k)
-            b.setStyleSheet("QPushButton{background:rgba(25,25,25,210); color:#bbb; border:1px solid #555;"
-                            "border-radius:0; font-size:11px; padding:0 10px;} QPushButton:checked{background:#2f4f78; color:#fff;}")
+            from . import ui_style
+            ui_style.tone(b, "overlay")
+            f = b.font()
+            f.setPixelSize(11)
+            b.setFont(f)
+            b.setFixedWidth(b.fontMetrics().horizontalAdvance(t) + 20)
             self.mode_grp.addButton(b, i)
             lay.addWidget(b)
         self.mode_grp.button(0).setChecked(True)
@@ -193,14 +197,16 @@ class Monitor(QWidget):
         lay = QHBoxLayout(self.zbox)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(2)
-        css = ("QPushButton{background:rgba(25,25,25,210); color:#ddd; border:1px solid #555; border-radius:3px;"
-               "font-size:11px; padding:0 6px;}")
+        from . import ui_style
         self.b_zm = QPushButton("−")
         self.b_zl = QPushButton("맞춤")
         self.b_zp = QPushButton("+")
         for b, w in ((self.b_zm, 24), (self.b_zl, 52), (self.b_zp, 24)):
             b.setFixedSize(w, 22)
-            b.setStyleSheet(css)
+            ui_style.tone(b, "overlay")
+            f = b.font()
+            f.setPixelSize(11)
+            b.setFont(f)
             b.setFocusPolicy(Qt.NoFocus)
             lay.addWidget(b)
         self.b_zm.setToolTip("축소")
@@ -227,13 +233,15 @@ class Monitor(QWidget):
         lay = QHBoxLayout(self.sbox)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(3)
-        css = ("QPushButton{background:rgba(40,40,40,235); color:#e6e6e6; border:1px solid #555; border-radius:3px;"
-               "font-size:11px; padding:0 8px;}")
+        from . import ui_style
         for t, tip, sig in (("명암", "양끝을 목표선(5%·95%)에 맞춤", self.contrastRequested),
                             ("색 균형", "중간 밝기에서 빨강·파랑을 초록에 맞춘 뒤 물빛만 파랑", self.balanceRequested)):
             b = QPushButton(t)
             b.setFixedSize(56, 22)
-            b.setStyleSheet(css)
+            ui_style.tone(b, "overlay")
+            f = b.font()
+            f.setPixelSize(11)
+            b.setFont(f)
             b.setToolTip(tip)
             b.setFocusPolicy(Qt.NoFocus)
             b.clicked.connect(sig.emit)

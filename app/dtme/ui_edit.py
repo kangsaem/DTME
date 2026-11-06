@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (QAbstractSpinBox, QApplication, QButtonGroup, QCh
                                QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSlider,
                                QSplitter, QStyle, QStyledItemDelegate, QTextEdit, QVBoxLayout, QWidget)
 
-from . import ff, jobs
+from . import ff, jobs, ui_style
 from .project import (MAX_LAYERS, TITLE_DEFAULT_SEC, Marker, RenderItem, Segment, display_name, grade_at, has_clip_grade, is_plain, new_layer,
                       new_music, new_text, new_title_image, reframe_at, reframe_max, short_name,
                       speed_label, timecode)
@@ -22,7 +22,7 @@ from .state import AppState
 from .ui_bars import LayerBar, SeqTimeline, SourceBar
 from .ui_grade import GradePanel
 from .ui_player import Player
-from .ui_render import (ADD_H, ADD_W, RenderPanel, add_shadow, fix_size, item_base, out_dir,
+from .ui_render import (ADD_H, ADD_W, RenderPanel, fix_size, item_base, out_dir,
                         render_list_button, unique)
 
 MEDIA_FILTER = ("영상·이미지·음악 (*.mp4 *.MP4 *.mov *.MOV *.jpg *.JPG *.jpeg *.JPEG *.png *.PNG "
@@ -228,8 +228,8 @@ class EditTab(QWidget):
         self.load_bar = QProgressBar()
         self.load_bar.setTextVisible(False)
         self.load_bar.setFixedHeight(6)
-        from .ui_auto import RED_BTN, main_button
-        self.b_auto = main_button("AUTO", RED_BTN)
+        from .ui_auto import main_button
+        self.b_auto = main_button("AUTO", "red")
         self.b_auto.setToolTip("전체 자동 보정 · 렌더")
         self.b_auto.clicked.connect(self.open_auto)
         self.auto_bar = QProgressBar()
@@ -317,7 +317,7 @@ class EditTab(QWidget):
         b_in = _btn("[ 컷인", "I  또는  [", lambda: self._key("i"))
         b_out = _btn("컷아웃 ]", "O  또는  ]", lambda: self._key("o"))
         for b in (b_in, b_out):
-            b.setStyleSheet("QPushButton{background:#3a3a26;}")
+            ui_style.tone(b, "cut")
             cut.addWidget(b)
         cut.addWidget(_btn("IO 해제", "Esc", lambda: self._key("esc")))
         cut.addWidget(_btn("삭제", "Del", lambda: self._key("del")))
@@ -353,8 +353,10 @@ class EditTab(QWidget):
         lbox.addWidget(b_trans)
         lbox.addWidget(self.tl_len)
         b_down = _btn("▼", "↓", lambda: self._key("down"), main=True)
-        b_down.setStyleSheet("QPushButton{font-size:15px; background:#2f3b4d;}")
-        add_shadow(b_down)
+        ui_style.tone(b_down, "navy")
+        f = b_down.font()
+        f.setPixelSize(15)
+        b_down.setFont(f)
         self.zoom = QSlider(Qt.Horizontal)
         self.zoom.setRange(5, 200)
         self.zoom.setValue(30)
