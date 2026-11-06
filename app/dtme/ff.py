@@ -25,8 +25,8 @@ def denoise_chain(g: dict) -> list[str]:
     lu = max(0.0, min(100.0, float(g.get("nr_luma", 0))))
     f = []
     if c > 0 or lu > 0:
-        ls, lt = max(0.01, lu * 0.04), max(0.01, lu * 0.08)
-        cs, ct = max(0.01, c * 0.05), max(0.01, c * 0.133)
+        ls, lt = max(0.01, lu * 0.04), 0.01        # [테스트 NR] 시간축 노이즈 제거 끔(공간만 그대로)
+        cs, ct = max(0.01, c * 0.05), 0.01
         f.append(f"hqdn3d={ls:.2f}:{cs:.2f}:{lt:.2f}:{ct:.2f}")
     if c >= 40:
         f.append(f"median=radius={2 if c >= 85 else 1}:planes=6")

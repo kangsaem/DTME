@@ -160,7 +160,8 @@ def file_name(project, item) -> str:
     pre = project.output.prefix.strip() or "DTME"
     if pre and not pre.endswith(("_", "-", " ")):
         pre += "_"
-    return f"{pre}{item.name}"
+    from . import TEST_TAG
+    return f"{pre}{item.name}{TEST_TAG}"
 
 
 class RenderDelegate(QStyledItemDelegate):

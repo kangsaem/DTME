@@ -81,7 +81,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: DTME-windows
+          name: DTME-windows-${{ github.ref_name }}
           path: dist/DTME
           retention-days: 30
 
