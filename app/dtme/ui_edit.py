@@ -842,9 +842,11 @@ class EditTab(QWidget):
         job = jobs.Job(work)
 
         def done(patch):
+            from .auto import follow_blue
             rr, gg, bb = (max(1.0, float(v)) for v in patch)
-            self.grade.set_values({"r_gain": gg / rr, "b_gain": gg / bb})
-            self._say(f"흰색 찍기 → 빨강 {gg / rr:.2f}  파랑 {gg / bb:.2f}", C_OK)
+            r, b = gg / rr, follow_blue(gg / rr, gg / bb)          # 파랑 ≥ 빨강×0.9
+            self.grade.set_values({"r_gain": r, "b_gain": b})
+            self._say(f"흰색 찍기 → 빨강 {r:.2f}  파랑 {b:.2f}", C_OK)
         job.signals.done.connect(done)
         job.signals.error.connect(lambda m: self._say(f"흰색 찍기 실패: {m[-120:]}", C_WARN))
         jobs.submit(jobs.PREVIEW_POOL, job, priority=9)
@@ -1688,7 +1690,7 @@ class EditTab(QWidget):
 
     def _auto_start(self, dlg):
         """[시작] 저장폴더 → (분석 덜 끝났으면 기다림) → 클립에 적용 → 바로 렌더 또는 개별 보정."""
-        if not dlg.busy and not getattr(dlg, "_folder", ""):
+        if dlg.mode == "render" and not dlg.busy and not getattr(dlg, "_folder", ""):   # [보정만]은 파일을 안 만들어 폴더 안 물음
             d = self._ask_folder()
             if not d:
                 return
@@ -1708,7 +1710,8 @@ class EditTab(QWidget):
         except Exception:  # noqa: BLE001
             pass
         self.state.checkpoint()
-        p.output.folder = dlg._folder
+        if getattr(dlg, "_folder", ""):
+            p.output.folder = dlg._folder
         p.output.prefix = dlg.name.text().strip()
         for r in rows:
             s = p.source(r.sid)

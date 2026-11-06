@@ -78,9 +78,15 @@ names = sorted(x.name for x in sdir.glob("*.jpg"))
 print("샘플:", len(names), names[:2], "… 클립 값 그대로:", a.grade == {})
 assert len(names) == 18 and a.grade == {} and names[0].startswith("BOHOL_")
 # [시작] 개별 보정
+def _no_ask(title=""):
+    raise AssertionError("[보정만]은 저장폴더를 묻지 않아야 함")
+e._ask_folder = _no_ask
+dlg.b_each.click(); wait(1)                           # [보정만]: 폴더 안 물음
 e._ask_folder = lambda title="": str(work / "out")
-dlg.mode = "each"; e._auto_start(dlg); wait(1)        # [보정만]
 print("적용:", [(s.auto.get("preset"), s.auto.get("by"), len(s.gkeys.get("r_gain", [])), s.out) for s in (a, b, c)])
+for s_ in (a, b, c):
+    g_ = st.project.grade_for_source(s_.id)
+    assert g_["b_gain"] >= 0.9 * g_["r_gain"] - 1e-6 and g_["hue"] == 5.0, (g_["r_gain"], g_["b_gain"], g_["hue"])
 assert a.auto["preset"] == "shallow/fish" and b.auto == {**b.auto, "preset": "deep/turtle", "by": "user"} and b.out == "vertical"
 assert c.gkeys and d.grade == {"r_gain": 1.3} and p.output.prefix == "BOHOL"
 assert gp.view_mode() == "split"

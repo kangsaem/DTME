@@ -41,6 +41,15 @@ SUBJECT_DELTA = {
 }
 
 
+BASE_HUE, BASE_SAT = 5.0, 1.1      # 사용자 기본: 색조 +5, 채도 1.1 (장면별 채도는 이 값에서 더하고 뺌)
+BLUE_FOLLOW = 0.9                  # 빨강을 올리면 파랑은 빨강의 0.9배 이상(물이 자주·회색으로 가지 않게)
+
+
+def follow_blue(r: float, b: float) -> float:
+    """파랑 ≥ 빨강 × 0.9 (자동 계산 값에만: AUTO·프리셋·흰색 찍기·색 균형. 슬라이더를 직접 움직이는 건 그대로)."""
+    return max(float(b), round(BLUE_FOLLOW * float(r), 3))
+
+
 def preset_keys() -> list[str]:
     """기본 프리셋 14개: light/fish … deep/diver, bluewater, night"""
     return [f"{sc}/{sb}" for sc in SUBJECT_SCENES for sb, _ in SUBJECTS] + ["bluewater", "night"]
@@ -96,8 +105,9 @@ def builtin_grade(key: str, base: dict | None = None, strength: str = "mid") -> 
     p = scene_params(sc, sb, strength)
     st = p["st"]
     g = dict(base or FACTORY_GRADE)
-    g.update(r_gain=round(min(2.0, 1 + (p["r"] - 1) * st), 3), b_gain=round(1 + (p["b"] - 1) * st, 3), hue=0.0,
-             sat=round(1 + (p["sat"] - 1) * st, 3), water=int(round(p["water"] * st)), gy=int(round(min(100, p["gy"] * st))),
+    r = round(min(2.0, 1 + (p["r"] - 1) * st), 3)
+    g.update(r_gain=r, b_gain=follow_blue(r, round(1 + (p["b"] - 1) * st, 3)), hue=BASE_HUE,
+             sat=round(BASE_SAT + (p["sat"] - 1) * st, 3), water=int(round(p["water"] * st)), gy=int(round(min(100, p["gy"] * st))),
              nr_chroma=int(p["nrc"]), nr_luma=int(p["nrl"]), dehaze=int(round(p["dehaze"] * st)),
              curve=s_curve(0.04, 0.95, p["s"] * st), stab=0, sharpen=p.get("sh", 0.15),
              wnr=int(p.get("wnr", 0)))
@@ -226,8 +236,8 @@ def gains_for(st: dict, p: dict) -> tuple[float, float]:
     # 프리셋 값 주변으로만(물속은 빨강을 줄이지 않음, 물만 보이는 화면에서 회색으로 가지 않게)
     pr, pb = min(2.0, 1 + (p["r"] - 1) * p["st"]), 1 + (p["b"] - 1) * p["st"]
     rmax = min(2.0, 1 + (p["rmax"] - 1) * p["st"])
-    return (float(np.clip(rg, max(1.0, pr - 0.15), min(rmax, pr + 0.15))),
-            float(np.clip(bg, pb - 0.05, pb + 0.05)))
+    r = float(np.clip(rg, max(1.0, pr - 0.15), min(rmax, pr + 0.15)))
+    return r, follow_blue(r, float(np.clip(bg, pb - 0.05, pb + 0.05)))
 
 
 def tone_ends(a: np.ndarray) -> tuple[float, float]:
@@ -321,12 +331,13 @@ def contrast_fix(a: np.ndarray, s: float = 0.06) -> list:
 
 
 def balance_fix(a: np.ndarray) -> tuple[float, float]:
-    """[색 균형] LUT 만 입힌 화면의 중간 밝기(0.2~0.8)에서 빨강·파랑을 초록에 맞춤."""
+    """[색 균형] LUT 만 입힌 화면의 중간 밝기(0.2~0.8)에서 빨강·파랑을 초록에 맞춤(파랑 ≥ 빨강×0.9)."""
     y = luma(a)
     m = (y > 0.2) & (y < 0.8)
     sel = a[m] if m.mean() > 0.02 else a.reshape(-1, 3)
     r, g, b = sel.mean(0) + 1e-4
-    return float(np.clip(g / r, 0.5, 2.0)), float(np.clip(g / b, 0.5, 1.5))
+    rr = float(np.clip(g / r, 0.5, 2.0))
+    return rr, min(1.5, follow_blue(rr, float(np.clip(g / b, 0.5, 1.5))))
 
 
 def range_marks(a: np.ndarray, lo: float = 0.05, hi: float = 0.95) -> list[tuple[str, str]]:
