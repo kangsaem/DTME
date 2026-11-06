@@ -40,6 +40,20 @@ def shade(c: str, d: int) -> str:
     return f"#{r:02x}{g:02x}{b:02x}"
 
 
+def dim(bg: str) -> str:
+    """꺼짐(비활성) 바탕: 짙은 회색(#3a3a3a) 쪽으로 55% → 색 있는 버튼도 확실히 꺼져 보이게."""
+    a, b = _rgb(bg), _rgb("#3a3a3a")
+    r, g, bl = (int(round(x * 0.45 + y * 0.55)) for x, y in zip(a, b))
+    return f"#{r:02x}{g:02x}{bl:02x}"
+
+
+def disabled_fg(fg: str) -> str:
+    """꺼짐 글자: 회색(#8a8a8a) 쪽으로 60%."""
+    a, b = _rgb(QColor(fg).name()), _rgb("#8a8a8a")
+    r, g, bl = (int(round(x * 0.4 + y * 0.6)) for x, y in zip(a, b))
+    return f"#{r:02x}{g:02x}{bl:02x}"
+
+
 def _light(bg: str) -> int:
     return 10 if sum(_rgb(bg)) > 450 else 22           # 밝은 버튼은 위쪽 하이라이트를 덜
 
@@ -54,21 +68,48 @@ def _stops(bg: str, top: int, bottom: int):
     return [(0.0, shade(bg, top)), (0.48, shade(bg, top // 3)), (0.52, shade(bg, 0)), (1.0, shade(bg, bottom))]
 
 
-# ------------------------------------------------------------------ 스타일시트(왼쪽 정렬 버튼용) — 그리기와 같은 값
-def _qgrad(bg: str, top: int, bottom: int) -> str:
-    st = ", ".join(f"stop:{pos} {c}" for pos, c in _stops(bg, top, bottom))
+# ------------------------------------------------------------------ 스타일시트 판 — 그리기와 같은 값
+# DTME: 왼쪽 정렬 버튼 2종에만. MOSCO 처럼 버튼이 모두 고정 크기인 프로그램은 이걸로 전체 QSS 를 만들어도 됨(design/BUTTON_UI.md)
+def _c(hexc: str, alpha: int) -> str:
+    if alpha >= 255:
+        return hexc
+    r, g, b = _rgb(hexc)
+    return f"rgba({r},{g},{b},{alpha})"
+
+
+def _qgrad(bg: str, top: int, bottom: int, alpha: int = 255) -> str:
+    st = ", ".join(f"stop:{pos} {_c(c, alpha)}" for pos, c in _stops(bg, top, bottom))
     return f"qlineargradient(x1:0,y1:0,x2:0,y2:1, {st})"
 
 
-def bevel(bg: str = BASE, fg: str = "#e6e6e6", bold: bool = False, radius: int = 3, extra: str = "") -> str:
-    """BevelStyle 과 같은 모양의 스타일시트(크기가 고정되거나 늘어나는 버튼에만: 묶음 머리 · 프리셋)."""
+def _sel(sel: str, pseudo: str) -> str:
+    return ", ".join(x.strip() + pseudo for x in sel.split(","))
+
+
+def bevel(bg: str = BASE, fg: str = "#e6e6e6", bold: bool = False, radius: int = 3, extra: str = "",
+          sel: str = "QPushButton", edge: str | None = None, alpha: int = 255, states: bool = True) -> str:
+    """BevelStyle 과 같은 모양의 스타일시트. sel = 선택자(쉼표로 여럿), edge = 테두리 한 색(켜짐 #4a8fe0), alpha = 반투명."""
     lt = _light(bg)
     w = "font-weight:700;" if bold else ""
-    return (f"QPushButton{{color:{fg}; {w} border:1px solid {shade(bg, -28)}; border-top-color:{shade(bg, lt + 14)};"
-            f" border-bottom-color:{shade(bg, -42)}; border-radius:{radius}px; background:{_qgrad(bg, *_steps(bg, 'normal'))}; {extra}}}"
-            f"QPushButton:hover{{background:{_qgrad(bg, *_steps(bg, 'hover'))};}}"
-            f"QPushButton:pressed{{background:{_qgrad(bg, *_steps(bg, 'pressed'))}; border-top-color:{shade(bg, -42)};"
-            f" border-bottom-color:{shade(bg, lt)};}}")
+    if edge:
+        border = f"border:1px solid {edge}; border-top-color:{shade(edge, 30)};"
+    else:
+        border = (f"border:1px solid {_c(shade(bg, -28), alpha)}; border-top-color:{_c(shade(bg, lt + 14), alpha)};"
+                  f" border-bottom-color:{_c(shade(bg, -42), alpha)};")
+    css = (f"{_sel(sel, '')}{{color:{fg}; {w} {border} border-radius:{radius}px; background:{_qgrad(bg, *_steps(bg, 'normal'), alpha)}; {extra}}}")
+    if not states:
+        return css
+    css += f"{_sel(sel, ':hover')}{{background:{_qgrad(bg, *_steps(bg, 'hover'), alpha)};}}"
+    css += f"{_sel(sel, ':pressed')}{{background:{_qgrad(bg, *_steps(bg, 'pressed'), alpha)};"
+    css += "}" if edge else f" border-top-color:{_c(shade(bg, -42), alpha)}; border-bottom-color:{_c(shade(bg, lt), alpha)};}}"
+    css += (f"{_sel(sel, ':disabled')}{{color:{disabled_fg(fg)}; background:{_qgrad(dim(bg), *_steps(dim(bg), 'disabled'), alpha)};"
+            f" border-color:{_c(shade(dim(bg), -28), alpha)};}}")
+    return css
+
+
+def bevel_on(sel: str = "QPushButton:checked", alpha: int = 255) -> str:
+    """켜짐(파랑) 스타일시트 — sel 에 켜짐 선택자(예: 'QPushButton:checked, QPushButton[on="true"]')."""
+    return bevel(SEL_BLUE, "#ffffff", sel=sel, edge=EDGE_BLUE, alpha=alpha)
 
 
 HEAD = bevel("#2b2b2b", "#e0e0e0", bold=True, extra="text-align:left; padding:0 8px;")   # 접는 묶음 머리
@@ -83,6 +124,8 @@ def _col(c: str, alpha: int) -> QColor:
 
 
 def paint_bevel(p: QPainter, r: QRectF, bg: str, state: str, alpha: int = 255, radius: float = 3.0, edge: str | None = None):
+    if state == "disabled":
+        bg = dim(bg)
     top, bottom = _steps(bg, state)
     g = QLinearGradient(r.topLeft(), r.bottomLeft())
     for pos, c in _stops(bg, top, bottom):
@@ -150,7 +193,7 @@ class BevelStyle(QProxyStyle):
                 pal = QPalette(o.palette)
                 c = QColor(fg)
                 if not (opt.state & QStyle.State_Enabled):
-                    c = c.darker(160)
+                    c = QColor(disabled_fg(fg))
                 pal.setColor(QPalette.ButtonText, c)
                 o.palette = pal
                 return super().drawControl(el, o, p, w)

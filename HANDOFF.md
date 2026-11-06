@@ -1,8 +1,8 @@
 # HANDOFF — DTME (Diving Tour Movie Editor)
 
-다음 대화는 이 문서를 기준으로 이어서 작업한다. **v0.16.5 완료(버튼 모양 통일 = 그림자 없음 · 버튼 안 입체감, 샘플 이름 날짜시간 뺌). v0.16.4(DJI 메타로 D-Log M/일반 판단 → 불러올 때 LUT 자동, 일반·알 수 없음 = LUT 없음, 프록시 = 클립 LUT, AUTO 창 LUT 줄). v0.16.3(테두리 없는 창 끌어서 이동, 샘플 배치 나란히·위아래·좌우, 모니터 반반 선 우클릭 = 좌우↔위아래). v0.16.2(디헤이즈 뺌 = 물빛 계단 원인 · 블루워터 커브 밝기 맞춤, 스틸 8bit 기본, WinError 32 자동 재시도, 보정 전 = LUT만, 렌더 리스트 보정값 사본·노란 점·완료 저장, 렌더 설정 창 어두운 창·취소/확인·새 프로젝트 기본값). v0.16.1(불러오면 LUT만, 이름 클릭 끄기, 로딩 표시, 프록시 2개·GPU 축소, AUTO 렌즈/흔들림). 다음: 사용자 PC 실기 확인(블루워터 밝기, 프록시 속도 = cache/dtme.log). MOSCO 에 같은 UI = `design/AUTO_UI.md`.**
+다음 대화는 이 문서를 기준으로 이어서 작업한다. **v0.16.6 완료(꺼진 색 버튼이 확실히 꺼져 보이게, MOSCO 용 버튼 기준서 `design/BUTTON_UI.md` · 견본 `design/button_ref.png` · **MOSCO 버튼 목록·계획·시안 `design/mosco/MOSCO_BUTTONS.md`**(MOSCO 원본은 안 건드림)). v0.16.5(버튼 모양 통일 = 그림자 없음 · 버튼 안 입체감, 샘플 이름 날짜시간 뺌). v0.16.4(DJI 메타로 D-Log M/일반 판단 → 불러올 때 LUT 자동, 일반·알 수 없음 = LUT 없음, 프록시 = 클립 LUT, AUTO 창 LUT 줄). v0.16.3(테두리 없는 창 끌어서 이동, 샘플 배치 나란히·위아래·좌우, 모니터 반반 선 우클릭 = 좌우↔위아래). v0.16.2(디헤이즈 뺌 = 물빛 계단 원인 · 블루워터 커브 밝기 맞춤, 스틸 8bit 기본, WinError 32 자동 재시도, 보정 전 = LUT만, 렌더 리스트 보정값 사본·노란 점·완료 저장, 렌더 설정 창 어두운 창·취소/확인·새 프로젝트 기본값). v0.16.1(불러오면 LUT만, 이름 클릭 끄기, 로딩 표시, 프록시 2개·GPU 축소, AUTO 렌즈/흔들림). 다음: 사용자 PC 실기 확인(블루워터 밝기, 프록시 속도 = cache/dtme.log). MOSCO 에 같은 UI = `design/AUTO_UI.md`.**
 
-## 1. 현재 상태 — v0.16.5 (2026-11-06)
+## 1. 현재 상태 — v0.16.6 (2026-11-06)
 
 - 저장소: `kangsaem/DTME` (main). push 하면 GitHub Actions 가 Windows 빌드 → Actions → 최신 "Windows build" → Artifacts `DTME-windows`(약 200MB, 30일)
 - Linux 작업 환경에서 엔진·화면(오프스크린) 검증, Actions(Windows)에서 빌드·엔진·exe 실행 점검 통과
@@ -217,6 +217,11 @@ UI 시안: Claude Design 캔버스 https://claude.ai/artifact/C4YHhA1vrZEKLp76BF
   - 측정(이 환경 2코어, 960px 프록시): 프레임 표시 80ms → 2ms, 120프레임 구간 디코딩 ≈ 0.6초. 정확성 = 한 장씩 디코딩과 같은 화면(`tests/test_framecache.py`)
   - 한계: 보정 미리보기(원본 4K 디코딩 + 필터) 자체 속도는 그대로 — 처음 보는 프레임·값 바꾼 직후는 예전과 같음. 보정을 프로그램 안에서 다시 구현(MOSCO 3단계)은 안 함
 
+### v0.16.6 (2026-11-06)
+- **꺼짐(비활성) 버튼**: 색 있는 버튼(빨간 렌더 등)이 꺼져도 거의 그대로 보이던 문제(v0.16.5) → 바탕을 `#3a3a3a` 쪽 55%(`ui_style.dim`), 글자를 `#8a8a8a` 쪽 60%(`disabled_fg`). 스타일시트 버전(bevel)에도 :disabled
+- **MOSCO 용 버튼 기준서** `design/BUTTON_UI.md`: 규칙 · 숫자(그라데이션 4점·테두리·상태) · 색 종류 표(MOSCO 칸 비움) · Qt 적용 순서(앱 스타일시트 쓰지 말 것 = Fusion 80px 최소 폭 함정) · 웹 CSS 판 · MOSCO 버튼 목록 만드는 법. 견본 그림 `design/button_ref.png`(`design/gen/make_buttons.py`). **MOSCO 원본은 건드리지 않음**(사용자: 다른 대화에서 작업 중) → MOSCO 대화에서 이 문서 + `app/dtme/ui_style.py` 복사해 적용
+- **MOSCO 버튼 목록** `design/mosco/MOSCO_BUTTONS.md`(기준 MOSCO f13b7d1 v0.5.6, 읽기 전용 사본으로 조사): 버튼 20묶음 지금 → 바꿀 모양, MOSCO 는 버튼 모두 고정 크기 + 창 전체 QSS → **QSS 의 버튼 줄만 `design/mosco/buttons.qss`(make_mosco_qss.py, DTME 값)로 교체** + 그림자 끔 + 켜짐 노랑 → 파랑 + Seg 이어 붙음 → 간격 5. 파일 안 고치고 실행 중에만 입힌 시안 `design/mosco/mosco_buttons_*.png`. 사용자 확인 대기 3개(키 ▾ 켜짐 색 · 샘플 날짜시간 · AUTO 글자 간격). `ui_style.bevel()` 에 선택자(sel) · 테두리 한 색(edge) · 반투명(alpha) 추가, `bevel_on()`
+
 ### v0.16.5 (2026-11-06, 사용자 지시)
 - **버튼 모양 통일**(사용자: 버튼 아래 그림자 없음 · 버튼 안 입체감은 모두) — `app/dtme/ui_style.py` 한 곳
   - 방식: `BevelStyle`(QProxyStyle, 바탕 Fusion) 이 버튼 바탕(PE_PanelButtonCommand · 맨 위 줄 QToolButton)만 입체 그라데이션으로 그림 → **크기 계산은 Fusion 그대로**. 앱 전체 스타일시트는 Fusion 의 '글자 버튼 최소 폭 80px'을 없애 버튼이 좁아지고, min-width 를 넣으면 고정 크기 버튼(◆ · −/+ · ⚙)까지 커져서 버림
@@ -352,6 +357,7 @@ tests/test_ui_auto.py    AUTO·프리셋·RGB·반반 샘플 화면 점검
 tests/test_lut_auto.py   색 모드 판단·LUT 자동·프록시 LUT·AUTO LUT 줄·4:3 (실제 액션4 파일 필요)
 tests/test_ui_v162.py    디헤이즈 뺌·스틸 8bit·WinError 32·LUT만·렌더 리스트 사본/완료·렌더 설정 창
 tests/test_ui_v161.py    보정 없음·실행취소 화면·이름 클릭 끄기·로딩 표시·AUTO 창 위치/렌즈·흔들림·프록시 폴백
+design/BUTTON_UI.md      버튼 모양 기준서(MOSCO 등) · design/button_ref.png 견본
 design/AUTO_UI.md        AUTO 화면 기준서(MOSCO 등 다른 프로그램용) · design/gen/ 시안 그림 스크립트
 .github/workflows/build.yml  Windows 빌드(PyInstaller onedir + BtbN FFmpeg master GPL) → 엔진 점검 → exe 실행 점검 → Artifact
 ```
@@ -408,6 +414,7 @@ DTME_SELFTEST=1 DTME_NO_AUDIO=1 QT_QPA_PLATFORM=offscreen python app/main.py   #
 
 ## 11. 변경 이력
 
+- v0.16.6: 꺼진 버튼 확실히 흐리게, MOSCO 용 버튼 기준서(design/BUTTON_UI.md · button_ref.png)
 - v0.16.5: 버튼 모양 통일(BevelStyle: 그림자 없음 · 입체감 · 켜짐 파랑), 샘플 이름 날짜시간 뺌, 일반 10bit 판단 확인
 - v0.16.4: DJI 메타로 D-Log M/일반 판단 → 불러올 때 LUT 자동(일반·알 수 없음 = 없음), 프리셋·기본값이 클립 LUT 유지, 프록시 = 클립 LUT, AUTO 창 LUT 줄, 4:3 원본 확인
 - v0.16.3: AUTO·렌더 설정·샘플 창 끌어서 이동, 샘플 배치(나란히·위아래·좌우), 모니터 반반 선 우클릭 = 좌우↔위아래
