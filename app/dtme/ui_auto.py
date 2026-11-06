@@ -362,7 +362,9 @@ class AutoDelegate(QStyledItemDelegate):
         p.setFont(f)
         p.setPen(QColor("#fff" if row.checked else "#8a8a8a"))
         x = cb.right() + 8
-        p.drawText(QRectF(x, r.top(), 78, r.height()), Qt.AlignVCenter | Qt.AlignLeft, display_name(src.path) if src else "")
+        nm = display_name(src.path) if src else ""
+        p.drawText(QRectF(x, r.top(), 78, r.height()), Qt.AlignVCenter | Qt.AlignLeft,
+                   p.fontMetrics().elidedText(nm, Qt.ElideRight, 76))          # 길면 … (C 표시와 겹치지 않게)
         x += 80
         if src and has_clip_grade(src):
             p.setPen(QColor(YELLOW))
@@ -852,7 +854,8 @@ N_SAMPLE = 6
 
 def sample_name(cfg: dict, src, k: int, preset: str = "") -> str:
     parts = [cfg.get("name", "").strip() or "DTME"]
-    att = cfg.get("attach", ["num"])           # 날짜시간은 v0.16.5 에서 뺌(사용자). 옛 설정의 'date' 는 무시
+    att = cfg.get("attach", ["num"])
+    parts.append(short_name(src.path))          # 클립 날짜(소스 이름) 항상 — 여러 클립이어도 안 겹침(v0.16.7, 토글 없음)
     if "preset" in att and preset:
         parts.append(preset.replace(" · ", "_").replace(" ", ""))
     if "num" in att:

@@ -787,6 +787,7 @@ class EditTab(QWidget):
             return
         self.pgen += 1
         gen, frame, tok = self.pgen, p.frame, p._token
+        self._prefetch_range(s, frame)
         mode = self.grade.view_mode()
         full = self.state.project.grade_for_source(s.id, frame)
         grade = ff.lut_only(full) if mode == "raw" else full        # [원본] = LUT만
@@ -815,6 +816,11 @@ class EditTab(QWidget):
         job.signals.done.connect(lambda data, g=gen, fr=frame, t=tok: self._on_preview(g, fr, t, data))
         job.signals.error.connect(lambda msg: (ff.log_error("미리보기", msg), self._say(f"미리보기 오류: {msg[-160:]}", C_WARN)))
         jobs.submit(jobs.PREVIEW_POOL, job, priority=5)
+
+    def _prefetch_range(self, s, frame):
+        """멈춘 곳 앞뒤 1초 원본을 뒤에서 한 번에 디코딩(근처 프레임 보정 화면이 빨라짐). 미리보기보다 낮은 우선순위."""
+        job = jobs.Job(lambda: ff.prefetch_range(s, frame))
+        jobs.submit(jobs.PREVIEW_POOL, job, priority=-5)
 
     def _on_preview(self, gen, frame, tok, data):
         p = self.player

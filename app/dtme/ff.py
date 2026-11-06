@@ -689,8 +689,79 @@ _FRAME_CACHE_MAX = 48
 
 
 class CachedFrame:
-    def __init__(self, data: bytes, lead: int, size=(0, 0)):
-        self.data, self.lead, self.size = data, lead, size
+    """미리보기 입력(앞 프레임 + 그 프레임). fmt = 'nut'(ffv1 무손실) | 'raw'(yuv420p10le, 원본 구간 캐시에서 잘라 옴)."""
+
+    def __init__(self, data: bytes, lead: int, size=(0, 0), fmt: str = "nut"):
+        self.data, self.lead, self.size, self.fmt = data, lead, size, fmt
+
+    def input_args(self) -> list[str]:
+        if self.fmt == "raw":
+            return ["-f", "rawvideo", "-pix_fmt", "yuv420p10le", "-s", f"{self.size[0]}x{self.size[1]}", "-framerate", "60",
+                    "-i", "-"]
+        return ["-f", "nut", "-i", "-"]
+
+
+# ------------------------------------------------------------------ 원본 구간 캐시(v0.16.7)
+# 멈출 때 보정 화면 = 원본 4K 디코딩(키프레임부터) + 보정. 근처 프레임으로 옮겨 다닐 때마다 디코딩하던 것을,
+# 멈춘 곳 앞뒤 1초(RANGE_HALF)를 뒤에서 한 번에 1280 폭 10bit 로 풀어 메모리에 둠 → 근처 프레임은 디코딩 없이 보정만.
+# 1장 ≈ 1280×720×1.5×2 B ≈ 2.8MB, 59.94fps 120장 ≈ 330MB, 구간 RANGE_MAX 개까지(오래 안 쓴 것부터 지움).
+RANGE_HALF = 60
+RANGE_MAX = 4
+_ranges: "dict[tuple, tuple]" = {}            # (경로, 시작) → (시작, 끝(제외), 데이터, 폭, 높이, 1장 바이트)
+_range_busy: set = set()
+_range_lock = threading.Lock()
+
+
+def _preview_size(src) -> tuple[int, int]:
+    return 1280, int(round(1280 * (src.height or 2160) / (src.width or 3840) / 2)) * 2
+
+
+def range_lookup(path: str, lo: int, hi: int):
+    """[lo, hi] 프레임이 모두 들어 있는 구간 → (데이터 조각, 폭, 높이) 또는 None."""
+    path = os.path.abspath(path)
+    with _range_lock:
+        for k, (a, b, data, w, h, fs) in list(_ranges.items()):
+            if k[0] == path and a <= lo and hi < b:
+                _ranges[k] = _ranges.pop(k)           # 최근 사용 → 뒤로
+                return data[(lo - a) * fs:(hi - a + 1) * fs], w, h
+    return None
+
+
+def prefetch_range(src: Source, center: int, gpu: bool = False) -> bool:
+    """center 앞뒤 RANGE_HALF 프레임을 한 번에 디코딩해 둠(이미 덮여 있거나 만드는 중이면 건너뜀). 작업 스레드에서 부름."""
+    path = os.path.abspath(src.path)
+    a = max(0, center - RANGE_HALF)
+    b = min(src.frames or center + RANGE_HALF, center + RANGE_HALF)
+    if b - a < 2 or range_lookup(path, max(0, center - PREVIEW_LEAD - 8), min(b - 1, center + 8)) is not None:
+        return False
+    key = (path, a)
+    with _range_lock:
+        if key in _range_busy or any(k[0] == path and abs(k[1] - a) < RANGE_HALF // 3 for k in _range_busy):
+            return False
+        _range_busy.add(key)
+    try:
+        w, h = _preview_size(src)
+        fs = w * h * 3                                 # yuv420p10le = 1.5 × 2바이트
+        data = run([paths.ffmpeg(), "-v", "error", *_hw(gpu), "-ss", _seek(a, src.fps), "-i", _abs(src.path),
+                    "-frames:v", str(b - a), "-an", "-vf", f"scale={w}:{h}:flags=lanczos,format=yuv420p10le",
+                    "-f", "rawvideo", "-"])
+        n = len(data) // fs
+        if n < 2:
+            return False
+        with _range_lock:
+            _ranges[key] = (a, a + n, data[:n * fs], w, h, fs)
+            while len(_ranges) > RANGE_MAX:
+                _ranges.pop(next(iter(_ranges)))
+        return True
+    finally:
+        with _range_lock:
+            _range_busy.discard(key)
+
+
+def range_clear(path: str | None = None):
+    with _range_lock:
+        for k in [k for k in _ranges if path is None or k[0] == os.path.abspath(path)]:
+            _ranges.pop(k, None)
 
 
 _frame_cache: "dict[str, CachedFrame]" = {}
@@ -708,6 +779,10 @@ def cached_frame(src: Source, frame: int, gpu: bool = False) -> CachedFrame:
         if c is not None:
             return c
         lead = min(PREVIEW_LEAD, frame)
+        hit = range_lookup(src.path, frame - lead, frame)      # 원본 구간 캐시에 있으면 디코딩 없이
+        if hit is not None:
+            data, w, h = hit
+            return CachedFrame(data, lead, (w, h), "raw")
         data = run([paths.ffmpeg(), "-v", "error", *_hw(gpu), "-ss", _seek(frame - lead, src.fps), "-i", _abs(src.path),
                     "-frames:v", str(lead + 1), "-an", "-vf", "scale=1280:-2:flags=lanczos,format=yuv420p10le",
                     "-c:v", "ffv1", "-f", "nut", "-"])
@@ -735,7 +810,7 @@ def render_preview(cached: CachedFrame, g: dict | None) -> bytes:
         cwd, lut = _lut_for(g)
         vf = lens_chain(g, *cached.size) + grade_chain(g, lut, 1280)
     vf += [f"select=gte(n\\,{cached.lead})", "format=rgb24"]
-    return run([paths.ffmpeg(), "-v", "error", "-f", "nut", "-i", "-", "-filter_complex", graph(vf, "[0:v]", "[po]"),
+    return run([paths.ffmpeg(), "-v", "error", *cached.input_args(), "-filter_complex", graph(vf, "[0:v]", "[po]"),
                 "-map", "[po]", "-frames:v", "1", "-f", "image2pipe", "-c:v", "png", "-"], cwd=cwd, data=cached.data)
 
 

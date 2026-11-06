@@ -1,8 +1,8 @@
 # HANDOFF — DTME (Diving Tour Movie Editor)
 
-다음 대화는 이 문서를 기준으로 이어서 작업한다. **v0.16.6 완료(꺼진 색 버튼이 확실히 꺼져 보이게, MOSCO 용 버튼 기준서 `design/BUTTON_UI.md` · 견본 `design/button_ref.png` · **MOSCO 버튼 목록·계획·시안 `design/mosco/MOSCO_BUTTONS.md`**(MOSCO 원본은 안 건드림)). v0.16.5(버튼 모양 통일 = 그림자 없음 · 버튼 안 입체감, 샘플 이름 날짜시간 뺌). v0.16.4(DJI 메타로 D-Log M/일반 판단 → 불러올 때 LUT 자동, 일반·알 수 없음 = LUT 없음, 프록시 = 클립 LUT, AUTO 창 LUT 줄). v0.16.3(테두리 없는 창 끌어서 이동, 샘플 배치 나란히·위아래·좌우, 모니터 반반 선 우클릭 = 좌우↔위아래). v0.16.2(디헤이즈 뺌 = 물빛 계단 원인 · 블루워터 커브 밝기 맞춤, 스틸 8bit 기본, WinError 32 자동 재시도, 보정 전 = LUT만, 렌더 리스트 보정값 사본·노란 점·완료 저장, 렌더 설정 창 어두운 창·취소/확인·새 프로젝트 기본값). v0.16.1(불러오면 LUT만, 이름 클릭 끄기, 로딩 표시, 프록시 2개·GPU 축소, AUTO 렌즈/흔들림). 다음: 사용자 PC 실기 확인(블루워터 밝기, 프록시 속도 = cache/dtme.log). MOSCO 에 같은 UI = `design/AUTO_UI.md`.**
+다음 대화는 이 문서를 기준으로 이어서 작업한다. **v0.16.7 완료(원본 구간 캐시 = 멈춤 보정 화면 빠르게, 샘플 이름 클립 날짜 항상, AUTO 줄 이름 …). v0.16.6(꺼진 색 버튼이 확실히 꺼져 보이게, MOSCO 용 버튼 기준서 `design/BUTTON_UI.md` · 견본 `design/button_ref.png` · **MOSCO 버튼 목록·계획·시안 `design/mosco/MOSCO_BUTTONS.md`**(MOSCO 원본은 안 건드림)). v0.16.5(버튼 모양 통일 = 그림자 없음 · 버튼 안 입체감, 샘플 이름 날짜시간 뺌). v0.16.4(DJI 메타로 D-Log M/일반 판단 → 불러올 때 LUT 자동, 일반·알 수 없음 = LUT 없음, 프록시 = 클립 LUT, AUTO 창 LUT 줄). v0.16.3(테두리 없는 창 끌어서 이동, 샘플 배치 나란히·위아래·좌우, 모니터 반반 선 우클릭 = 좌우↔위아래). v0.16.2(디헤이즈 뺌 = 물빛 계단 원인 · 블루워터 커브 밝기 맞춤, 스틸 8bit 기본, WinError 32 자동 재시도, 보정 전 = LUT만, 렌더 리스트 보정값 사본·노란 점·완료 저장, 렌더 설정 창 어두운 창·취소/확인·새 프로젝트 기본값). v0.16.1(불러오면 LUT만, 이름 클릭 끄기, 로딩 표시, 프록시 2개·GPU 축소, AUTO 렌즈/흔들림). 다음: 사용자 PC 실기 확인(블루워터 밝기, 프록시 속도 = cache/dtme.log). MOSCO 에 같은 UI = `design/AUTO_UI.md`.**
 
-## 1. 현재 상태 — v0.16.6 (2026-11-06)
+## 1. 현재 상태 — v0.16.7 (2026-11-06)
 
 - 저장소: `kangsaem/DTME` (main). push 하면 GitHub Actions 가 Windows 빌드 → Actions → 최신 "Windows build" → Artifacts `DTME-windows`(약 200MB, 30일)
 - Linux 작업 환경에서 엔진·화면(오프스크린) 검증, Actions(Windows)에서 빌드·엔진·exe 실행 점검 통과
@@ -217,6 +217,15 @@ UI 시안: Claude Design 캔버스 https://claude.ai/artifact/C4YHhA1vrZEKLp76BF
   - 측정(이 환경 2코어, 960px 프록시): 프레임 표시 80ms → 2ms, 120프레임 구간 디코딩 ≈ 0.6초. 정확성 = 한 장씩 디코딩과 같은 화면(`tests/test_framecache.py`)
   - 한계: 보정 미리보기(원본 4K 디코딩 + 필터) 자체 속도는 그대로 — 처음 보는 프레임·값 바꾼 직후는 예전과 같음. 보정을 프로그램 안에서 다시 구현(MOSCO 3단계)은 안 함
 
+### v0.16.7 (2026-11-06, 사용자 확정)
+- 사용자 작업 방식: **소스에서 앞뒤 자르고(인/아웃) 보정 → 멈춰서 보정 화면 확인 → 렌더가 대부분. 타임라인은 거의 안 씀** → 속도 개선은 소스 보정 미리보기 우선
+- **원본 구간 캐시**(`ff.prefetch_range` · `range_lookup` · `range_clear`): 멈춰서 보정 화면을 요청하면(EditTab.request_preview) 뒤에서(PREVIEW_POOL 낮은 우선순위) 그 프레임 앞뒤 1초(`RANGE_HALF` 60 → 120장)를 한 번에 1280 폭 yuv420p10le 로 디코딩해 메모리에 둠(1장 ≈ 2.8MB, 120장 ≈ 330MB, `RANGE_MAX` 4개, 오래 안 쓴 것부터 지움). `cached_frame` 은 구간에 (앞 4장 + 그 프레임)이 있으면 디코딩 없이 `CachedFrame(fmt="raw")` → `render_preview` 가 rawvideo 로 받음(`input_args`)
+  - 측정(이 환경 2코어, 합성 4K HEVC 10bit): 근처 프레임 보정 화면 한 장씩 2.35초 → 구간에서 0.76초(남은 건 보정 필터 시간), 앱 안 멈춤 → 화면 ≈ 1.1초(0.35초 대기 포함, 예전 ≈ 2.7초), 구간 채우기 120장 3.3초. **화면은 한 장씩과 픽셀 같음**(tests/test_range_cache.py, CI 포함)
+  - 한계: 멀리 점프한 첫 화면·값 바꾼 직후 보정 계산은 그대로. 작업 PC(32코어) 실측 안 함
+- **샘플 이름 = 클립 날짜 항상**(토글 없음): `이름_202610251001[_프리셋]_번호` — v0.16.5 에서 '날짜시간'을 빼며 클립 날짜까지 빠져 여러 클립이 겹치던 것. MOSCO 는 소스 이름이 원래 늘 들어가고 MOSCO 의 '날짜시간'은 저장 시각이라 그대로 둠
+- AUTO 창 클립 줄: 이름이 칸(78px)보다 길면 … (C 표시와 겹치던 것)
+- **넣지 않기로 함(사용자)**: 타임라인에서 컷 끝을 끌어 길이·인아웃 조정(지우고 소스에서 다시 넣으면 됨), 패널 떼어내기(독), 타임라인 컷 경계 미리 채우기(타임라인 거의 안 씀). 다음 대화에서 다시 제안하지 말 것
+
 ### v0.16.6 (2026-11-06)
 - **꺼짐(비활성) 버튼**: 색 있는 버튼(빨간 렌더 등)이 꺼져도 거의 그대로 보이던 문제(v0.16.5) → 바탕을 `#3a3a3a` 쪽 55%(`ui_style.dim`), 글자를 `#8a8a8a` 쪽 60%(`disabled_fg`). 스타일시트 버전(bevel)에도 :disabled
 - **MOSCO 용 버튼 기준서** `design/BUTTON_UI.md`: 규칙 · 숫자(그라데이션 4점·테두리·상태) · 색 종류 표(MOSCO 칸 비움) · Qt 적용 순서(앱 스타일시트 쓰지 말 것 = Fusion 80px 최소 폭 함정) · 웹 CSS 판 · MOSCO 버튼 목록 만드는 법. 견본 그림 `design/button_ref.png`(`design/gen/make_buttons.py`). **MOSCO 원본은 건드리지 않음**(사용자: 다른 대화에서 작업 중) → MOSCO 대화에서 이 문서 + `app/dtme/ui_style.py` 복사해 적용
@@ -354,6 +363,7 @@ app/dtme/auto.py         자동 보정 분석(샘플·통계·장면 판단·값
 app/dtme/ui_auto.py      AUTO 창 · 보정 탭 프리셋 창 · 샘플 창 · 공통 부품(PresetGrid, Seg, DetailBox)
 tests/test_auto.py       자동 보정 엔진(합성 장면) — CI
 tests/test_ui_auto.py    AUTO·프리셋·RGB·반반 샘플 화면 점검
+tests/test_range_cache.py 원본 구간 캐시(픽셀 같음·속도) — CI
 tests/test_lut_auto.py   색 모드 판단·LUT 자동·프록시 LUT·AUTO LUT 줄·4:3 (실제 액션4 파일 필요)
 tests/test_ui_v162.py    디헤이즈 뺌·스틸 8bit·WinError 32·LUT만·렌더 리스트 사본/완료·렌더 설정 창
 tests/test_ui_v161.py    보정 없음·실행취소 화면·이름 클릭 끄기·로딩 표시·AUTO 창 위치/렌즈·흔들림·프록시 폴백
@@ -407,13 +417,12 @@ DTME_SELFTEST=1 DTME_NO_AUDIO=1 QT_QPA_PLATFORM=offscreen python app/main.py   #
 
 ## 10. 다음 할 일 후보
 
-- 사용자 실기 피드백 반영(하나씩)
-- 타임라인 컷 가장자리 드래그로 길이 조정
-- 결과 미리보기 재생(타임라인 컷을 배속 적용해 이어 재생)
-- 보정 프리셋 저장/불러오기
+- 사용자 실기 피드백 반영(하나씩) — 작업 PC 에서: 블루워터 밝기, 프록시 속도(cache/dtme.log), 원본 구간 캐시 체감
+- (넣지 않음: 타임라인 컷 끝 끌기 · 패널 독 · 타임라인 컷 경계 미리 채우기 — v0.16.7 참고)
 
 ## 11. 변경 이력
 
+- v0.16.7: 원본 구간 캐시(멈춤 보정 화면 ≈3배), 샘플 이름 클립 날짜 항상, AUTO 줄 이름 …
 - v0.16.6: 꺼진 버튼 확실히 흐리게, MOSCO 용 버튼 기준서(design/BUTTON_UI.md · button_ref.png)
 - v0.16.5: 버튼 모양 통일(BevelStyle: 그림자 없음 · 입체감 · 켜짐 파랑), 샘플 이름 날짜시간 뺌, 일반 10bit 판단 확인
 - v0.16.4: DJI 메타로 D-Log M/일반 판단 → 불러올 때 LUT 자동(일반·알 수 없음 = 없음), 프리셋·기본값이 클립 LUT 유지, 프록시 = 클립 LUT, AUTO 창 LUT 줄, 4:3 원본 확인
