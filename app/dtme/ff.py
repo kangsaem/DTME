@@ -198,7 +198,85 @@ def probe(path: str) -> dict:
         "has_audio": any(s.get("codec_type") == "audio" for s in d["streams"]),
         "pix_fmt": v.get("pix_fmt", ""), "codec": v.get("codec_name", ""),
         "vfr": vfr, "duration": dur,
+        "color_mode": dji_color_mode(path, d),
     }
+
+
+# ------------------------------------------------------------------ DJI 메타(djmd)로 색 모드 판단
+def _pb_fields(b: bytes, path: str = "", depth: int = 0, out: dict | None = None) -> dict | None:
+    """protobuf(이름 없는 필드) → {'.2.5.1': 값, …} 첫 값만. 형식이 안 맞으면 None."""
+    out = {} if out is None else out
+    i = 0
+    try:
+        while i < len(b):
+            key, i = _pb_varint(b, i)
+            fn, wt = key >> 3, key & 7
+            if fn == 0 or fn > 2000:
+                return None
+            k = f"{path}.{fn}"
+            if wt == 0:
+                v, i = _pb_varint(b, i)
+                out.setdefault(k, v)
+            elif wt == 1:
+                i += 8
+            elif wt == 5:
+                i += 4
+            elif wt == 2:
+                ln, i = _pb_varint(b, i)
+                sub = b[i:i + ln]
+                i += ln
+                if depth < 5 and ln and _pb_fields(sub, k, depth + 1, dict()) is not None:
+                    _pb_fields(sub, k, depth + 1, out)
+                else:
+                    out.setdefault(k, sub)
+            else:
+                return None
+            if i > len(b):
+                return None
+        return out
+    except IndexError:
+        return None
+
+
+def _pb_varint(b: bytes, i: int):
+    r = sh = 0
+    while True:
+        x = b[i]
+        i += 1
+        r |= (x & 0x7F) << sh
+        sh += 7
+        if x < 0x80:
+            return r, i
+
+
+def dji_color_mode(path: str, info: dict | None = None) -> str:
+    """'dlog' | 'normal' | 'unknown'. DJI 영상의 djmd 첫 패킷(0.1초 안팎)에서 필드 .2.5.1(2 = D-Log M, 1 = 일반).
+    사용자 액션4 파일 2개로 찾은 필드: .1.9.1(5/1) · .2.3.5(10/8 bit)도 같은 방향 → 엇갈리면 unknown.
+    DJI 가 아니거나 못 읽으면 unknown(→ LUT 없음, 사용자 2026-11-06)."""
+    try:
+        if info is None:
+            info = json.loads(run([paths.ffprobe(), "-v", "error", "-print_format", "json", "-show_streams", "-show_format", path]))
+        enc = str((info.get("format", {}).get("tags") or {}).get("encoder", ""))
+        st = next((x for x in info.get("streams", []) if x.get("codec_tag_string") == "djmd"), None)
+        if st is None or "DJI" not in enc.upper():
+            return "unknown"
+        txt = run([paths.ffprobe(), "-v", "error", "-select_streams", str(st["index"]), "-show_packets", "-show_data",
+                   "-read_intervals", "%+#1", _abs(path)]).decode("utf-8", "replace")
+        import re
+        m = re.search(r"data=\s*\n(.*?)\[/PACKET\]", txt, re.S)
+        if not m:
+            return "unknown"
+        hexs = "".join(re.findall(r"^[0-9a-f]{8}: ((?:[0-9a-f]{2,4} ?){1,8})", m.group(1), re.M)).replace(" ", "")   # 홀수 바이트 = 끝 묶음 2자리
+        f = _pb_fields(bytes.fromhex(hexs)) or {}
+        mode = f.get(".2.5.1")
+        if mode == 2 and f.get(".1.9.1", 5) != 1:
+            return "dlog"
+        if mode == 1 and f.get(".1.9.1", 1) != 5:
+            return "normal"
+        return "unknown"
+    except Exception as e:  # noqa: BLE001
+        log_error(f"색 모드 {path}", str(e)[-200:])
+        return "unknown"
 
 
 def exif_orientation(path: str) -> int:
@@ -536,9 +614,14 @@ def _lut_for(g: dict) -> tuple[str | None, str | None]:
 
 
 # ------------------------------------------------------------------ 프록시
-def proxy_path(src_path: str) -> Path:
+def proxy_path(src_path: str, lut: str | None = None) -> Path:
+    """프록시 파일(LUT 를 입혀 만듦). 기본 LUT 는 예전 이름 그대로(이미 만든 프록시 재사용), 다른 LUT·LUT 없음은 이름에 반영."""
+    from .project import DEFAULT_LUT
     st = os.stat(src_path)
-    h = hashlib.sha1(f"{os.path.abspath(src_path)}|{st.st_size}|{int(st.st_mtime)}".encode()).hexdigest()[:12]
+    key = f"{os.path.abspath(src_path)}|{st.st_size}|{int(st.st_mtime)}"
+    if lut is not None and lut != DEFAULT_LUT:
+        key += f"|lut={lut}"
+    h = hashlib.sha1(key.encode()).hexdigest()[:12]
     d = paths.cache_dir() / "proxy"
     d.mkdir(exist_ok=True)
     return d / f"{Path(src_path).stem}_{h}.mp4"
@@ -558,7 +641,7 @@ def make_proxy(src: Source, lut: str, gpu: bool, on_progress=None, cancel=None) 
     GPU 켜짐: ① 디코딩·축소 모두 GPU(scale_cuda, 4K 프레임을 CPU 로 안 내림) → 실패하면 ② GPU 디코딩 + CPU 축소 → ③ CPU.
     걸린 시간은 cache/dtme.log 에 남김(사용자 PC 속도 확인용)."""
     import time
-    out = proxy_path(src.path)
+    out = proxy_path(src.path, lut or "")
     if out.exists() and out.stat().st_size > 0:
         return str(out)
     tmp = out.with_suffix(".part.mp4")

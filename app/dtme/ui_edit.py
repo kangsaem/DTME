@@ -687,7 +687,7 @@ class EditTab(QWidget):
             return
         if s.frames and self.player.frames == 0:
             self._load_current()
-        elif self.state.proxy_ready(s) and not self.player.has_media and not self.player.is_busy():
+        elif self.state.proxy_ready(s) and (not self.player.has_media or self.player.proxy != s.proxy) and not self.player.is_busy():
             self.player.set_source(s.fps, s.frames, s.proxy, self.player.frame)
             self._pv_timer.start()
 
@@ -766,6 +766,9 @@ class EditTab(QWidget):
             self._pv_timer.start()
 
     def _on_grade_changed(self):
+        s = self._cur()
+        if s is not None:
+            self.state.ensure_proxy(s)                # LUT 를 바꿨으면 그 LUT 로 프록시
         self._refresh_sbar()
         self._refresh_timeline()
         self.request_preview()
@@ -1765,6 +1768,7 @@ class EditTab(QWidget):
             s.auto = {"preset": res["preset"], "by": "auto" if r.choice == "auto" else "user", "rec": r.rec,
                       "nkeys": len(res["gkeys"].get("r_gain", [])) if st["keys"] == "auto" else 0}
             s.out = r.out
+            self.state.ensure_proxy(s)               # LUT 가 바뀌었으면 그 LUT 로 프록시
         self.state.dirty = True
         self.state.changed.emit("output")
         self.state.changed.emit("grade")

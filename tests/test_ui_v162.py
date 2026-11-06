@@ -40,6 +40,7 @@ print("WinError 32 두 번 → 성공:", n["k"]); assert n["k"] == 2
 # 3) 불러오기 → 보정 전 = LUT만
 e.import_files([CLIP]); wait(180, lambda: st.project.sources and st.status.get(st.project.sources[0].id) == "준비")
 s = st.project.sources[0]; e._select_source(s.id); wait(2); e.player.seek(60); wait(4)
+gp._set("lut", P.DEFAULT_LUT); wait(2)                    # 합성 영상(DJI 아님 = LUT 없음)에 LUT 를 넣고 비교
 gp.apply_choice("bluewater"); wait(6)
 c = ff.cached_frame(s, 60)
 log_png, lut_png = ff.render_preview(c, None), ff.render_preview(c, ff.lut_only(st.project.grade_for_source(s.id)))

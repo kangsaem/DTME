@@ -11,13 +11,13 @@ from pathlib import Path
 
 from PySide6.QtCore import QEvent, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
-from PySide6.QtWidgets import (QButtonGroup, QDialog, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
+from PySide6.QtWidgets import (QButtonGroup, QComboBox, QDialog, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
                                QLineEdit, QListWidget, QListWidgetItem, QMenu, QProgressBar, QPushButton,
                                QSlider, QStyle, QStyledItemDelegate, QVBoxLayout, QWidget)
 
 from . import auto, ff, jobs
 from .ui_render import DragMove
-from .project import (OUTPUTS, Segment, display_name, has_clip_grade, get_setting, grade_at, list_presets, load_preset, set_setting,
+from .project import (OUTPUTS, Segment, auto_lut, display_name, has_clip_grade, get_setting, grade_at, list_presets, load_preset, set_setting,
                       short_name)
 
 # ------------------------------------------------------------------ 색·모양 (DTME 공통)
@@ -465,6 +465,17 @@ class AutoDialog(DragMove, QDialog):
         self.strength.changed.connect(self._strength)
         self.out = Seg([(k, OUT_SHORT[k]) for k, _ in OUTPUTS], p.output.orientation)
         self.out.changed.connect(self._out)
+        self.lut_combo = QComboBox()                # 창 전체에 LUT 하나(사용자 2026-11-06): 자동 = 파일 정보(D-Log M 만 LUT)
+        self.lut_combo.setFixedHeight(30)
+        self.lut_combo.setFocusPolicy(Qt.NoFocus)
+        self.lut_combo.addItem("자동 (파일 정보)", "auto")
+        self.lut_combo.addItem("LUT 없음", "")
+        for n in ff.list_luts():
+            self.lut_combo.addItem(n, n)
+        self.lut_combo.setToolTip("자동 = D-Log M 영상만 LUT, 일반·알 수 없음은 LUT 없음")
+        i = self.lut_combo.findData(st.get("lut", "auto"))
+        self.lut_combo.setCurrentIndex(max(0, i))
+        self.lut_combo.currentIndexChanged.connect(self._lut_changed)
         self.name = QLineEdit(p.output.prefix or "DTME")
         self.name.setFixedWidth(160)
         self.name.setFixedHeight(28)
@@ -488,6 +499,7 @@ class AutoDialog(DragMove, QDialog):
         right.addWidget(line)
         right.addLayout(labeled("강도", self.strength))
         right.addLayout(labeled("출력", self.out))
+        right.addLayout(labeled("LUT", self.lut_combo))
         right.addLayout(labeled("이름", nrow))
         self.lens_s = self._slider(st.get("lens", 0))     # 렌즈 보정·흔들림 보정 0~100 — 체크된 클립 모두에(사용자 2026-11-06)
         self.stab_s = self._slider(st.get("stab", 0))
@@ -589,6 +601,24 @@ class AutoDialog(DragMove, QDialog):
                 r.result["grade"]["stab"] = self.stab_s.value()
         self._show_detail()
 
+    def row_lut(self, r) -> str:
+        """이 줄에 쓸 LUT: 직접 고른 것, 자동이면 색 모드(D-Log M = LUT, 일반·알 수 없음 = 없음, 판단 전 = 지금 클립 LUT)."""
+        choice = self.lut_combo.currentData()
+        p = self.state.project
+        s = p.source(r.sid)
+        if choice != "auto":
+            return choice or ""
+        a = auto_lut(p, s) if s else None
+        return a if a is not None else (p.grade_for_source(s.id, off=False).get("lut", "") if s else "")
+
+    def _lut_changed(self, *_):
+        """LUT 를 바꾸면 체크된 줄을 그 LUT 로 다시 분석(샘플은 LUT 별로 메모리에 남음)."""
+        for r in self.rows:
+            r.result, r.prog, r.error = None, 0.0, ""
+        self.list.viewport().update()
+        self._show_detail()
+        self.analyze_all()
+
     def _src_status(self, sid):
         if any(r.sid == sid for r in self.rows):
             self.list.viewport().update()
@@ -628,6 +658,11 @@ class AutoDialog(DragMove, QDialog):
         else:
             label = "자동"
         sub = []
+        s = self.state.project.source(row.sid)
+        mode = {"dlog": "D-Log M", "normal": "일반", "unknown": "알 수 없음"}.get(getattr(s, "lut_mode", ""), "") if s else ""
+        if s is not None and s.frames:
+            nolut = self.row_lut(row) == ""
+            sub.append(" · ".join(x for x in (mode, "LUT 없음" if nolut else "") if x))
         ld = self.loading(row)
         if ld and row.result is None:
             sub.append(ld)
@@ -710,11 +745,16 @@ class AutoDialog(DragMove, QDialog):
     # ---------------------------------------------------------------- 분석
     def _compute(self, r: AutoRow):
         s = self.state.project.source(r.sid)
-        smp = cached_samples(s, self.state.project.grade_for_source(s.id).get("lut", "")) if s else None
+        lut = self.row_lut(r)
+        smp = cached_samples(s, lut) if s else None
         if not smp:
+            if s is not None and r.prog >= 1.0:       # 분석 중에 LUT 를 바꿈 → 새 LUT 로 다시
+                r.prog = 0.0
+                QTimer.singleShot(0, self.analyze_all)
             return
         base = dict(self.state.project.grade)
-        base.update({k: v for k, v in s.grade.items() if k in ("lut", "sharpen", "lens")})
+        base.update({k: v for k, v in s.grade.items() if k in ("sharpen", "lens")})
+        base["lut"] = lut
         sc, sb = choice_args(r.choice)
         r.result = auto.recommend(smp, base, sc, sb, self.strength.value() or "mid")
         r.result["grade"]["lens"] = self.lens_s.value()
@@ -727,7 +767,7 @@ class AutoDialog(DragMove, QDialog):
             s = p.source(r.sid)
             if not r.checked or s is None or not s.frames or r.result is not None or r.prog > 0 or r.error:
                 continue
-            lut = p.grade_for_source(s.id).get("lut", "")
+            lut = self.row_lut(r)
             r.prog = 0.01
 
             def done(_smp, r=r):
@@ -786,7 +826,8 @@ class AutoDialog(DragMove, QDialog):
 
     def settings(self):
         return {"strength": self.strength.value(), "keep": self.keep.value(), "keys": self.keys.value(),
-                "after": self.mode, "lens": self.lens_s.value(), "stab": self.stab_s.value()}
+                "after": self.mode, "lens": self.lens_s.value(), "stab": self.stab_s.value(),
+                "lut": self.lut_combo.currentData()}
 
     def chosen_rows(self):
         return [r for r in self.rows if r.checked and r.result]
@@ -794,6 +835,7 @@ class AutoDialog(DragMove, QDialog):
     def set_busy(self, on, color=None):
         self.busy = on
         for w in (self.grid, self.strength, self.out, self.name, self.keep, self.keys, self.b_sample, self.lens_s, self.stab_s,
+                  self.lut_combo,
                   self.b_each, self.b_start, self.list):
             w.setEnabled(not on)
         if color:

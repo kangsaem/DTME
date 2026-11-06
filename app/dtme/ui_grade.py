@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (QButtonGroup, QComboBox, QFileDialog, QFrame, QGr
                                QScrollArea, QSizePolicy, QSlider, QVBoxLayout, QWidget)
 
 from . import ff, jobs, paths
-from .project import (KEYABLE, OUTPUTS, delete_preset, get_setting, grade_at, list_presets, load_preset,
+from .project import (KEYABLE, OUTPUTS, delete_preset, get_setting, grade_at, keep_lut, list_presets, load_preset,
                       rename_preset, save_default_grade, save_preset, set_setting, timecode)
 from .state import AppState
 from .ui_curve import CurveEditor
@@ -607,7 +607,9 @@ class GradePanel(QWidget):
         if sids:
             for sid in sids:
                 s = p.source(sid)
-                s.grade = {} if g is None else {k: v for k, v in g.items() if p.grade.get(k) != v}
+                keep = keep_lut(p, s, {})                 # D-Log/일반 LUT 는 그대로
+                s.grade = {} if g is None else {k: v for k, v in g.items() if p.grade.get(k) != v and k != "lut"}
+                s.grade.update(keep)
                 s.gkeys = {}
                 s.off = []
                 s.auto = {} if g is None else {"preset": key, "by": "user"}
@@ -636,6 +638,7 @@ class GradePanel(QWidget):
             if s is None:
                 return
             base = dict(p.grade)
+            base["lut"] = p.grade_for_source(sid, off=False).get("lut", "")      # 클립 LUT 그대로
             r = auto.recommend(smp, base, sc, sb, strength)
             rec = r["preset"] if key == "auto" else auto.recommend(smp, base)["preset"]
             s.grade = {k: v for k, v in r["grade"].items() if p.grade.get(k) != v}
@@ -788,7 +791,10 @@ class GradePanel(QWidget):
 
     def _clear_all(self):
         self.state.checkpoint()
+        src = self._src()
+        keep = keep_lut(self.state.project, src, {}) if src else {}
         self._target_dict().clear()
+        self._target_dict().update(keep)              # [기본값] 도 클립 LUT(일반 영상 = 없음)는 그대로
         if self._src():
             self._src().gkeys = {}
             self._src().off = []

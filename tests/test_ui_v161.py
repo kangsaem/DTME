@@ -36,8 +36,9 @@ e.import_files([CLIP]); wait(10, lambda: st.project.sources and st.project.sourc
 s = st.project.sources[0]
 # 1) 보정 없음(LUT만)
 g = st.project.grade_for_source(s.id)
-print("새 클립:", {k: g[k] for k in ("r_gain", "b_gain", "hue", "sat", "sharpen", "nr_chroma")}, "LUT", bool(g["lut"]), "태그", repr(e._tag(s.id)))
-assert P.is_plain(s) and e._tag(s.id) == "" and g["sat"] == 1.0 and g["hue"] == 0 and g["sharpen"] == 0 and g["lut"]
+print("새 클립:", {k: g[k] for k in ("r_gain", "b_gain", "hue", "sat", "sharpen", "nr_chroma")}, "LUT", repr(g["lut"]), "태그", repr(e._tag(s.id)))
+assert P.is_plain(s) and e._tag(s.id) == "" and g["sat"] == 1.0 and g["hue"] == 0 and g["sharpen"] == 0
+assert g["lut"] == "" and s.lut_mode == "unknown"          # 합성 영상 = DJI 아님 → LUT 없음(v0.16.4)
 # 2) 로딩 표시(프록시 만드는 동안)
 e._select_source(s.id)
 seen = wait(30, lambda: e.player.mon.loading is not None)
@@ -47,6 +48,8 @@ wait(180, lambda: st.status.get(s.id) == "준비")
 wait(1); print("준비 후 로딩 표시:", e.player.mon.loading); assert e.player.mon.loading is None
 log = (paths.cache_dir() / "dtme.log").read_text(encoding="utf-8")
 print("프록시 기록:", [l[-60:] for l in log.splitlines() if "프록시" in l][-3:])
+gp._set("lut", P.DEFAULT_LUT)                              # 아래 점검은 D-Log 처럼 LUT 를 넣고(→ 그 LUT 로 프록시 다시)
+wait(180, lambda: st.status.get(s.id) == "준비" and s.proxy == str(ff.proxy_path(s.path, P.DEFAULT_LUT)))
 e.player.seek(60); wait(5)
 h0 = img()
 # 3) 프리셋 → 실행취소 → 화면이 돌아옴

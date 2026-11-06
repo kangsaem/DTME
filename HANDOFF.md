@@ -1,8 +1,8 @@
 # HANDOFF — DTME (Diving Tour Movie Editor)
 
-다음 대화는 이 문서를 기준으로 이어서 작업한다. **v0.16.3 완료(테두리 없는 창 끌어서 이동, 샘플 배치 나란히·위아래·좌우, 모니터 반반 선 우클릭 = 좌우↔위아래). v0.16.2(디헤이즈 뺌 = 물빛 계단 원인 · 블루워터 커브 밝기 맞춤, 스틸 8bit 기본, WinError 32 자동 재시도, 보정 전 = LUT만, 렌더 리스트 보정값 사본·노란 점·완료 저장, 렌더 설정 창 어두운 창·취소/확인·새 프로젝트 기본값). v0.16.1(불러오면 LUT만, 이름 클릭 끄기, 로딩 표시, 프록시 2개·GPU 축소, AUTO 렌즈/흔들림). 다음: 사용자 PC 실기 확인(블루워터 밝기, 프록시 속도 = cache/dtme.log). MOSCO 에 같은 UI = `design/AUTO_UI.md`.**
+다음 대화는 이 문서를 기준으로 이어서 작업한다. **v0.16.4 완료(DJI 메타로 D-Log M/일반 판단 → 불러올 때 LUT 자동, 일반·알 수 없음 = LUT 없음, 프록시 = 클립 LUT, AUTO 창 LUT 줄). v0.16.3(테두리 없는 창 끌어서 이동, 샘플 배치 나란히·위아래·좌우, 모니터 반반 선 우클릭 = 좌우↔위아래). v0.16.2(디헤이즈 뺌 = 물빛 계단 원인 · 블루워터 커브 밝기 맞춤, 스틸 8bit 기본, WinError 32 자동 재시도, 보정 전 = LUT만, 렌더 리스트 보정값 사본·노란 점·완료 저장, 렌더 설정 창 어두운 창·취소/확인·새 프로젝트 기본값). v0.16.1(불러오면 LUT만, 이름 클릭 끄기, 로딩 표시, 프록시 2개·GPU 축소, AUTO 렌즈/흔들림). 다음: 사용자 PC 실기 확인(블루워터 밝기, 프록시 속도 = cache/dtme.log). MOSCO 에 같은 UI = `design/AUTO_UI.md`.**
 
-## 1. 현재 상태 — v0.16.3 (2026-11-06)
+## 1. 현재 상태 — v0.16.4 (2026-11-06)
 
 - 저장소: `kangsaem/DTME` (main). push 하면 GitHub Actions 가 Windows 빌드 → Actions → 최신 "Windows build" → Artifacts `DTME-windows`(약 200MB, 30일)
 - Linux 작업 환경에서 엔진·화면(오프스크린) 검증, Actions(Windows)에서 빌드·엔진·exe 실행 점검 통과
@@ -216,6 +216,16 @@ UI 시안: Claude Design 캔버스 https://claude.ai/artifact/C4YHhA1vrZEKLp76BF
   - 측정(이 환경 2코어, 960px 프록시): 프레임 표시 80ms → 2ms, 120프레임 구간 디코딩 ≈ 0.6초. 정확성 = 한 장씩 디코딩과 같은 화면(`tests/test_framecache.py`)
   - 한계: 보정 미리보기(원본 4K 디코딩 + 필터) 자체 속도는 그대로 — 처음 보는 프레임·값 바꾼 직후는 예전과 같음. 보정을 프로그램 안에서 다시 구현(MOSCO 3단계)은 안 함
 
+### v0.16.4 (2026-11-06, 사용자 확정)
+- **색 모드 판단** `ff.dji_color_mode(path)` → dlog | normal | unknown. 액션4 파일의 DJI 메타 트랙(`djmd`, protobuf `dvtm_ac203.proto`, 필드 이름 없음) 첫 패킷만 읽음(ffprobe `-read_intervals %+#1`, 파일당 ≈0.1초). 사용자 파일 2개(D-Log M `DJI_20260320121335_0057_D` / 일반 `V20261028_150226…`) 비교로 찾은 필드: **`.2.5.1` = 2 D-Log M / 1 일반**, `.1.9.1` 5/1 · `.2.3.5` 10/8(bit) 도 같은 방향(엇갈리면 unknown). 패킷 크기가 홀수(257)일 수 있음 → 16진 끝 묶음 2자리도 읽기. format tags encoder 에 DJI 없거나 djmd 없으면 unknown
+  - 한계: 샘플 2개(일반 모드는 8bit). **일반 모드 10bit** 파일로 `.2.5.1` 재확인 필요
+- **불러올 때 LUT**(`state._queue_analyze` → `Source.lut_mode`, `project.auto_lut`): D-Log M = 프로젝트 기본 LUT(없으면 DJI LUT), **일반 · 알 수 없음(DJI 아님·못 읽음) = LUT 없음**(사용자 결정). 옛 프로젝트 소스(lut_mode "")는 그대로
+- **클립 LUT 유지**(`project.keep_lut`): 프리셋(기본·사용자) · [기본값] · 추천이 클립 LUT 를 바꾸지 않음. C 표시는 LUT 만 다른 경우 제외(`has_clip_grade`)
+- **프록시 = 클립 LUT**: `ff.proxy_path(path, lut)` — 기본 LUT(DEFAULT_LUT)는 예전 이름 그대로(만들어 둔 프록시 재사용), 다른 LUT·없음은 이름에 반영. `state.ensure_proxy(s)`: 보정 바뀔 때(보정 패널 LUT·AUTO 적용) 그 LUT 프록시가 없으면 새로 만듦(그동안 모니터 `로딩 중`, 정지 화면·보정은 됨), 다 되면 플레이어가 새 프록시로
+- **AUTO 창 `LUT [▾]`**(출력 아래, 창 전체 하나 — 사용자 결정): 자동 (파일 정보) / LUT 없음 / luts 파일. 바꾸면 체크된 줄 다시 분석(샘플은 LUT 별 메모리 캐시). 줄 작은 글씨 `D-Log M` / `일반 · LUT 없음` / `알 수 없음 · LUT 없음`. settings `auto.lut`
+- 4:3(3840×2880) 원본: 가로 1080 · 세로 1080×1920 렌더 확인(가운데 크롭)
+- 테스트: tests/test_lut_auto.py(실제 액션4 파일 2개 + 합성) — 실제 파일은 저장소에 없음(사용자가 첨부). 합성 영상을 쓰는 test_ui_v161·v162 는 LUT 를 직접 넣고 점검(합성 = DJI 아님 → LUT 없음)
+
 ### v0.16.3 (2026-11-06)
 - 테두리 없는 창(AUTO · 렌더 설정 · 샘플 창)을 **빈 바탕을 잡고 끌어서 이동**(`ui_render.DragMove` 섞어 쓰기). 버튼·목록·입력란 위는 원래 동작. 프리셋 창은 버튼 밑 팝업이라 그대로
 - **샘플 저장 창 `배치 [나란히|위아래|좌우]`**(기본 나란히, settings `sample_export.layout`): 나란히 = 보정 전(LUT만)·후 전체 화면 2장(가로 영상 = 위·아래로 붙임 1920×2160, 세로 영상 = 좌·우 2160×1920… 크기 기준 = 샘플 크기), 위아래 = 위 반 전 · 아래 반 후, 좌우 = 예전. 경계 흰 선 2px(`ff.split_vf(layout)`). 세로 부채산호 같은 피사체가 반으로 잘리던 문제(사용자). 보정 패널 샘플 타일 6장은 좌우 반반 그대로
@@ -326,6 +336,7 @@ app/dtme/auto.py         자동 보정 분석(샘플·통계·장면 판단·값
 app/dtme/ui_auto.py      AUTO 창 · 보정 탭 프리셋 창 · 샘플 창 · 공통 부품(PresetGrid, Seg, DetailBox)
 tests/test_auto.py       자동 보정 엔진(합성 장면) — CI
 tests/test_ui_auto.py    AUTO·프리셋·RGB·반반 샘플 화면 점검
+tests/test_lut_auto.py   색 모드 판단·LUT 자동·프록시 LUT·AUTO LUT 줄·4:3 (실제 액션4 파일 필요)
 tests/test_ui_v162.py    디헤이즈 뺌·스틸 8bit·WinError 32·LUT만·렌더 리스트 사본/완료·렌더 설정 창
 tests/test_ui_v161.py    보정 없음·실행취소 화면·이름 클릭 끄기·로딩 표시·AUTO 창 위치/렌즈·흔들림·프록시 폴백
 design/AUTO_UI.md        AUTO 화면 기준서(MOSCO 등 다른 프로그램용) · design/gen/ 시안 그림 스크립트
@@ -384,6 +395,7 @@ DTME_SELFTEST=1 DTME_NO_AUDIO=1 QT_QPA_PLATFORM=offscreen python app/main.py   #
 
 ## 11. 변경 이력
 
+- v0.16.4: DJI 메타로 D-Log M/일반 판단 → 불러올 때 LUT 자동(일반·알 수 없음 = 없음), 프리셋·기본값이 클립 LUT 유지, 프록시 = 클립 LUT, AUTO 창 LUT 줄, 4:3 원본 확인
 - v0.16.3: AUTO·렌더 설정·샘플 창 끌어서 이동, 샘플 배치(나란히·위아래·좌우), 모니터 반반 선 우클릭 = 좌우↔위아래
 - v0.16.2: 디헤이즈 뺌(물빛 계단 원인)·블루워터 커브 밝기, 스틸 8bit 기본, WinError 32 재시도, 보정 전 = LUT만, 렌더 리스트 보정값 사본·노란 점·지금 보정값으로·완료 저장·새 항목 없음, 렌더 설정 창 어두운 창·취소/확인·새 프로젝트 기본값
 - v0.16.1: 불러오면 보정 없음(LUT만)·리셋도 같음, 실행취소 화면 갱신, 이름 클릭 = 잠시 끔(보낸 컷에 사본), 모니터 로딩 표시, AUTO 프록시 안 기다림, 프록시 동시 2개·GPU 축소(폴백), AUTO 창 기존 보정·키프레임 위로·렌즈/흔들림 슬라이더

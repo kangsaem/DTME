@@ -7,7 +7,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, Signal
 
 from . import ff, jobs
-from .project import AUDIO_EXT, IMAGE_EXT, ImageSource, Project, Source, _id, plain_grade
+from .project import AUDIO_EXT, IMAGE_EXT, ImageSource, Project, Source, _id, auto_lut, plain_grade
 
 
 class AppState(QObject):
@@ -140,6 +140,11 @@ class AppState(QObject):
                 return
             for k in ("fps_num", "fps_den", "frames", "width", "height", "has_audio"):
                 setattr(s, k, info[k])
+            if not s.lut_mode:                     # 처음 불러올 때만: D-Log M = LUT, 일반·알 수 없음 = LUT 없음
+                s.lut_mode = info.get("color_mode", "unknown")
+                lut = auto_lut(self.project, s)
+                if lut is not None and lut != self.project.grade.get("lut", ""):
+                    s.grade["lut"] = lut
             if info["vfr"]:
                 self.message.emit(f"{s.name}: 가변 프레임레이트(VFR) 의심 — 컷 위치가 어긋날 수 있습니다.")
             self.sourceStatus.emit(s.id)
@@ -275,14 +280,23 @@ class AppState(QObject):
         if j:
             jobs.bump(jobs.PROXY_POOL, j)
 
+    def ensure_proxy(self, src: Source):
+        """클립 LUT 가 바뀌었으면 그 LUT 의 프록시로(있으면 바로, 없으면 새로 만듦 — 그동안 정지 화면·보정은 됨)."""
+        if not src or not src.frames or src.id in self._proxy_jobs:
+            return
+        lut = self.project.grade_for_source(src.id, off=False).get("lut", "")
+        if src.proxy and Path(src.proxy) == ff.proxy_path(src.path, lut):
+            return
+        self._queue_proxy(src)
+
     def _queue_proxy(self, src: Source):
-        pp = ff.proxy_path(src.path)
+        lut = self.project.grade_for_source(src.id, off=False).get("lut", "")      # 클립 LUT 로(일반 영상 = LUT 없음)
+        pp = ff.proxy_path(src.path, lut)
         if pp.exists() and pp.stat().st_size > 0:
             src.proxy = str(pp)
             self._set_status(src.id, "준비")
             return
         self._set_status(src.id, "프록시 대기")
-        lut = self.project.grade.get("lut", "")
         gpu = self.project.output.gpu_decode
         job = jobs.Job(lambda prog, cancel: ff.make_proxy(src, lut, gpu, prog, cancel), with_progress=True)
         self._proxy_jobs[src.id] = job

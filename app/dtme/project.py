@@ -61,6 +61,30 @@ NEUTRAL = {"r_gain": 1.0, "b_gain": 1.0, "hue": 0.0, "sat": 1.0, "water": 0, "gy
 OFFABLE = [k for k in NEUTRAL if k not in ("curve", "dehaze")]        # 이름을 눌러 잠시 끌 수 있는 항목(슬라이더)
 
 
+def auto_lut(project, s) -> str | None:
+    """색 모드에 맞는 LUT: D-Log M = 프로젝트 기본 LUT(없으면 DJI LUT), 일반·알 수 없음 = LUT 없음. 판단 전(옛 소스) = None(그대로)."""
+    mode = getattr(s, "lut_mode", "")
+    if not mode:
+        return None
+    if mode == "dlog":
+        lut = project.grade.get("lut", "")
+        if not lut and (paths.lut_dir() / DEFAULT_LUT).exists():
+            lut = DEFAULT_LUT
+        return lut
+    return ""
+
+
+def keep_lut(project, s, d: dict) -> dict:
+    """클립 값 d 에 클립의 지금 LUT 를 넣어 둠(프리셋·기본값·AUTO 가 D-Log/일반 LUT 를 바꾸지 않게). 기본값과 같으면 뺌."""
+    lut = project.grade_for_source(s.id, off=False).get("lut", "")
+    d = dict(d)
+    if lut != project.grade.get("lut", ""):
+        d["lut"] = lut
+    else:
+        d.pop("lut", None)
+    return d
+
+
 def plain_grade() -> dict:
     return copy.deepcopy(NEUTRAL)
 
@@ -83,7 +107,7 @@ def is_plain(s) -> bool:
 
 def has_clip_grade(s) -> bool:
     """클립 값(C)이 있음 — 보정 없음(LUT만)은 제외."""
-    return bool(s.grade or s.gkeys or getattr(s, "off", None)) and not is_plain(s)
+    return bool({k for k in s.grade if k != "lut"} or s.gkeys or getattr(s, "off", None)) and not is_plain(s)   # LUT 만 다름(일반 영상) = C 아님
 
 
 def upgrade_grade(g: dict) -> dict:
@@ -224,6 +248,7 @@ class Source:
     auto: dict = field(default_factory=dict)     # AUTO·프리셋 기록 {"preset": 키, "by": "auto"|"user", "rec": 인식 키, "nkeys": n}
     out: str = ""                                # AUTO 전체렌더 출력(orientation). "" = 프로젝트 출력
     off: list = field(default_factory=list)      # 이름을 눌러 잠시 끈 보정 항목(미리보기·보낼 때 빼고 적용)
+    lut_mode: str = ""                           # DJI 메타로 판단한 색 모드 dlog | normal | unknown ("" = 옛 프로젝트, 판단 안 함)
     id: str = field(default_factory=_id)
 
     @property
