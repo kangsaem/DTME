@@ -220,7 +220,7 @@ UI 시안: Claude Design 캔버스 https://claude.ai/artifact/C4YHhA1vrZEKLp76BF
 ### v0.16.6 (2026-11-06)
 - **꺼짐(비활성) 버튼**: 색 있는 버튼(빨간 렌더 등)이 꺼져도 거의 그대로 보이던 문제(v0.16.5) → 바탕을 `#3a3a3a` 쪽 55%(`ui_style.dim`), 글자를 `#8a8a8a` 쪽 60%(`disabled_fg`). 스타일시트 버전(bevel)에도 :disabled
 - **MOSCO 용 버튼 기준서** `design/BUTTON_UI.md`: 규칙 · 숫자(그라데이션 4점·테두리·상태) · 색 종류 표(MOSCO 칸 비움) · Qt 적용 순서(앱 스타일시트 쓰지 말 것 = Fusion 80px 최소 폭 함정) · 웹 CSS 판 · MOSCO 버튼 목록 만드는 법. 견본 그림 `design/button_ref.png`(`design/gen/make_buttons.py`). **MOSCO 원본은 건드리지 않음**(사용자: 다른 대화에서 작업 중) → MOSCO 대화에서 이 문서 + `app/dtme/ui_style.py` 복사해 적용
-- **MOSCO 버튼 목록** `design/mosco/MOSCO_BUTTONS.md`(기준 MOSCO f13b7d1 v0.5.6, 읽기 전용 사본으로 조사): 버튼 20묶음 지금 → 바꿀 모양, MOSCO 는 버튼 모두 고정 크기 + 창 전체 QSS → **QSS 의 버튼 줄만 `design/mosco/buttons.qss`(make_mosco_qss.py, DTME 값)로 교체** + 그림자 끔 + 켜짐 노랑 → 파랑 + Seg 이어 붙음 → 간격 5. 파일 안 고치고 실행 중에만 입힌 시안 `design/mosco/mosco_buttons_*.png`. 사용자 확인 대기 3개(키 ▾ 켜짐 색 · 샘플 날짜시간 · AUTO 글자 간격). `ui_style.bevel()` 에 선택자(sel) · 테두리 한 색(edge) · 반투명(alpha) 추가, `bevel_on()`
+- **MOSCO 버튼 목록** `design/mosco/MOSCO_BUTTONS.md`(기준 MOSCO f13b7d1 v0.5.6, 읽기 전용 사본으로 조사): 버튼 20묶음 지금 → 바꿀 모양, MOSCO 는 버튼 모두 고정 크기 + 창 전체 QSS → **QSS 의 버튼 줄만 `design/mosco/buttons.qss`(make_mosco_qss.py, DTME 값)로 교체** + 그림자 끔 + 켜짐 노랑 → 파랑 + Seg 이어 붙음 → 간격 5. 파일 안 고치고 실행 중에만 입힌 시안 `design/mosco/mosco_buttons_*.png`. → **MOSCO v0.6.1 에 적용 완료**(이 대화, MOSCO `516d854`, Windows 빌드 성공) — 3개 질문은 '다 DTME 기준'. `ui_style.bevel()` 에 선택자(sel) · 테두리 한 색(edge) · 반투명(alpha) 추가, `bevel_on()`
 
 ### v0.16.5 (2026-11-06, 사용자 지시)
 - **버튼 모양 통일**(사용자: 버튼 아래 그림자 없음 · 버튼 안 입체감은 모두) — `app/dtme/ui_style.py` 한 곳
