@@ -35,15 +35,12 @@ def denoise_chain(g: dict) -> list[str]:
 
 def sharpen_chain(g: dict, width: int = 1920) -> list[str]:
     """밝기(Y)에만 언샤프 → 색 노이즈를 날카롭게 만들지 않음.
-    디헤이즈 = 넓은 반경 언샤프(국소 대비). 반경은 화면 폭에 비례(미리보기 1280 ↔ 렌더 1080~2160 이 같은 느낌)."""
+    디헤이즈는 v0.16.2 에서 뺌: unsharp 가 10bit 에서 효과를 몇 단계 정수로만 더해 완만한 물빛에 계단(실측 7.8/255)을 만들었음.
+    옛 프로젝트의 dehaze 값은 무시."""
     f = []
     s = float(g.get("sharpen", 0))
     if s > 1e-3:
         f.append(f"unsharp=5:5:{min(2.0, s * 2):.3f}:5:5:0")
-    d = float(g.get("dehaze", 0))
-    if d > 0.5:
-        r = max(5, min(13, int(round(13 * width / 1920)) // 2 * 2 + 1))   # unsharp 최대 13
-        f.append(f"unsharp={r}:{r}:{d / 100 * 1.2:.3f}:5:5:0")
     return f
 
 
@@ -92,7 +89,14 @@ def _popen(cmd, **kw):
     if Path(cmd[0]).stem.lower() == "ffmpeg" and "-nostdin" not in cmd:
         cmd.insert(1, "-nostdin")
     kw.setdefault("stdin", subprocess.DEVNULL)
-    return subprocess.Popen(cmd, creationflags=NO_WINDOW, **kw)
+    import time
+    for i in range(12):      # WinError 32(백신이 ffmpeg.exe 를 잠깐 잡음 등) → 0.2초 간격 다시 시도. 화면에 '미리보기 오류'가 자주 뜨던 원인
+        try:
+            return subprocess.Popen(cmd, creationflags=NO_WINDOW, **kw)
+        except OSError as e:
+            if getattr(e, "winerror", None) not in (32, 33) or i == 11:
+                raise
+            time.sleep(0.2)
 
 
 def run(cmd: list[str], cwd: str | None = None, data: bytes | None = None) -> bytes:
@@ -633,6 +637,12 @@ def cached_frame(src: Source, frame: int, gpu: bool = False) -> CachedFrame:
         return c
 
 
+def lut_only(g: dict | None) -> dict:
+    """보정 전 화면 = LUT만(반반 왼쪽 · [원본] 보기 · 샘플 왼쪽). v0.16.2 부터 Log 원본 대신."""
+    from .project import NEUTRAL
+    return {**NEUTRAL, "lut": (g or {}).get("lut", "")}
+
+
 def render_preview(cached: CachedFrame, g: dict | None) -> bytes:
     """보정 적용 결과(마지막 프레임)를 PNG 바이트로. g=None 이면 보정 전(원본 Log)."""
     cwd, lut = (None, None)
@@ -1060,13 +1070,16 @@ SRGB_TAG = "setparams=color_trc=iec61966-2-1:color_primaries=bt709:colorspace=gb
 
 
 def export_still(src: Source, frame: int, g: dict, out_file: str, gpu: bool = False) -> None:
-    """원본 4K 프레임에 보정 적용 → 16bit PNG(.png) 또는 TIFF(.tif).
+    """원본 4K 프레임에 보정 적용 → PNG(기본 8bit, 설정 still_bits=16 이면 16bit) 또는 16bit TIFF(.tif).
     앞 3프레임을 함께 넣어 시간축 노이즈 제거가 동작하게 하고 마지막 프레임만 저장."""
     cwd, lut = _lut_for(g)
     lead = min(3, frame)
     start = frame - lead
     is_png = str(out_file).lower().endswith(".png")
-    vf = lens_chain(g, src.width, src.height) + grade_chain(g, lut, 3840) + [SRGB_TAG, "format=rgb48be" if is_png else "format=rgb48le"]
+    from .project import get_setting
+    bits = 16 if str(get_setting("still_bits", 8)) == "16" else 8     # v0.16.2: 기본 8bit(16bit PNG 는 뷰어에 따라 띠가 보임)
+    pf = ("rgb48be" if bits == 16 else "rgb24") if is_png else "rgb48le"
+    vf = lens_chain(g, src.width, src.height) + grade_chain(g, lut, 3840) + [SRGB_TAG, f"format={pf}"]
     codec = ["-c:v", "png", "-compression_level", "3"] if is_png else ["-c:v", "tiff", "-compression_algo", "deflate"]
     cmd = [paths.ffmpeg(), "-v", "error", "-y", *_hw(gpu), "-ss", _seek(start, src.fps), "-i", _abs(src.path),
            "-frames:v", str(lead + 1), "-an", "-filter_complex", graph(vf, "[0:v]", "[so]"), "-map", "[so]",
@@ -1090,9 +1103,9 @@ def grab_proxy_frame(proxy: str, fps: Fraction, frame: int) -> bytes:
                 "-an", "-f", "image2pipe", "-c:v", "bmp", "-pix_fmt", "bgr24", "-"])
 
 
-# ------------------------------------------------------------------ 반반 샘플 파일 (왼쪽 원본 · 오른쪽 보정)
+# ------------------------------------------------------------------ 반반 샘플 파일 (왼쪽 보정 전 = LUT만 · 오른쪽 보정)
 def split_vf(g: dict, lut: str | None, orientation: str, size: int, fmt: str, src_wh=(0, 0)) -> str:
-    """filter_complex: 원본(Log)과 보정을 같은 크기로 → 왼쪽 반 원본 + 오른쪽 반 보정 + 가운데 흰 선."""
+    """filter_complex: 보정 전(LUT만)과 보정을 같은 크기로 → 왼쪽 반 보정 전 + 오른쪽 반 보정 + 가운데 흰 선."""
     vert = is_vertical(orientation)
     sc = f"scale=-2:{size}:flags=lanczos" if vert else f"scale={size}:-2:flags=lanczos"
     lens = lens_chain(g, *src_wh)
@@ -1100,7 +1113,8 @@ def split_vf(g: dict, lut: str | None, orientation: str, size: int, fmt: str, sr
     gr = graph(grade_chain(g, lut, size * 9 // 16 if vert else size) +
                ["format=gbrp16le", "crop=iw-trunc(iw/4)*2:ih:trunc(iw/4)*2:0"], "[sb]", "[sr]", "s")
     out = {"png16": SRGB_TAG + ",format=rgb48be", "jpg": "format=yuvj444p"}.get(fmt, SRGB_TAG + ",format=rgb24")
-    return (f"[0:v]{pre},split=2[sa][sb];[sa]format=gbrp16le,crop=trunc(iw/4)*2:ih:0:0[sl];{gr};"
+    left = f"format=gbrp16le,lut3d=file={lut}:interp=tetrahedral" if lut else "format=gbrp16le"     # 왼쪽 = LUT만
+    return (f"[0:v]{pre},split=2[sa][sb];[sa]{left},crop=trunc(iw/4)*2:ih:0:0[sl];{gr};"
             f"[sl][sr]hstack=2,drawbox=x=trunc(iw/4)*2-1:y=0:w=2:h=ih:color=white@0.9:t=fill,{out}[so]")
 
 

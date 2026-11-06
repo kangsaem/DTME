@@ -30,7 +30,7 @@ SCENE_BASE = {
     "coral":     dict(r=1.05, b=1.00, rmax=1.12, k=0.20, ref=0.10, water=8, gy=25, sat=1.00, nrc=65, nrl=30, dehaze=0, s=0.04, lo=0.8, sh=0.15, wnr=45),
     "shallow":   dict(r=1.10, b=1.00, rmax=1.20, k=0.40, ref=0.30, water=8, gy=30, sat=1.00, nrc=60, nrl=30, dehaze=0, s=0.04, lo=0.8, sh=0.15, wnr=40),
     "deep":      dict(r=1.15, b=1.00, rmax=1.28, k=0.40, ref=0.50, water=8, gy=30, sat=1.00, nrc=65, nrl=35, dehaze=0, s=0.03, lo=0.75, sh=0.10, wnr=65, sd=0.035),
-    "bluewater": dict(r=1.00, b=1.00, rmax=1.08, k=0.15, ref=0.30, water=12, gy=40, sat=1.00, nrc=65, nrl=30, dehaze=5, s=0.05, lo=0.975, sh=0.10, wnr=70, sd=0.04),
+    "bluewater": dict(r=1.00, b=1.00, rmax=1.08, k=0.15, ref=0.30, water=12, gy=40, sat=1.00, nrc=65, nrl=30, dehaze=0, s=0.05, lo=0.975, sh=0.10, wnr=70, sd=0.04, lift=1),
     "night":     dict(r=1.00, b=1.00, rmax=1.10, k=0.25, ref=0.10, water=0, gy=20, sat=1.00, nrc=65, nrl=40, dehaze=0, s=0.04, lo=0.8, sh=0.10, wnr=50),
 }
 SUBJECT_SCENES = ()      # 옛 코드 호환(피사체 구분 없음)
@@ -95,6 +95,19 @@ def s_curve(lo: float, hi: float, s: float, min_range: float = 0.75, sd: float =
     return pts
 
 
+# 블루워터 밝기 맞춤(v0.16.2): 디헤이즈(unsharp 10bit 치우침)가 올려 주던 밝기 ≈ +10/255 를 커브로.
+# 사용자 실제 렌더 2개(디헤이즈 5 / 0, 같은 프레임)의 밝기 분포를 맞춘 곡선. 출력 밝기 x → y
+LIFT = [(0.0, 0.0), (0.05, 0.07), (0.10, 0.121), (0.20, 0.235), (0.30, 0.335), (0.50, 0.551), (0.70, 0.759),
+        (0.85, 0.90), (0.95, 0.969), (1.0, 1.0)]
+
+
+def lift_curve(pts: list) -> list:
+    """커브의 출력(y)에 LIFT 를 덧씌움(new_y = LIFT(old_y)). 양 끝 0·1 은 그대로."""
+    import numpy as np
+    xs, ys = zip(*LIFT)
+    return [[x, round(float(np.interp(y, xs, ys)), 4)] for x, y in pts]
+
+
 def builtin_grade(key: str, base: dict | None = None, strength: str = "mid") -> dict:
     """기본 프리셋(고정값). base 의 LUT·샤픈·렌즈 등은 그대로."""
     p = scene_params(key, None, strength)
@@ -103,9 +116,11 @@ def builtin_grade(key: str, base: dict | None = None, strength: str = "mid") -> 
     r = round(min(2.0, 1 + (p["r"] - 1) * st), 3)
     g.update(r_gain=r, b_gain=follow_blue(r, round(1 + (p["b"] - 1) * st, 3)), hue=BASE_HUE,
              sat=round(BASE_SAT + (p["sat"] - 1) * st, 3), water=int(round(p["water"] * st)), gy=int(round(min(100, p["gy"] * st))),
-             nr_chroma=int(p["nrc"]), nr_luma=int(p["nrl"]), dehaze=int(round(p["dehaze"] * st)),
+             nr_chroma=int(p["nrc"]), nr_luma=int(p["nrl"]), dehaze=0,
              curve=s_curve(0.04 * p.get("lo", 0.9) / 0.9, 0.95, p["s"] * st, sd=p.get("sd", 0) * st), stab=0, sharpen=p.get("sh", 0.15),
              wnr=int(p.get("wnr", 0)))
+    if p.get("lift"):
+        g["curve"] = lift_curve(g["curve"])
     return g
 
 
@@ -300,6 +315,8 @@ def recommend(samples: list[tuple[int, np.ndarray]], base: dict, scene: str | No
     rs, bs = _med3([x[0] for x in gains]), _med3([x[1] for x in gains])
     g.update(r_gain=round(float(np.median(rs)), 3), b_gain=round(float(np.median(bs)), 3),
              curve=s_curve(lo - 0.01, hi + 0.01, s_amt * st, sd=p.get("sd", 0) * st))
+    if p.get("lift"):
+        g["curve"] = lift_curve(g["curve"])
     gkeys = {}
     frames = [f for f, _a in samples]
     if len(frames) >= 2 and (max(rs) - min(rs) > KEY_TOL_R or max(bs) - min(bs) > KEY_TOL_B):

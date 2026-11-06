@@ -427,6 +427,7 @@ class EditTab(QWidget):
         self.zgen = 0
         self.render_panel = RenderPanel(state)
         self.render_panel.itemProgress.connect(self._render_progress)
+        self.render_panel.message.connect(lambda t: self._say(t, C_WARN))
 
         # 3열: 보정 | 모니터·타임라인 | 소스·렌더
         rw = QWidget()
@@ -783,7 +784,7 @@ class EditTab(QWidget):
         gen, frame, tok = self.pgen, p.frame, p._token
         mode = self.grade.view_mode()
         full = self.state.project.grade_for_source(s.id, frame)
-        grade = None if mode == "raw" else full
+        grade = ff.lut_only(full) if mode == "raw" else full        # [원본] = LUT만
         key = (s.path, frame, mode, json.dumps(grade, sort_keys=True, default=str))
         hit = PREVIEW_LRU.get(key)
         if hit is not None:                      # 같은 프레임·같은 보정은 다시 안 만듦
@@ -797,7 +798,7 @@ class EditTab(QWidget):
         def work():
             c = ff.cached_frame(s, frame)
             out = ff.render_preview(c, grade)
-            res = (out, ff.render_preview(c, None)) if mode == "split" else (out, None)
+            res = (out, ff.render_preview(c, ff.lut_only(full))) if mode == "split" else (out, None)
             PREVIEW_LRU[key] = res
             while len(PREVIEW_LRU) > PREVIEW_LRU_MAX:
                 try:
@@ -835,7 +836,9 @@ class EditTab(QWidget):
             return
         self.zgen += 1
         gen, frame, tok = self.zgen, p.frame, p._token
-        g = None if self.grade.view_mode() == "raw" else self.state.project.grade_for_source(s.id, frame)
+        g = self.state.project.grade_for_source(s.id, frame)
+        if self.grade.view_mode() == "raw":
+            g = ff.lut_only(g)
         job = jobs.Job(lambda: ff.render_region(s, frame, g, rect))
 
         def done(data):
@@ -1039,7 +1042,7 @@ class EditTab(QWidget):
 
     def send_to_render(self):
         self.state.checkpoint()
-        self.state.project.render_items.append(self._new_item([self._cur_segment()]))
+        self.state.project.render_items.append(self._new_item([self.state.project.snap_seg(self._cur_segment())]))
         self.state.touch("render")
 
     def timeline_to_render(self):
@@ -1047,7 +1050,7 @@ class EditTab(QWidget):
         if not p.segments:
             return
         self.state.checkpoint()
-        it = self._new_item([g.copy() for g in p.segments])
+        it = self._new_item([p.snap_seg(g.copy()) for g in p.segments])      # 보정값·◆·꺼 둔 항목 = 보내는 순간 값
         it.titles, it.music, it.mix = copy.deepcopy(p.titles), copy.deepcopy(p.music), dict(p.mix)
         p.render_items.append(it)
         self.state.touch("render")
@@ -1773,7 +1776,7 @@ class EditTab(QWidget):
             for r in rows:
                 s = p.source(r.sid)
                 a, b = s.io
-                it = RenderItem(name=short_name(s.path), segs=[Segment(s.id, a, b, 1.0, gkeys=copy.deepcopy(s.gkeys), off=list(s.off))],
+                it = RenderItem(name=short_name(s.path), segs=[p.snap_seg(Segment(s.id, a, b, 1.0))],
                                 orientation=r.out, audio=True)
                 items.append(it)
             p.render_items += items

@@ -6,7 +6,8 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QAction, QColor
-from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QFileDialog, QFormLayout, QListWidget,
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout, QLabel,
+                               QListWidget,
                                QListWidgetItem, QStyle, QStyledItemDelegate,
                                QHBoxLayout, QLineEdit, QPushButton, QSpinBox, QVBoxLayout, QWidget)
 
@@ -205,6 +206,12 @@ class RenderDelegate(QStyledItemDelegate):
         p.setFont(f)
         iw = p.fontMetrics().horizontalAdvance(info)
         p.drawText(r.adjusted(10, 0, -8, 0), Qt.AlignVCenter | Qt.AlignRight, info)
+        if index.data(Qt.UserRole + 2):           # 보낸 뒤 클립 보정값이 바뀜 → 노란 점
+            iw += 12
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor("#f2c94c"))
+            p.drawEllipse(QRectF(r.right() - 8 - iw + 1, r.center().y() - 3, 6, 6))
+            p.setPen(QColor("#f2f2f2") if done else QColor("#e6e6e6"))
         f.setBold(True)
         p.setFont(f)
         avail = int(r.width() - iw - 26)          # 이름이 길면 … (길이 글자와 겹치지 않게)
@@ -216,6 +223,7 @@ class RenderDelegate(QStyledItemDelegate):
 class RenderPanel(QWidget):
     """렌더 설정 + 렌더 리스트(바) + 빨간 렌더 버튼."""
     itemProgress = Signal(str, float, bool)       # (항목 id, 진행 0~1, 렌더 계속 중)
+    message = Signal(str)                         # 상태줄 짧은 글
 
     def __init__(self, state, parent=None):
         super().__init__(parent)
@@ -236,8 +244,11 @@ class RenderPanel(QWidget):
         a_del.triggered.connect(self.delete_selected)
         a_re = QAction("다시 렌더", self.table)
         a_re.triggered.connect(self._requeue)
+        a_now = QAction("지금 보정값으로", self.table)
+        a_now.triggered.connect(self._resnap)
         self.table.addAction(a_del)
         self.table.addAction(a_re)
+        self.table.addAction(a_now)
 
         self.b_render = QPushButton("렌더")
         self.b_render.setFixedSize(MAIN_W, MAIN_H)
@@ -245,14 +256,8 @@ class RenderPanel(QWidget):
         self.b_render.setStyleSheet(RED_BTN)
         add_shadow(self.b_render)
         self.b_render.clicked.connect(self.render)
-        self.settings = RenderSettings(state)
-        from PySide6.QtWidgets import QDialog
-        self.dlg = QDialog(self)
-        self.dlg.setWindowTitle("렌더 설정")
-        self.dlg.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
-        dl = QVBoxLayout(self.dlg)
-        dl.addWidget(self.settings)
-        self.dlg.setMinimumWidth(380)
+        self.dlg = RenderSettingsDialog(state, self)
+        self.settings = self.dlg.settings
         self.b_prev = QPushButton("미리보기 렌더")
         fix_size(self.b_prev, main=True)
         self.b_prev.setMaximumWidth(16777215)
@@ -263,7 +268,7 @@ class RenderPanel(QWidget):
         self.b_set.setFixedSize(34, MAIN_H)
         self.b_set.setToolTip("렌더 설정")
         self.b_set.setFocusPolicy(Qt.NoFocus)
-        self.b_set.clicked.connect(lambda: (self.settings._load(), self.dlg.exec()))
+        self.b_set.clicked.connect(lambda: self.dlg.open_at(self))
         top = QHBoxLayout()
         top.setSpacing(4)
         top.addWidget(self.b_prev, 1)
@@ -275,7 +280,7 @@ class RenderPanel(QWidget):
         lay.addLayout(top)
         lay.addWidget(self.table, 1)
         self.setMinimumWidth(200)
-        state.changed.connect(lambda w: w in ("render", "sources", "project", "undo", "output") and self.refresh())
+        state.changed.connect(lambda w: w in ("render", "sources", "project", "undo", "output", "grade") and self.refresh())
 
     def refresh(self):
         p = self.state.project
@@ -284,13 +289,20 @@ class RenderPanel(QWidget):
         self.table.clear()
         for it in p.render_items:
             ok = all(p.source(g.src) for g in it.segs)
+            if it.done and it.id not in self.status:
+                self.status[it.id] = f"완료 → {it.done}"
             st = self.status.get(it.id, "" if ok else "실패: 소스 없음")
             li = QListWidgetItem(file_name(p, it))
             li.setData(Qt.UserRole, it.id)
             li.setData(Qt.UserRole + 1, f"{ORIENT_TXT.get(it.orientation, '')} {p.segs_seconds(it.segs):.1f}초"
                        + ("" if it.audio else " 무음"))
-            if st.startswith("실패"):
-                li.setToolTip(st)
+            stale = any(p.seg_stale(g) for g in it.segs)
+            li.setData(Qt.UserRole + 2, stale)
+            tips = [st] if st.startswith(("실패", "완료")) else []
+            if stale:
+                tips.append("보낸 뒤 보정값이 바뀜 — 우클릭 ‘지금 보정값으로’")
+            if tips:
+                li.setToolTip("\n".join(tips))
             self.table.addItem(li)
             li.setSelected(it.id in sel)
         self.table.blockSignals(False)
@@ -310,10 +322,28 @@ class RenderPanel(QWidget):
         self.state.touch("render")
 
     def _requeue(self):
+        p = self.state.project
         for i in self._selected_ids():
             self.status.pop(i, None)
             self.progress.pop(i, None)
+            it = next((x for x in p.render_items if x.id == i), None)
+            if it is not None and it.done:
+                it.done = ""
+                self.state.dirty = True
         self.refresh()
+
+    def _resnap(self):
+        """선택한 항목의 보정값·◆·꺼 둔 항목을 지금 클립 값으로(실행취소 1번)."""
+        ids = set(self._selected_ids())
+        p = self.state.project
+        items = [x for x in p.render_items if x.id in ids]
+        if not items or self.running:
+            return
+        self.state.checkpoint()
+        for it in items:
+            for g in it.segs:
+                p.snap_seg(g)
+        self.state.touch("render")
 
     def render(self):
         if self.running:
@@ -323,8 +353,9 @@ class RenderPanel(QWidget):
         self.settings._load()
         p = self.state.project
         self.queue = [it for it in p.render_items
-                      if not self.status.get(it.id, "").startswith("완료") and all(p.source(g.src) for g in it.segs)]
+                      if not it.done and not self.status.get(it.id, "").startswith("완료") and all(p.source(g.src) for g in it.segs)]
         if not self.queue:
+            self.message.emit("새 항목 없음")
             return
         self.running = True
         self.b_render.setEnabled(False)
@@ -385,8 +416,10 @@ class RenderPanel(QWidget):
             self._repaint()
             self.itemProgress.emit(iid, v, True)
 
-        def done(_r, iid=it.id):
+        def done(_r, iid=it.id, item=it):
             self.status[iid] = f"완료 {time.time() - t0:.0f}초 → {path}"
+            item.done = str(path)                 # 프로젝트에 저장 → 다시 열어도 완료
+            self.state.dirty = True
             self.refresh()
             self.itemProgress.emit(iid, 1.0, bool(self.queue))
             self._next()
@@ -405,14 +438,14 @@ class RenderPanel(QWidget):
 
 
 class RenderSettings(QWidget):
-    """렌더 설정(렌더 리스트 맨 위)."""
+    """렌더 설정 값(⚙ 창 안). 바꿔도 바로 적용하지 않음 → [확인] 때 apply()(실행취소 1번), [취소]·Esc 는 버림."""
 
     def __init__(self, state, parent=None):
         super().__init__(parent)
         self.state = state
         f = QFormLayout(self)
         f.setContentsMargins(0, 0, 0, 6)
-        f.setVerticalSpacing(4)
+        f.setVerticalSpacing(6)
         self.prefix = QLineEdit()
         self.prefix.setPlaceholderText("DTME")
         f.addRow("명칭", self.prefix)
@@ -426,6 +459,11 @@ class RenderSettings(QWidget):
         f.addRow("비트레이트", self.bitrate)
         self.gpu = QCheckBox("GPU")
         f.addRow("디코딩", self.gpu)
+        self.still = QComboBox()
+        self.still.addItem("PNG 8bit", 8)
+        self.still.addItem("PNG 16bit", 16)
+        self.still.setToolTip("스틸(S) 저장 형식")
+        f.addRow("스틸", self.still)
         frow = QHBoxLayout()
         self.folder = QLineEdit()
         self.folder.setPlaceholderText("렌더할 때 물어봄")
@@ -435,41 +473,87 @@ class RenderSettings(QWidget):
         frow.addWidget(self.folder, 1)
         frow.addWidget(b)
         f.addRow("저장폴더", frow)
-        self.prefix.textChanged.connect(self._save)
-        self.encoder.activated.connect(self._save)
-        self.bitrate.valueChanged.connect(self._save)
-        self.gpu.toggled.connect(self._save)
-        self.folder.editingFinished.connect(self._save)
         for w in (self.prefix, self.folder):
             w.returnPressed.connect(w.clearFocus)
-        state.changed.connect(lambda w: w in ("project", "undo", "output") and self._load())
         self._load()
 
     def _load(self):
+        from .project import get_setting
         o = self.state.project.output
-        ws = (self.prefix, self.encoder, self.bitrate, self.gpu)
-        for w in ws:
-            w.blockSignals(True)
         self.prefix.setText(o.prefix)
         self.encoder.setCurrentIndex(max(0, self.encoder.findData(o.encoder)))
         self.bitrate.setValue(o.bitrate_mbps)
         self.gpu.setChecked(o.gpu_decode)
-        for w in ws:
-            w.blockSignals(False)
+        self.still.setCurrentIndex(1 if str(get_setting("still_bits", 8)) == "16" else 0)
         self.folder.setText(o.folder)
 
-    def _save(self, *_):
+    def apply(self):
+        """[확인]: 프로젝트에 넣고(실행취소 1번) 새 프로젝트 기본값·스틸 형식은 settings.json 에 기억."""
+        from .project import set_setting
         o = self.state.project.output
-        o.prefix = self.prefix.text()
-        o.encoder = self.encoder.currentData()
-        o.bitrate_mbps = self.bitrate.value()
-        o.gpu_decode = self.gpu.isChecked()
-        o.folder = self.folder.text().strip()
-        self.state.dirty = True
-        self.state.changed.emit("output")
+        new = (self.prefix.text(), self.encoder.currentData(), self.bitrate.value(), self.gpu.isChecked(), self.folder.text().strip())
+        if new != (o.prefix, o.encoder, o.bitrate_mbps, o.gpu_decode, o.folder):
+            self.state.checkpoint()
+            o.prefix, o.encoder, o.bitrate_mbps, o.gpu_decode, o.folder = new
+            self.state.dirty = True
+            self.state.changed.emit("output")
+        try:
+            set_setting("render_defaults", {"prefix": o.prefix, "encoder": o.encoder, "bitrate_mbps": o.bitrate_mbps,
+                                            "gpu_decode": o.gpu_decode})
+            set_setting("still_bits", self.still.currentData())
+        except Exception:  # noqa: BLE001
+            pass
 
     def _pick_folder(self):
-        d = QFileDialog.getExistingDirectory(self, "저장폴더")
+        d = QFileDialog.getExistingDirectory(self, "저장폴더", self.folder.text())
         if d:
             self.folder.setText(d)
-            self._save()
+
+
+class RenderSettingsDialog(QDialog):
+    """⚙ 렌더 설정 창: 테두리 없는 어두운 창(AUTO 창과 같은 모양) + [취소][확인]."""
+
+    def __init__(self, state, parent=None):
+        super().__init__(parent, Qt.Dialog | Qt.FramelessWindowHint)
+        self.setModal(True)
+        self.setObjectName("RenderSet")
+        self.setStyleSheet("#RenderSet{background:#262626; border:1px solid #555; border-radius:6px;}")
+        self.settings = RenderSettings(state)
+        title = QLabel("렌더 설정")
+        title.setStyleSheet("font-weight:700; color:#e0e0e0;")
+        self.b_cancel = QPushButton("취소")
+        self.b_ok = QPushButton("확인")
+        for b in (self.b_cancel, self.b_ok):
+            fix_size(b, main=True)
+            b.setFocusPolicy(Qt.NoFocus)
+        self.b_ok.setStyleSheet("QPushButton{color:#fff; background:#2f4f78; border:1px solid #4a8fe0; border-radius:3px;"
+                                " font-weight:700;} QPushButton:hover{background:#3a5f8e;}")
+        self.b_cancel.clicked.connect(self.reject)
+        self.b_ok.clicked.connect(self.accept)
+        br = QHBoxLayout()
+        br.addStretch(1)
+        br.addWidget(self.b_cancel)
+        br.addWidget(self.b_ok)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 12, 16, 14)
+        lay.setSpacing(10)
+        lay.addWidget(title)
+        lay.addWidget(self.settings)
+        lay.addLayout(br)
+        self.setMinimumWidth(400)
+
+    def open_at(self, anchor):
+        self.settings._load()
+        self.adjustSize()
+        g = anchor.window().geometry()
+        self.move(g.center().x() - self.width() // 2, g.center().y() - self.height() // 2)
+        return self.exec()
+
+    def accept(self):
+        self.settings.apply()
+        super().accept()
+
+    def keyPressEvent(self, e):
+        if e.key() in (Qt.Key_Return, Qt.Key_Enter):      # 입력란 Enter 로 창이 닫히지 않게
+            return
+        super().keyPressEvent(e)            # Esc = 취소

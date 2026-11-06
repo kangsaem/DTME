@@ -1,8 +1,8 @@
 # HANDOFF — DTME (Diving Tour Movie Editor)
 
-다음 대화는 이 문서를 기준으로 이어서 작업한다. **v0.16.1 완료(불러오면 보정 없음·LUT만, 실행취소 화면 갱신, 이름 클릭 = 잠시 끔, 모니터 로딩 표시, AUTO 프록시 안 기다림, 프록시 동시 2개·GPU 축소, AUTO 창 기존 보정·키프레임 위로 + 렌즈·흔들림 슬라이더). 답 대기: ① 반반·샘플 왼쪽을 Log 원본 → LUT만으로 바꿀지(가 추천) ② 렌더 파란 물 얼룩(10bit HEVC 출력 추천, 원본 5~10초 받아 비교 렌더 제안). 다음: 사용자 PC 실기 확인(프록시 속도 = cache/dtme.log ‘프록시 … GPU 축소 n초’). MOSCO 에 같은 UI 를 만들 때 = `design/AUTO_UI.md`.**
+다음 대화는 이 문서를 기준으로 이어서 작업한다. **v0.16.2 완료(디헤이즈 뺌 = 물빛 계단 원인 · 블루워터 커브 밝기 맞춤, 스틸 8bit 기본, WinError 32 자동 재시도, 보정 전 = LUT만, 렌더 리스트 보정값 사본·노란 점·완료 저장, 렌더 설정 창 어두운 창·취소/확인·새 프로젝트 기본값). v0.16.1(불러오면 LUT만, 이름 클릭 끄기, 로딩 표시, 프록시 2개·GPU 축소, AUTO 렌즈/흔들림). 다음: 사용자 PC 실기 확인(블루워터 밝기, 프록시 속도 = cache/dtme.log). MOSCO 에 같은 UI = `design/AUTO_UI.md`.**
 
-## 1. 현재 상태 — v0.16.1 (2026-11-06)
+## 1. 현재 상태 — v0.16.2 (2026-11-06)
 
 - 저장소: `kangsaem/DTME` (main). push 하면 GitHub Actions 가 Windows 빌드 → Actions → 최신 "Windows build" → Artifacts `DTME-windows`(약 200MB, 30일)
 - Linux 작업 환경에서 엔진·화면(오프스크린) 검증, Actions(Windows)에서 빌드·엔진·exe 실행 점검 통과
@@ -216,6 +216,18 @@ UI 시안: Claude Design 캔버스 https://claude.ai/artifact/C4YHhA1vrZEKLp76BF
   - 측정(이 환경 2코어, 960px 프록시): 프레임 표시 80ms → 2ms, 120프레임 구간 디코딩 ≈ 0.6초. 정확성 = 한 장씩 디코딩과 같은 화면(`tests/test_framecache.py`)
   - 한계: 보정 미리보기(원본 4K 디코딩 + 필터) 자체 속도는 그대로 — 처음 보는 프레임·값 바꾼 직후는 예전과 같음. 보정을 프로그램 안에서 다시 구현(MOSCO 3단계)은 안 함
 
+### v0.16.2 (2026-11-06, 사용자 확정)
+- **디헤이즈 뺌**: 렌더·스틸의 파란 물에 생기던 들쭉날쭉한 계단(실측 단차 7.8/255 → 뺀 뒤 2.9)의 원인. ffmpeg `unsharp` 가 10bit 에서 효과를 몇 단계 정수로만 더함(세기를 바꿔도 더해지는 값 2~7가지) → 완만한 그라데이션에서 단계가 바뀌는 선 = 경계, LUT·커브가 키움. 미리보기(1280)는 덜 보였음. 확인 과정: 10bit HEVC 출력·시간축 NR 끔 테스트판(test-nr/test-enc, 삭제함) 둘 다 계단 → 사용자가 하나씩 끄며 디헤이즈 확정. 슬라이더·AUTO 세부 값에서 삭제, `sharpen_chain` 이 dehaze 무시(옛 프로젝트 값도), OFFABLE 제외
+  - 디헤이즈(5)가 화면 전체를 ≈ +10/255 밝게 하던 것(같은 원인의 치우침)을 **블루워터 커브로 보충**: `auto.LIFT`(사용자 렌더 2개 같은 프레임 밝기 분포 맞춤) → `lift_curve` 를 블루워터(약·중·강·AUTO 추천) 커브 y 에 덧씌움. 한 장면 기준 근사값
+  - 샤픈도 unsharp(5×5)지만 그대로 둠(사용자 결정)
+- **스틸 기본 8bit PNG**(rgb24). ⚙ 설정 `스틸 PNG 8bit|16bit` → settings `still_bits`. 16bit PNG 는 데이터는 정상이지만 뷰어에 따라 띠가 보였음
+- **WinError 32 자동 재시도**: `ff._popen` 이 OSError winerror 32/33 이면 0.2초 간격 최대 12번(ffmpeg.exe 를 백신이 잠깐 잡는 경우 추정, 오류 문장에 파일 이름이 없었음)
+- **보정 전 = LUT만**: [원본] 보기 · 반반 왼쪽 · 샘플 타일 왼쪽 · AUTO 반반 샘플 왼쪽(`split_vf`) · 확대 원본 = `ff.lut_only(g)`(NEUTRAL + 그 클립 LUT). Log 원본은 더 이상 안 보여 줌
+- **렌더 리스트 = 보낼 때 그대로**: `Segment.grade`(보정값 전체 사본, off 미적용) + gkeys·off 를 `Project.snap_seg` 로 ➜ · 타임라인 → 렌더리스트로 · AUTO 렌더 때 찍음. 렌더는 `grade_for_source(seg=seg)` 가 사본 사용(옛 항목은 지금 클립 값). 클립 값이 사본과 다르면 줄에 **노란 점**(`seg_stale`, 툴팁), 우클릭 **지금 보정값으로**(실행취소 1번). 타임라인 컷은 ▼ 때가 아니라 렌더 리스트로 보낼 때 값
+- **완료 저장**: `RenderItem.done` = 결과 경로(프로젝트에 저장 → 다시 열어도 완료). 남은 게 없으면 [렌더] → 상태줄 `새 항목 없음`. 우클릭 다시 렌더 = done 비움(새 파일 `_2`)
+- **렌더 설정 창**(`RenderSettingsDialog`): 테두리 없는 어두운 창(#262626) + [취소][확인](파랑). 창 안에서 바꾼 값은 [확인] 때만 적용(실행취소 1번), 취소·Esc = 버림, 입력란 Enter 로 닫히지 않음. [확인] 값(명칭·인코더·비트레이트·디코딩)은 settings `render_defaults` → 새 프로젝트 기본값(`load_default_output`). 저장폴더는 프로젝트 + last_folder
+- 테스트: tests/test_ui_v162.py(위 전부, 렌더는 x264), test_ui_grade 의 디헤이즈 → 물 노이즈
+
 ### v0.16.1 (2026-11-06, 사용자 확정)
 - **불러오면 보정 없음(LUT만)**: 새 소스 `grade = plain_grade()`(project.NEUTRAL: 빨강·파랑 1 · 색조 0 · 채도 1 · 물빛·녹황 0 · 커브 직선 · 노이즈·샤픈·디헤이즈·렌즈·흔들림 0, LUT 는 프로젝트 기본값). AUTO·프리셋·[기본값]·슬라이더부터 보정. 소스 바 표시 없음(`is_plain` → 태그 ""), C 는 `has_clip_grade`(보정 없음 제외). 렌더 = 그 화면 그대로(LUT만). **[리셋] = 보정 없음(LUT만)** 으로 바뀜. 옛 프로젝트 소스(grade {})는 예전처럼 기본값(E)
 - **실행취소 후 화면 갱신**: `EditTab._on_state('undo')` → `request_preview()`(값만 돌아가고 화면 그대로이던 문제). 프리셋 화면 안 바뀜은 이 환경에서 재현 안 됨 — 프리셋 → Ctrl+Z 비교 때 이 버그 때문이었을 가능성
@@ -225,8 +237,8 @@ UI 시안: Claude Design 캔버스 https://claude.ai/artifact/C4YHhA1vrZEKLp76BF
 - **프록시 빠르게**: PROXY_POOL 2. make_proxy 순서 = ① `-hwaccel cuda -hwaccel_output_format cuda` + `scale_cuda=960:h:interp_algo=bilinear,hwdownload,format=p010le|nv12`(4K 프레임을 CPU 로 안 내림) → 실패 시 ② GPU 디코딩 + CPU 축소 → ③ CPU. 성공 방식·시간을 cache/dtme.log 에 기록. **GPU 경로는 이 환경·CI 에 GPU 가 없어 미검증**(폴백 순서만 확인)
 - **AUTO 창**: [기존 보정 유지|무시][키프레임 유지|자동] = 오른쪽 맨 위([프리셋 자동] 위), 아래 줄은 버튼 4개만. **렌즈 보정·흔들림 보정 슬라이더**(이름 아래, 0~100, 체크된 클립 결과 값에 넣음, settings `auto.lens/stab`)
 - 테스트: tests/test_ui_v161.py(위 전부), test_ui_auto 는 새 클립 = 보정 없음 기준으로 수정
-- 미반영(사용자 답 대기): 반반·샘플·[원본] 보기 왼쪽 = 지금 Log 원본(LUT 없음). 선택지 가 LUT만(추천) / 나 그대로 / 다 샘플만 LUT
-- 렌더 얼룩(사용자 스크린샷: 블루워터 짙은 파랑 자글자글·덩어리): 출력 = H.264 8bit 4:2:0 NVENC 40M cq19 → 비트레이트보다 원본 압축 노이즈 증폭·노이즈 제거 뭉침·8bit 계단 가능성 높다고 답함. 제안: 원본 5~10초로 비교 렌더(지금/노이즈 끔/10bit/2배 비트레이트) + 10bit HEVC(hevc_nvenc main10) 출력 선택 추가
+- (v0.16.2 에서 반영) 반반·샘플·[원본] 보기 왼쪽 = LUT만
+- 렌더 얼룩·계단 → v0.16.2 에서 원인 = 디헤이즈(unsharp 10bit)로 확정, 디헤이즈 뺌
 
 ### v0.15.0 한계 · 개선 후보 (사용자에게 보고)
 1. **기준값은 합성 화면으로만 맞춤** — 실제 수중 영상(라이트/얕은/깊은/블루워터/야간 각 5~10초)이 있어야 SCENE_BASE·판단 기준을 조정할 수 있음
@@ -271,7 +283,7 @@ D. ~~**인/아웃 드래그 시 프리뷰 위치 고정(수정 요청)**~~ 완�
 
 1. “클립보정해제(기본값으로) 버튼은 …” — 요청 문장이 끊겨 있어 그대로 둠. 어떻게 바꿀지
 2. Enter/↓ 역할: 버튼 정의대로 ↓=타임라인, Enter=렌더 리스트로 구현(원문에 Enter 가 두 의미로 나옴)
-3. 스틸 PNG 8bit/16bit 선택(현재 16bit)
+3. ~~스틸 PNG 8bit/16bit 선택~~ v0.16.2: 기본 8bit, ⚙ 에서 16bit
 
 ## 6. 구조
 
@@ -309,6 +321,7 @@ app/dtme/auto.py         자동 보정 분석(샘플·통계·장면 판단·값
 app/dtme/ui_auto.py      AUTO 창 · 보정 탭 프리셋 창 · 샘플 창 · 공통 부품(PresetGrid, Seg, DetailBox)
 tests/test_auto.py       자동 보정 엔진(합성 장면) — CI
 tests/test_ui_auto.py    AUTO·프리셋·RGB·반반 샘플 화면 점검
+tests/test_ui_v162.py    디헤이즈 뺌·스틸 8bit·WinError 32·LUT만·렌더 리스트 사본/완료·렌더 설정 창
 tests/test_ui_v161.py    보정 없음·실행취소 화면·이름 클릭 끄기·로딩 표시·AUTO 창 위치/렌즈·흔들림·프록시 폴백
 design/AUTO_UI.md        AUTO 화면 기준서(MOSCO 등 다른 프로그램용) · design/gen/ 시안 그림 스크립트
 .github/workflows/build.yml  Windows 빌드(PyInstaller onedir + BtbN FFmpeg master GPL) → 엔진 점검 → exe 실행 점검 → Artifact
@@ -366,6 +379,7 @@ DTME_SELFTEST=1 DTME_NO_AUDIO=1 QT_QPA_PLATFORM=offscreen python app/main.py   #
 
 ## 11. 변경 이력
 
+- v0.16.2: 디헤이즈 뺌(물빛 계단 원인)·블루워터 커브 밝기, 스틸 8bit 기본, WinError 32 재시도, 보정 전 = LUT만, 렌더 리스트 보정값 사본·노란 점·지금 보정값으로·완료 저장·새 항목 없음, 렌더 설정 창 어두운 창·취소/확인·새 프로젝트 기본값
 - v0.16.1: 불러오면 보정 없음(LUT만)·리셋도 같음, 실행취소 화면 갱신, 이름 클릭 = 잠시 끔(보낸 컷에 사본), 모니터 로딩 표시, AUTO 프록시 안 기다림, 프록시 동시 2개·GPU 축소(폴백), AUTO 창 기존 보정·키프레임 위로·렌즈/흔들림 슬라이더
 - v0.16.0: 프리셋 6개, 깊은·블루워터 암부 강조(중간), 녹황 빼기, 렌즈 보정 방향 수정(당기고 자동 확대), 미리보기 RAM 캐시
 - v0.15.3: [보정만] 폴더 안 물음, 기본 채도 1.1·색조 +5(AUTO 포함), 파랑 ≥ 빨강×0.9

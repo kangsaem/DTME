@@ -49,7 +49,7 @@ FACTORY_GRADE = {
     "nr_luma": 25,       # 밝기 노이즈 0~100
     "wnr": 0,            # 물 노이즈: 파란 영역의 붉은 색 노이즈만 정리 0~100
     "sharpen": 0.3,      # 밝기에만 적용
-    "dehaze": 0,         # 디헤이즈(넓은 범위 대비) 0~100
+    "dehaze": 0,         # 디헤이즈 — v0.16.2 에서 뺌(계단 문제). 옛 값은 무시
     "lens": 0,           # 렌즈 왜곡 보정(액션캠 휘어짐) 0~100
     "stab": 0,           # 흔들림 보정 0(끔)~100, 렌더에만 적용
 }
@@ -58,7 +58,7 @@ FACTORY_GRADE = {
 # 보정 없음(LUT만) — 새로 불러온 클립 · [리셋]. LUT 는 프로젝트 기본값을 따름(사용자 2026-11-06: 액션을 해야 보정 시작)
 NEUTRAL = {"r_gain": 1.0, "b_gain": 1.0, "hue": 0.0, "sat": 1.0, "water": 0, "gy": 0, "curve": [[0.0, 0.0], [1.0, 1.0]],
            "nr_chroma": 0, "nr_luma": 0, "wnr": 0, "sharpen": 0.0, "dehaze": 0, "lens": 0, "stab": 0}
-OFFABLE = [k for k in NEUTRAL if k != "curve"]        # 이름을 눌러 잠시 끌 수 있는 항목(슬라이더)
+OFFABLE = [k for k in NEUTRAL if k not in ("curve", "dehaze")]        # 이름을 눌러 잠시 끌 수 있는 항목(슬라이더)
 
 
 def plain_grade() -> dict:
@@ -93,6 +93,19 @@ def upgrade_grade(g: dict) -> dict:
         g.setdefault("nr_chroma", c)
         g.setdefault("nr_luma", l)
     return g
+
+
+def load_default_output() -> "OutputSettings":
+    """새 프로젝트 렌더 설정 = 마지막으로 [확인]한 값(settings.json render_defaults). 저장폴더는 따로(last_folder)."""
+    o = OutputSettings()
+    try:
+        d = get_setting("render_defaults", {}) or {}
+        for k in ("prefix", "encoder", "bitrate_mbps", "gpu_decode"):
+            if k in d:
+                setattr(o, k, type(getattr(o, k))(d[k]))
+    except Exception:  # noqa: BLE001
+        pass
+    return o
 
 
 def load_default_grade() -> dict:
@@ -245,6 +258,7 @@ class Segment:
     reframe: list = field(default_factory=list)  # 보낼 때 소스 세로 크롭 키프레임의 사본
     gkeys: dict = field(default_factory=dict)    # 보낼 때 소스 색 키프레임의 사본
     off: list = field(default_factory=list)      # 보낼 때 잠시 꺼 둔 보정 항목의 사본(렌더에서 빼고 적용)
+    grade: dict = field(default_factory=dict)    # 렌더 리스트로 보낼 때 보정값 사본(v0.16.2). 비면(옛 항목) 지금 클립 값
 
     @property
     def frames(self) -> int:
@@ -253,7 +267,7 @@ class Segment:
     def copy(self) -> "Segment":
         return Segment(self.src, self.fin, self.fout, self.speed, layers=copy.deepcopy(self.layers),
                        trans=dict(self.trans), reframe=copy.deepcopy(self.reframe), gkeys=copy.deepcopy(self.gkeys),
-                       off=list(self.off))
+                       off=list(self.off), grade=copy.deepcopy(self.grade))
 
 
 # 세로 크롭 위치 이동(리프레이밍). 4K 기준 ±540px(그 이상은 액션캠 가장자리 왜곡)
@@ -417,6 +431,7 @@ class RenderItem:
     titles: list = field(default_factory=list)   # 타임라인 전체를 보낼 때만(사본)
     music: list = field(default_factory=list)
     mix: dict = field(default_factory=dict)
+    done: str = ""                               # 렌더 끝난 파일 경로(프로젝트에 저장 → 다시 열어도 완료). "" = 대기
 
 
 @dataclass
@@ -443,7 +458,7 @@ class Project:
     music: list = field(default_factory=list)        # 타임라인 음악 줄
     mix: dict = field(default_factory=default_mix)   # 원본·음악 볼륨, 음악 페이드
     grade: dict = field(default_factory=load_default_grade)
-    output: OutputSettings = field(default_factory=OutputSettings)
+    output: OutputSettings = field(default_factory=lambda: load_default_output())
     file: str = ""
 
     # ---- 조회 ----
@@ -462,6 +477,9 @@ class Project:
         off=True 면 잠시 끈 항목을 뺌(seg 를 주면 그 컷에 복사된 꺼짐 목록, 아니면 클립의 지금 목록)."""
         g = dict(self.grade)
         s = self.source(sid)
+        if s and seg is not None and getattr(seg, "grade", None):     # 렌더 리스트 = 보낼 때 사본
+            g.update(copy.deepcopy(seg.grade))
+            return apply_off(g, seg.off) if off else g
         if s:
             g.update(s.grade)
             if frame is not None and s.gkeys:
@@ -469,6 +487,23 @@ class Project:
             if off:
                 g = apply_off(g, seg.off if seg is not None else s.off)
         return g
+
+    def snap_seg(self, seg: "Segment") -> "Segment":
+        """컷에 지금 클립의 보정값·색 키프레임·꺼 둔 항목을 사본으로(렌더 리스트로 보낼 때, '지금 보정값으로')."""
+        s = self.source(seg.src)
+        if s:
+            seg.grade = copy.deepcopy(self.grade_for_source(s.id, off=False))
+            seg.gkeys = copy.deepcopy(s.gkeys)
+            seg.off = list(s.off)
+        return seg
+
+    def seg_stale(self, seg: "Segment") -> bool:
+        """보낸 뒤 클립 보정값이 바뀌었나(렌더 리스트 노란 점)."""
+        s = self.source(seg.src)
+        if not s or not getattr(seg, "grade", None):
+            return False
+        return (seg.grade != self.grade_for_source(s.id, off=False) or seg.gkeys != s.gkeys
+                or sorted(seg.off) != sorted(s.off))
 
     def grade_for_still(self, still: Marker) -> dict:
         g = self.grade_for_source(still.src)

@@ -41,7 +41,7 @@ SEG_BTN = ON_BTN              # [a|b] 도 격자 버튼과 같은 모양(떨어�
 MAIN_W, MAIN_H = 88, 32
 OUT_SHORT = {"horizontal": "1080", "horizontal1440": "1440", "horizontal2160": "4K", "vertical": "세로"}
 VALUE_ROWS = [("r_gain", "빨강", "{:.2f}"), ("b_gain", "파랑", "{:.2f}"), ("hue", "색조", "{:.1f}°"), ("sat", "채도", "{:.2f}"),
-              ("water", "물빛", "{:+.0f}°"), ("gy", "녹황 빼기", "{:.0f}"), ("curve", "명암 S", ""), ("dehaze", "디헤이즈", "{:.0f}"),
+              ("water", "물빛", "{:+.0f}°"), ("gy", "녹황 빼기", "{:.0f}"), ("curve", "명암 S", ""),
               ("nr_chroma", "색 노이즈", "{:.0f}"), ("nr_luma", "밝기 노이즈", "{:.0f}"), ("wnr", "물 노이즈", "{:.0f}")]
 
 

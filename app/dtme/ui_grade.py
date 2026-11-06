@@ -28,7 +28,7 @@ ON_STYLE = ("QPushButton:checked{background:#2f4f78; border:1px solid #4a8fe0; c
 # key: (슬라이더 최소, 최대, 값 = 슬라이더 / scale, 표시 형식)
 SLIDERS = {
     "r_gain": (50, 200, 100, "{:.2f}"), "b_gain": (50, 150, 100, "{:.2f}"), "hue": (-30, 30, 2, "{:+.1f}°"),
-    "sat": (0, 200, 100, "{:.2f}"), "water": (-10, 40, 1, "{:+.0f}°"), "gy": (0, 100, 1, "{:.0f}"), "sharpen": (0, 100, 100, "{:.2f}"), "dehaze": (0, 100, 1, "{:.0f}"),
+    "sat": (0, 200, 100, "{:.2f}"), "water": (-10, 40, 1, "{:+.0f}°"), "gy": (0, 100, 1, "{:.0f}"), "sharpen": (0, 100, 100, "{:.2f}"),
     "nr_chroma": (0, 100, 1, "{:.0f}"), "nr_luma": (0, 100, 1, "{:.0f}"), "wnr": (0, 100, 1, "{:.0f}"), "lens": (0, 100, 1, "{:.0f}"),
     "stab": (0, 100, 1, "{:.0f}"),
 }
@@ -236,7 +236,7 @@ class GradePanel(QWidget):
         self.view = QButtonGroup(self)
         vbox = QHBoxLayout()
         vbox.setSpacing(0)
-        for i, (k, t, tip) in enumerate((("grade", "보정", ""), ("raw", "원본", "B"), ("split", "반반", "왼쪽 원본 · 오른쪽 보정"))):
+        for i, (k, t, tip) in enumerate((("grade", "보정", ""), ("raw", "원본", "보정 전 = LUT만 (B)"), ("split", "반반", "왼쪽 보정 전(LUT만) · 오른쪽 보정"))):
             b = QPushButton(t)
             b.setCheckable(True)
             b.setFocusPolicy(Qt.NoFocus)
@@ -294,7 +294,7 @@ class GradePanel(QWidget):
 
         # --- 묶음: 디테일 / 렌즈·흔들림
         s_det = Section("detail", "디테일")
-        for key, name, tip in (("sharpen", "샤픈", ""), ("dehaze", "디헤이즈", ""), ("nr_chroma", "색 노이즈", ""),
+        for key, name, tip in (("sharpen", "샤픈", ""), ("nr_chroma", "색 노이즈", ""),
                                ("nr_luma", "밝기 노이즈", ""), ("wnr", "물 노이즈", "파란 물 영역의 붉은 점·색 노이즈만 정리")):
             s_det.lay.addLayout(self._row(key, name, 72, Qt.AlignRight, tip))
         s_lens = Section("lens", "렌즈 · 흔들림")
@@ -856,7 +856,8 @@ class GradePanel(QWidget):
             return
         marks = [m for m in p.samples if m.src == s.id]
         for m in marks:
-            grade = None if raw else p.grade_for_source(s.id, m.frame)
+            full = p.grade_for_source(s.id, m.frame)
+            grade = None if raw else full
             it = QListWidgetItem("")
             it.setToolTip(timecode(m.frame, s.fps))
             it.setSizeHint(QSize(self.tile[0] + 4, self.tile[1] + 4))
@@ -866,11 +867,13 @@ class GradePanel(QWidget):
             self.samples.addItem(it)
             out = sample_dir() / f"{s.id}_{m.frame}{'_raw' if raw else ''}.png"
 
-            def work(s=s, fr=m.frame, out=out, grade=grade):
+            def work(s=s, fr=m.frame, out=out, grade=grade, full=full):
                 c = ff.cached_frame(s, fr)
-                data = ff.render_preview(c, grade)
-                if grade is not None:
-                    data = split_png(ff.render_preview(c, None), data)
+                before = ff.render_preview(c, ff.lut_only(full))        # 보정 전 = LUT만
+                if grade is None:
+                    data = before
+                else:
+                    data = split_png(before, ff.render_preview(c, grade))
                 tmp = out.with_suffix(f".{gen}.part")
                 tmp.write_bytes(data)
                 try:
@@ -980,7 +983,7 @@ class GradePanel(QWidget):
 
 
 def split_png(raw_png: bytes, graded_png: bytes) -> bytes:
-    """반반 샘플: 왼쪽 반 = 원본, 오른쪽 반 = 보정, 가운데 흰 선 (QImage 라 작업 스레드에서도 안전)."""
+    """반반 샘플: 왼쪽 반 = 보정 전(LUT만), 오른쪽 반 = 보정, 가운데 흰 선 (QImage 라 작업 스레드에서도 안전)."""
     from PySide6.QtCore import QBuffer, QByteArray, QIODevice
     from PySide6.QtGui import QColor, QImage, QPainter
     a, b = QImage.fromData(raw_png, "PNG"), QImage.fromData(graded_png, "PNG")
