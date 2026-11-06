@@ -23,12 +23,12 @@ BASE = ("base", "")
 N_SAMPLES = 6
 TILE_W, TILE_H = 150, 84
 SIDE_W = 60            # 오른쪽 버튼(저장… · 오디오 · RGB) 폭
-ON_STYLE = ("QPushButton:checked{background:#5a4a1a; border-color:#f2c94c; color:#f2c94c;}")
+ON_STYLE = ("QPushButton:checked{background:#2f4f78; border:1px solid #4a8fe0; color:#fff;}")   # 켜짐 = 반반과 같은 파랑
 
 # key: (슬라이더 최소, 최대, 값 = 슬라이더 / scale, 표시 형식)
 SLIDERS = {
     "r_gain": (50, 200, 100, "{:.2f}"), "b_gain": (50, 150, 100, "{:.2f}"), "hue": (-30, 30, 2, "{:+.1f}°"),
-    "sat": (0, 200, 100, "{:.2f}"), "sharpen": (0, 100, 100, "{:.2f}"), "dehaze": (0, 100, 1, "{:.0f}"),
+    "sat": (0, 200, 100, "{:.2f}"), "water": (-10, 40, 1, "{:+.0f}°"), "gy": (0, 100, 1, "{:.0f}"), "sharpen": (0, 100, 100, "{:.2f}"), "dehaze": (0, 100, 1, "{:.0f}"),
     "nr_chroma": (0, 100, 1, "{:.0f}"), "nr_luma": (0, 100, 1, "{:.0f}"), "lens": (0, 100, 1, "{:.0f}"),
     "stab": (0, 100, 1, "{:.0f}"),
 }
@@ -144,7 +144,8 @@ class Section(QWidget):
 class GradePanel(QWidget):
     gradeChanged = Signal()
     viewChanged = Signal(str)                    # "grade" | "raw" | "split"
-    scopeToggled = Signal(bool)
+    scopeToggled = Signal(int)                   # 0 끔 · 1 겹침 · 2 파레이드
+    message = Signal(str, str)                   # (글, 색) → 상태줄
     whitePickToggled = Signal(bool)
     sampleClicked = Signal(str, int, QPixmap)   # 모니터에 그대로 띄움(이동·재렌더 없음)
     keysChanged = Signal()                      # 색 키프레임 추가·삭제·이동
@@ -181,14 +182,14 @@ class GradePanel(QWidget):
         head.addStretch(1)
         head.addWidget(b_def)
 
-        # --- 프리셋 ▾ [저장…]
-        self.preset = QComboBox()
-        self.preset.setToolTip("프리셋 (우클릭: 이름 바꾸기 · 덮어쓰기 · 기본값으로 쓰기 · 삭제)")
-        self.preset.setPlaceholderText("프리셋")
+        # --- [프리셋: 이름 ▾] [저장…]  (누르면 AUTO 와 같은 모양의 프리셋 창)
+        self.preset = QPushButton("프리셋 ▾")
+        self.preset.setFixedHeight(26)
         self.preset.setFocusPolicy(Qt.NoFocus)
-        self.preset.activated.connect(self._apply_preset)
-        self.preset.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.preset.customContextMenuRequested.connect(self._preset_menu)
+        self.preset.setStyleSheet("QPushButton{text-align:left; padding:0 8px;}")
+        self.preset.clicked.connect(self.open_presets)
+        self.strength = get_setting("preset_strength", "mid") or "mid"
+        self._rec_jobs = 0
         b_ps = self._side(QPushButton("저장…"))
         b_ps.setToolTip("지금 값을 프리셋으로 저장")
         b_ps.clicked.connect(self._save_preset)
@@ -227,8 +228,9 @@ class GradePanel(QWidget):
         self.view.button(0).setChecked(True)
         self.view.buttonClicked.connect(lambda b: self.viewChanged.emit(b.property("key")))
         self.rgb = self._side(QPushButton("RGB"), checkable=True)
-        self.rgb.setToolTip("RGB 파형")
-        self.rgb.toggled.connect(self.scopeToggled.emit)
+        self.rgb.setToolTip("RGB 그래프 (누를 때마다 겹침 → 파레이드 → 끔)")
+        self.scope_mode = 0
+        self.rgb.clicked.connect(self._cycle_scope)
         vrow = QHBoxLayout()
         vrow.addLayout(vbox, 1)
         vrow.addWidget(self.rgb)
@@ -254,8 +256,9 @@ class GradePanel(QWidget):
         lb.addWidget(self.b_white)
         lb.addWidget(b1)
         s_col.lay.addLayout(lb)
-        for key, name in (("r_gain", "빨강"), ("b_gain", "파랑"), ("hue", "색조"), ("sat", "채도")):
-            s_col.lay.addLayout(self._row(key, name, 30, Qt.AlignLeft))
+        for key, name, tip in (("r_gain", "빨강", ""), ("b_gain", "파랑", ""), ("hue", "색조", ""), ("sat", "채도", ""),
+                               ("water", "물빛", "청록·녹색만 파랑 쪽으로"), ("gy", "녹황", "녹색·노란색 채도만 줄임")):
+            s_col.lay.addLayout(self._row(key, name, 30, Qt.AlignLeft, tip))
         s_col.lay.setSpacing(3)
         self.curve = CurveEditor()
         self.curve.changed.connect(lambda pts: self._set("curve", pts))
@@ -435,6 +438,7 @@ class GradePanel(QWidget):
         self.cur_sid = sid
         self.target = ("src", sid) if sid and self.state.project.source(sid) else BASE
         self._load_controls()
+        self._fill_presets()
         self.refresh_samples()
 
     def _fill_targets(self):
@@ -503,52 +507,135 @@ class GradePanel(QWidget):
 
     # ------------------------------------------------------------ 프리셋
     def _fill_presets(self, select=""):
-        self.preset.blockSignals(True)
-        self.preset.clear()
-        for n in list_presets():
-            self.preset.addItem(n, n)
-        self.preset.setCurrentIndex(self.preset.findData(select) if select else -1)
-        self.preset.blockSignals(False)
+        """프리셋 버튼 글자 = 현재 클립에 들어간 프리셋."""
+        from .ui_auto import preset_name
+        src = self._src()
+        name = preset_name(src.auto) if src else ""
+        self.preset.setText(f"프리셋: {name}  ▾" if name else "프리셋  ▾")
 
-    def _apply_preset(self, i):
-        name = self.preset.itemData(i)
-        if not name:
-            return
-        try:
-            g = load_preset(name)
-        except Exception as e:  # noqa: BLE001
-            QMessageBox.warning(self, "프리셋", str(e))
-            return
+    def _sids(self):
+        return (self.targets_fn() if self.targets_fn else []) or ([self.cur_sid] if self.cur_sid else [])
+
+    def open_presets(self):
+        from .ui_auto import PresetDialog
+        src = self._src()
+        cur = (src.auto or {}).get("preset", "") if src else ""
+        if src and not cur and not src.grade:
+            cur = "base"
+        dlg = PresetDialog(self.state.project.grade, cur, self.strength, self)
+        dlg.picked.connect(self.apply_choice)
+        dlg.userMenu.connect(lambda n, pos: self._preset_menu(n, pos))
+        dlg.adjustSize()
+        g = self.preset.mapToGlobal(self.preset.rect().bottomLeft())
+        dlg.move(g)
+        self._pdlg = dlg
+        dlg.exec()
+
+    def apply_choice(self, key, strength="mid"):
+        """프리셋 창에서 고른 것 적용(현재 클립 또는 Ctrl·Shift 로 고른 여러 클립).
+        기본 프리셋·사용자 프리셋 = 고정값 / 모두 자동·줄 자동 = 클립 분석(추천, 반반 보기)."""
+        from . import auto
+        from .project import FACTORY_GRADE
         p = self.state.project
-        sids = (self.targets_fn() if self.targets_fn else []) or ([self.cur_sid] if self.cur_sid else [])
+        self.strength = strength
+        try:
+            set_setting("preset_strength", strength)
+        except Exception:  # noqa: BLE001
+            pass
+        sids = [sid for sid in self._sids() if p.source(sid)]
+        if key == "auto" or key.startswith("scene:"):
+            self.recommend(sids, key, strength)
+            return
+        if key == "base":
+            g = None
+        elif key.startswith("user:"):
+            try:
+                g = load_preset(key[5:])
+            except Exception as e:  # noqa: BLE001
+                QMessageBox.warning(self, "프리셋", str(e))
+                return
+        else:
+            g = auto.builtin_grade(key, {**FACTORY_GRADE, **p.grade}, strength)
         self.state.checkpoint()
         if sids:
             for sid in sids:
                 s = p.source(sid)
-                if s:
-                    s.grade = {k: v for k, v in g.items() if p.grade.get(k) != v}
-                    s.gkeys = {}
+                s.grade = {} if g is None else {k: v for k, v in g.items() if p.grade.get(k) != v}
+                s.gkeys = {}
+                s.auto = {} if g is None else {"preset": key, "by": "user"}
             self.keysChanged.emit()
-        else:
+        elif g is not None:
             p.grade.update(g)
         self.state.dirty = True
         self._load_controls()
         self._emit_change()
 
+    def recommend(self, sids, key="auto", strength="mid"):
+        """[추천] 클립마다 샘플 추출(2초마다, 최대 20장) → 장면 판단 → 값·키프레임 → 클립 값(C), 반반 보기. 실행취소 1번."""
+        from . import auto
+        from .ui_auto import choice_args, grab_job
+        p = self.state.project
+        if not sids:
+            return
+        self.state.checkpoint()
+        sc, sb = choice_args(key)
+        self._rec_jobs += len(sids)
+        self.message.emit("분석 중…", "#cfd8e3")
+
+        def apply(smp, sid):
+            s = p.source(sid)
+            self._rec_jobs -= 1
+            if s is None:
+                return
+            base = dict(p.grade)
+            r = auto.recommend(smp, base, sc, sb, strength)
+            rec = r["preset"] if key == "auto" else auto.recommend(smp, base)["preset"]
+            s.grade = {k: v for k, v in r["grade"].items() if p.grade.get(k) != v}
+            s.gkeys = r["gkeys"]
+            s.auto = {"preset": r["preset"], "by": "auto" if key == "auto" else "user", "rec": rec,
+                      "nkeys": len(r["gkeys"].get("r_gain", []))}
+            self.state.dirty = True
+            self.keysChanged.emit()
+            if sid == self.cur_sid:
+                self._load_controls()
+                self.set_view("split")
+            self._emit_change()
+            if self._rec_jobs <= 0:
+                self.message.emit(f"추천 → {auto.preset_label(r['preset'])}" + (f"  ◆{len(r['gkeys']['r_gain'])}" if r["gkeys"] else ""),
+                                  "#7fd18b")
+
+        def err(msg):
+            self._rec_jobs -= 1
+            ff.log_error("추천", msg)
+            self.message.emit(f"분석 실패: {msg[-120:]}", "#f2c94c")
+        for sid in sids:
+            s = p.source(sid)
+            if s is None or not s.frames:
+                self._rec_jobs -= 1
+                continue
+            grab_job(s, p.grade_for_source(sid).get("lut", ""), p.output.gpu_decode,
+                     lambda smp, sid=sid: apply(smp, sid), err)
+
+    def _apply_preset(self, name):
+        """사용자 프리셋 이름으로 적용(옛 호출 호환)."""
+        self.apply_choice(f"user:{name}")
+
     def _save_preset(self):
-        name, ok = QInputDialog.getText(self, "프리셋 저장", "이름", text=self.preset.currentData() or "")
+        from .ui_auto import preset_name
+        src = self._src()
+        cur = preset_name(src.auto) if src and (src.auto or {}).get("preset", "").startswith("user:") else ""
+        name, ok = QInputDialog.getText(self, "프리셋 저장", "이름", text=cur)
         name = name.strip()
         if not ok or not name:
             return
         if name in list_presets() and QMessageBox.question(self, "프리셋", f"{name} 덮어쓰기?") != QMessageBox.Yes:
             return
         save_preset(name, self._effective())
-        self._fill_presets(name)
+        if src:
+            src.auto = {"preset": f"user:{name}", "by": "user"}
+        self._fill_presets()
 
-    def _preset_menu(self, pos):
-        name = self.preset.currentData()
-        if not name:
-            return
+    def _preset_menu(self, name, gpos):
         m = QMenu(self)
         a_ren = QAction("이름 바꾸기", m)
         a_ovr = QAction("지금 값으로 덮어쓰기", m)
@@ -558,12 +645,19 @@ class GradePanel(QWidget):
             m.addAction(a)
         m.addSeparator()
         m.addAction(a_del)
-        act = m.exec(self.preset.mapToGlobal(pos))
+        act = m.exec(gpos)
+        if act is None:
+            return
+        dlg = getattr(self, "_pdlg", None)
+        if dlg is not None:
+            dlg.reject()
         if act is a_ren:
             new, ok = QInputDialog.getText(self, "이름 바꾸기", "이름", text=name)
             if ok and new.strip() and new.strip() != name:
                 rename_preset(name, new.strip())
-                self._fill_presets(new.strip())
+                for s in self.state.project.sources:
+                    if (s.auto or {}).get("preset") == f"user:{name}":
+                        s.auto["preset"] = f"user:{new.strip()}"
         elif act is a_ovr:
             save_preset(name, self._effective())
         elif act is a_def:
@@ -575,7 +669,13 @@ class GradePanel(QWidget):
         elif act is a_del:
             if QMessageBox.question(self, "삭제", f"{name} 삭제?") == QMessageBox.Yes:
                 delete_preset(name)
-                self._fill_presets()
+        self._fill_presets()
+
+    def _cycle_scope(self):
+        """RGB: 겹침 → 파레이드 → 끔."""
+        self.scope_mode = (self.scope_mode + 1) % 3
+        self.rgb.setChecked(self.scope_mode > 0)
+        self.scopeToggled.emit(self.scope_mode)
 
     # ------------------------------------------------------------ 조절값
     def _load_controls(self):
@@ -599,6 +699,7 @@ class GradePanel(QWidget):
             w.blockSignals(False)
         self.curve.set_points(e["curve"])
         self._update_labels()
+        self._fill_presets()
 
     def _update_labels(self):
         e = self._shown()
@@ -620,10 +721,9 @@ class GradePanel(QWidget):
     def set_values(self, values: dict):
         """흰색 찍기 등 여러 값을 한 번에(실행취소 1번)."""
         self.state.checkpoint()
-        d = self._target_dict()
         for k, v in values.items():
             lo, hi, sc, _f = SLIDERS.get(k, (None, None, 1, ""))
-            d[k] = round(max(lo / sc, min(hi / sc, v)), 3) if lo is not None else v
+            self._write(k, round(max(lo / sc, min(hi / sc, v)), 3) if lo is not None else v)
         self.state.dirty = True
         self._load_controls()
         self._emit_change()
@@ -713,7 +813,10 @@ class GradePanel(QWidget):
             out = sample_dir() / f"{s.id}_{m.frame}{'_raw' if raw else ''}.png"
 
             def work(s=s, fr=m.frame, out=out, grade=grade):
-                data = ff.render_preview(ff.cached_frame(s, fr), grade)
+                c = ff.cached_frame(s, fr)
+                data = ff.render_preview(c, grade)
+                if grade is not None:
+                    data = split_png(ff.render_preview(c, None), data)
                 tmp = out.with_suffix(f".{gen}.part")
                 tmp.write_bytes(data)
                 try:
@@ -812,6 +915,26 @@ class GradePanel(QWidget):
             self.refresh_samples()
         elif what == "output":
             self._load_output()
+
+
+def split_png(raw_png: bytes, graded_png: bytes) -> bytes:
+    """반반 샘플: 왼쪽 반 = 원본, 오른쪽 반 = 보정, 가운데 흰 선 (QImage 라 작업 스레드에서도 안전)."""
+    from PySide6.QtCore import QBuffer, QByteArray, QIODevice
+    from PySide6.QtGui import QColor, QImage, QPainter
+    a, b = QImage.fromData(raw_png, "PNG"), QImage.fromData(graded_png, "PNG")
+    if a.isNull() or b.isNull():
+        return graded_png
+    out = b.convertToFormat(QImage.Format_RGB32)
+    p = QPainter(out)
+    h = out.width() // 2
+    p.drawImage(0, 0, a.scaled(out.width(), out.height()), 0, 0, h, out.height())
+    p.fillRect(h - 1, 0, 2, out.height(), QColor(255, 255, 255, 230))
+    p.end()
+    ba = QByteArray()
+    buf = QBuffer(ba)
+    buf.open(QIODevice.WriteOnly)
+    out.save(buf, "PNG")
+    return bytes(ba)
 
 
 class LutCombo(QComboBox):

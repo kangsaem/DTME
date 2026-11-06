@@ -25,7 +25,8 @@ def main(sample, work):
     p.sources.append(src)
     p.grade.update(lut="", nr_chroma=0, nr_luma=0, sharpen=0, hue=0, sat=1.0, r_gain=1.0, b_gain=1.0)
     p.output.encoder, p.output.gpu_decode = "x264", False
-    gk = {"r_gain": [{"f": 10, "v": 0.8}, {"f": 90, "v": 1.6}], "sat": [{"f": 10, "v": 1.0}, {"f": 90, "v": 1.5}]}
+    gk = {"r_gain": [{"f": 10, "v": 0.8}, {"f": 90, "v": 1.6}], "sat": [{"f": 10, "v": 1.0}, {"f": 90, "v": 1.5}],
+          "water": [{"f": 10, "v": 0}, {"f": 90, "v": 30}], "gy": [{"f": 10, "v": 0}, {"f": 90, "v": 80}]}
     seg = Segment(src.id, 0, 110, 1.0, gkeys=gk)
     f = d / "gk.mp4"
     ff.render_video(p, [seg], str(f), orientation="horizontal")
@@ -36,11 +37,11 @@ def main(sample, work):
         ref = d / f"ref_{n}.mp4"
         ff.render_video(p, [Segment(src.id, int(round(srcf)), int(round(srcf)) + 2, 1.0)], str(ref), orientation="horizontal")
         # 정지값 렌더(그 프레임 값으로 고정)
-        p2 = Project(); p2.sources.append(src); p2.grade.update(p.grade); p2.grade.update({k: g[k] for k in ("r_gain", "sat")})
+        p2 = Project(); p2.sources.append(src); p2.grade.update(p.grade); p2.grade.update({k: g[k] for k in ("r_gain", "sat", "water", "gy")})
         p2.output.encoder, p2.output.gpu_decode = "x264", False
         ff.render_video(p2, [Segment(src.id, int(round(srcf)), int(round(srcf)) + 2, 1.0)], str(ref), orientation="horizontal")
         a, b = mean_rgb(f, n, 1920, 1080), mean_rgb(ref, 0, 1920, 1080)
-        print(f"출력 {n:2d} 원본 {srcf:5.1f} 빨강 {g['r_gain']:.3f} 채도 {g['sat']:.3f}  키 렌더 {a.round(1)}  고정값 렌더 {b.round(1)}")
+        print(f"출력 {n:2d} 원본 {srcf:5.1f} 빨강 {g['r_gain']:.3f} 채도 {g['sat']:.3f} 물빛 {g['water']:.1f} 녹황 {g['gy']:.0f}  키 렌더 {a.round(1)}  고정값 렌더 {b.round(1)}")
         worst = max(worst, np.abs(a - b).max())
     r0, r1 = mean_rgb(f, 2, 1920, 1080)[0], mean_rgb(f, 50, 1920, 1080)[0]
     print("빨강 평균 시작→끝:", round(r0, 1), "→", round(r1, 1), "최대 차이", round(worst, 2))

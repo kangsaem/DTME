@@ -255,6 +255,11 @@ def curve_is_identity(curve) -> bool:
     return all(abs(x - y) < 1e-4 for x, y in curve)
 
 
+# 물빛 = 청록·녹색 범위만 색상 회전(+ = 파랑 쪽), 녹황 = 녹·황 범위만 채도 감소. 피부·산호(주황)는 거의 그대로(실측)
+WATER_OPT = "colors=c+g:strength=2"
+GY_OPT = "colors=g+y:strength=1.5"
+
+
 def grade_chain(g: dict, lut_file: str | None, width: int = 1920, named: bool = False) -> list[str]:
     """(YUV) 노이즈 → 밝기 샤픈·디헤이즈 → (RGB 16bit) LUT → R/B 게인 → 커브 → Hue → 채도
     named = 색 키프레임용: 게인·Hue·채도 필터를 항상 넣고 이름(@g)을 붙임 → sendcmd 로 프레임마다 값 변경."""
@@ -274,6 +279,11 @@ def grade_chain(g: dict, lut_file: str | None, width: int = 1920, named: bool = 
     hue = float(g.get("hue", 0))
     if abs(hue) > 1e-3:
         f.append(f"huesaturation=hue={hue:.2f}")
+    wt, gy = float(g.get("water", 0)), float(g.get("gy", 0))
+    if abs(wt) > 1e-3:
+        f.append(f"huesaturation={WATER_OPT}:hue={wt:.2f}")
+    if gy > 1e-3:
+        f.append(f"huesaturation={GY_OPT}:saturation={-gy / 100:.4f}")
     sat = float(g.get("sat", 1.0))
     if abs(sat - 1) > 1e-3:
         f.append(f"vibrance=intensity={max(-2.0, min(2.0, sat - 1)):.3f}")
@@ -289,6 +299,8 @@ def _grade_named(g, lut_file, width):
     if not curve_is_identity(curve):
         f.append(f"curves=m='{' '.join(f'{x:.4f}/{y:.4f}' for x, y in curve)}'")
     f.append(f"huesaturation@g=hue={float(g.get('hue', 0)):.2f}")
+    f.append(f"huesaturation@w={WATER_OPT}:hue={float(g.get('water', 0)):.2f}")
+    f.append(f"huesaturation@y={GY_OPT}:saturation={-float(g.get('gy', 0)) / 100:.4f}")
     f.append(f"vibrance@g=intensity={max(-2.0, min(2.0, float(g.get('sat', 1)) - 1)):.3f}")
     return f
 
@@ -303,12 +315,14 @@ def gkey_cmds(g: dict, seg: Segment, src: Source, n_out: int, frames_per_sec: fl
     for n in range(n_out):
         t = n / float(OUT_FPS)
         v = grade_at(g, seg.gkeys, seg.fin + t * frames_per_sec)
-        cur = (round(v["r_gain"], 4), round(v["b_gain"], 4), round(v["hue"], 2), round(max(-2, min(2, v["sat"] - 1)), 3))
+        cur = (round(v["r_gain"], 4), round(v["b_gain"], 4), round(v["hue"], 2), round(max(-2, min(2, v["sat"] - 1)), 3),
+               round(float(v.get("water", 0)), 2), round(-float(v.get("gy", 0)) / 100, 4))
         if cur == last:
             continue
         last = cur
         lines.append(f"{max(0.0, t - 0.25 / float(OUT_FPS)):.6f} [enter] colorchannelmixer@g rr {cur[0]}, "
-                     f"colorchannelmixer@g bb {cur[1]}, huesaturation@g hue {cur[2]}, vibrance@g intensity {cur[3]};")
+                     f"colorchannelmixer@g bb {cur[1]}, huesaturation@g hue {cur[2]}, vibrance@g intensity {cur[3]}, "
+                     f"huesaturation@w hue {cur[4]}, huesaturation@y saturation {cur[5]};")
     return "\n".join(lines) + "\n"
 
 
@@ -971,3 +985,34 @@ def grab_proxy_frame(proxy: str, fps: Fraction, frame: int) -> bytes:
     """전 프레임 키프레임 프록시라 한 장 디코딩이 빠름(수십 ms)."""
     return run([paths.ffmpeg(), "-v", "error", "-ss", _seek(frame, fps), "-i", _abs(proxy), "-frames:v", "1",
                 "-an", "-f", "image2pipe", "-c:v", "bmp", "-pix_fmt", "bgr24", "-"])
+
+
+# ------------------------------------------------------------------ 반반 샘플 파일 (왼쪽 원본 · 오른쪽 보정)
+def split_vf(g: dict, lut: str | None, orientation: str, size: int, fmt: str) -> str:
+    """filter_complex: 원본(Log)과 보정을 같은 크기로 → 왼쪽 반 원본 + 오른쪽 반 보정 + 가운데 흰 선."""
+    vert = is_vertical(orientation)
+    sc = f"scale=-2:{size}:flags=lanczos" if vert else f"scale={size}:-2:flags=lanczos"
+    lens = lens_chain(g)
+    pre = ",".join(lens + [crop_filter(orientation), sc])
+    grade = ",".join(grade_chain(g, lut, size * 9 // 16 if vert else size))
+    out = {"png16": SRGB_TAG + ",format=rgb48be", "jpg": "format=yuvj444p"}.get(fmt, SRGB_TAG + ",format=rgb24")
+    return (f"[0:v]{pre},split=2[sa][sb];[sa]format=gbrp16le,crop=trunc(iw/4)*2:ih:0:0[sl];"
+            f"[sb]{grade},format=gbrp16le,crop=iw-trunc(iw/4)*2:ih:trunc(iw/4)*2:0[sr];"
+            f"[sl][sr]hstack=2,drawbox=x=trunc(iw/4)*2-1:y=0:w=2:h=ih:color=white@0.9:t=fill,{out}[so]")
+
+
+def export_split(src: Source, frame: int, g: dict, out_file: str, size: int = 1920, fmt: str = "png8",
+                 orientation: str = "horizontal", gpu: bool = False) -> None:
+    """반반 샘플 1장 저장(png8 · png16 · jpg). 앞 3프레임을 넣어 시간축 노이즈 제거가 동작."""
+    cwd, lut = _lut_for(g)
+    lead = min(3, frame)
+    codec = (["-c:v", "mjpeg", "-q:v", "2"] if fmt == "jpg" else ["-c:v", "png", "-compression_level", "3"])
+    cmd = [paths.ffmpeg(), "-v", "error", "-y", *_hw(gpu), "-ss", _seek(frame - lead, src.fps), "-i", _abs(src.path),
+           "-frames:v", str(lead + 1), "-an", "-filter_complex", split_vf(g, lut, orientation, size, fmt), "-map", "[so]",
+           "-update", "1", *codec, _abs(out_file)]
+    try:
+        run(cmd, cwd=cwd)
+    except FFError:
+        if not gpu:
+            raise
+        run([c for c in cmd if c not in ("-hwaccel", "cuda")], cwd=cwd)

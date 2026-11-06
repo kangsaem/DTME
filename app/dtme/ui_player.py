@@ -30,6 +30,8 @@ class Monitor(QWidget):
     titlePressed = Signal(str)           # 타임라인 모드: 글자·이미지를 잡음(실행취소 지점)
     titleChanged = Signal()
     modeRequested = Signal(str)          # "source" | "timeline"
+    contrastRequested = Signal()         # RGB 그래프 [명암]
+    balanceRequested = Signal()          # RGB 그래프 [색 균형]
 
     HANDLE = 9
 
@@ -69,6 +71,7 @@ class Monitor(QWidget):
         self._tdrag = None
         self._build_zoom_ui()
         self._build_mode_ui()
+        self._build_scope_ui()
         self.setMouseTracking(True)
 
     # ---------------------------------------------------------------- [소스 | 타임라인]
@@ -212,6 +215,37 @@ class Monitor(QWidget):
     def resizeEvent(self, e):
         super().resizeEvent(e)
         self.zbox.move(self.width() - self.zbox.width() - 8, self.height() - self.zbox.height() - 8)
+        self._place_scope_ui()
+
+    # ---------------------------------------------------------------- RGB 그래프 [명암] [색 균형]
+    def _build_scope_ui(self):
+        from PySide6.QtWidgets import QHBoxLayout, QPushButton
+        self.sbox = QWidget(self)
+        lay = QHBoxLayout(self.sbox)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(3)
+        css = ("QPushButton{background:rgba(40,40,40,235); color:#e6e6e6; border:1px solid #555; border-radius:3px;"
+               "font-size:11px; padding:0 8px;}")
+        for t, tip, sig in (("명암", "양끝을 목표선(5%·95%)에 맞춤", self.contrastRequested),
+                            ("색 균형", "중간 밝기에서 빨강·파랑을 초록에 맞춘 뒤 물빛만 파랑", self.balanceRequested)):
+            b = QPushButton(t)
+            b.setFixedSize(56, 22)
+            b.setStyleSheet(css)
+            b.setToolTip(tip)
+            b.setFocusPolicy(Qt.NoFocus)
+            b.clicked.connect(sig.emit)
+            lay.addWidget(b)
+        self.sbox.adjustSize()
+        self.sbox.hide()
+
+    def _scope_box(self) -> QRectF:
+        w, h = max(180, self.width() * 0.24), max(92, self.height() * 0.22)
+        return QRectF(self.width() - w - 8, 8, w, h)
+
+    def _place_scope_ui(self):
+        b = self._scope_box()
+        self.sbox.move(int(b.right() - self.sbox.width()), int(b.bottom() + 3))
+        self.sbox.setVisible(bool(self.scope))
 
     def _fit_rect(self):
         if self.img is None or self.img.isNull():
@@ -291,9 +325,11 @@ class Monitor(QWidget):
         self.before = img
         self.update()
 
-    def set_scope(self, on):
-        self.scope = on
+    def set_scope(self, mode):
+        """0 끔 · 1 겹침(채널 히스토그램) · 2 파레이드(R·G·B 3칸, 세로 = 밝기). True = 1."""
+        self.scope = int(mode)
         self._scope_data = None
+        self._place_scope_ui()
         self.update()
 
     def set_pick(self, on):
@@ -549,28 +585,81 @@ class Monitor(QWidget):
         self._paint_titles(p)
         self._paint_scope(p)
 
+    def _scope_calc(self):
+        import numpy as np
+        from . import auto
+        im = self.img.scaled(320, 180, Qt.IgnoreAspectRatio, Qt.FastTransformation).convertToFormat(QImage.Format_RGB888)
+        a = np.frombuffer(im.constBits(), np.uint8, im.bytesPerLine() * im.height()).reshape(im.height(), im.bytesPerLine())
+        a = a[:, :im.width() * 3].reshape(im.height(), im.width(), 3)
+        marks = auto.range_marks(a.astype(np.float32) / 255)
+        if self.scope == 2:      # 파레이드: 칸마다 (열 80 × 밝기 64) 점 밀도
+            cols, bins = 80, 64
+            out = np.zeros((bins, cols * 3 + 4, 4), np.uint8)
+            xi = (np.arange(a.shape[1]) * cols // a.shape[1])
+            for c, rgb in enumerate(((229, 72, 77), (95, 209, 122), (74, 143, 224))):
+                v = (a[:, :, c].astype(np.int32) * bins // 256)
+                h = np.zeros((bins, cols), np.float32)
+                np.add.at(h, (bins - 1 - v.reshape(-1), np.tile(xi, a.shape[0])), 1)
+                al = np.clip(np.sqrt(h / max(1.0, np.percentile(h[h > 0], 95) if (h > 0).any() else 1)) * 255, 0, 255)
+                x0 = c * (cols + 2)
+                out[:, x0:x0 + cols, 0], out[:, x0:x0 + cols, 1], out[:, x0:x0 + cols, 2] = rgb[2], rgb[1], rgb[0]
+                out[:, x0:x0 + cols, 3] = al.astype(np.uint8)
+            qi = QImage(out.tobytes(), out.shape[1], bins, out.shape[1] * 4, QImage.Format_ARGB32).copy()
+            return ("parade", qi, marks)
+        hs = [np.histogram(a[:, :, c], bins=64, range=(0, 256))[0].astype(float) for c in range(3)]
+        m = max(1.0, max(h[1:-1].max() for h in hs))
+        return ("hist", [np.minimum(1.0, h / m) for h in hs], marks)
+
     def _paint_scope(self, p: QPainter):
-        """RGB 파형(채널별 밝기 분포). 오른쪽 위 작은 창."""
+        """RGB 그래프(오른쪽 위). 목표선 5%·95%(점선), 끝에 붙어 뭉개지면 빨강 점 · 목표선까지 못 가면 파랑 점."""
         if not self.scope or self.img is None or self.img.isNull():
             return
-        if self._scope_data is None:
-            import numpy as np
-            im = self.img.scaled(320, 180, Qt.IgnoreAspectRatio, Qt.FastTransformation).convertToFormat(QImage.Format_RGB888)
-            a = np.frombuffer(im.constBits(), np.uint8, im.bytesPerLine() * im.height()).reshape(im.height(), im.bytesPerLine())
-            a = a[:, :im.width() * 3].reshape(im.height(), im.width(), 3)
-            hs = [np.histogram(a[:, :, c], bins=64, range=(0, 256))[0].astype(float) for c in range(3)]
-            m = max(1.0, max(h[1:-1].max() for h in hs))
-            self._scope_data = [np.minimum(1.0, h / m) for h in hs]
-        w, h = max(160, self.width() * 0.22), max(84, self.height() * 0.2)
-        box = QRectF(self.width() - w - 8, 8, w, h)
+        if self._scope_data is None or self._scope_data[0] != ("parade" if self.scope == 2 else "hist"):
+            self._scope_data = self._scope_calc()
+        kind, data, marks = self._scope_data
+        box = self._scope_box()
         p.fillRect(box, QColor(10, 10, 10, 215))
         p.setPen(QPen(QColor(70, 70, 70), 1))
+        p.setBrush(Qt.NoBrush)          # 반반 손잡이가 남긴 흰 붓으로 칠해지지 않게
         p.drawRect(box)
         from PySide6.QtGui import QPolygonF
-        for hist, col in zip(self._scope_data, ("#e5484d", "#5fd17a", "#4a8fe0")):
-            pts = [QPointF(box.left() + i / 63 * box.width(), box.bottom() - 2 - v * (box.height() - 6)) for i, v in enumerate(hist)]
-            p.setPen(QPen(QColor(col), 1.5))
-            p.drawPolyline(QPolygonF(pts))
+        inner = box.adjusted(3, 3, -3, -3)
+        guide = QPen(QColor(255, 255, 255, 90), 1, Qt.DashLine)
+        dot = {"over": QColor("#e5484d"), "short": QColor("#4a8fe0")}
+        p.setRenderHint(QPainter.Antialiasing, True)
+        if kind == "parade":
+            p.drawImage(inner, data)
+            pw = inner.width() / 3
+            for c in range(3):
+                x0 = inner.left() + c * pw
+                p.setPen(guide)
+                for frac in (0.05, 0.95):
+                    y = inner.bottom() - frac * inner.height()
+                    p.drawLine(QPointF(x0 + 1, y), QPointF(x0 + pw - 2, y))
+                top, bot = marks[c]
+                p.setPen(Qt.NoPen)
+                for st, y in ((top, inner.top() + 3), (bot, inner.bottom() - 3)):
+                    if st:
+                        p.setBrush(dot[st])
+                        p.drawEllipse(QPointF(x0 + pw / 2, y), 3, 3)
+        else:
+            p.setPen(guide)
+            for frac in (0.05, 0.95):
+                x = inner.left() + frac * inner.width()
+                p.drawLine(QPointF(x, inner.top()), QPointF(x, inner.bottom()))
+            for hist, col in zip(data, ("#e5484d", "#5fd17a", "#4a8fe0")):
+                pts = [QPointF(inner.left() + i / 63 * inner.width(), inner.bottom() - v * (inner.height() - 4)) for i, v in enumerate(hist)]
+                p.setPen(QPen(QColor(col), 1.5))
+                p.drawPolyline(QPolygonF(pts))
+            # 겹침: 세 채널 중 가장 나쁜 것 하나(뭉개짐 우선)
+            p.setPen(Qt.NoPen)
+            for i, x in ((0, inner.right() - 4), (1, inner.left() + 4)):
+                sts = [m[i] for m in marks]
+                st = "over" if "over" in sts else "short" if "short" in sts else ""
+                if st:
+                    p.setBrush(dot[st])
+                    p.drawEllipse(QPointF(x, inner.bottom() - 4), 3, 3)
+        p.setRenderHint(QPainter.Antialiasing, False)
 
     def _paint_layers(self, p: QPainter):
         """이미지 레이어(보정 없음, 투명 그대로). 출력 화면 밖은 잘림. 선택한 레이어는 테두리·모서리."""

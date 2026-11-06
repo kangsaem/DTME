@@ -82,8 +82,10 @@ class CurveEditor(QWidget):
 
     # ------------------------------------------------------------ 좌표
     def _area(self):
-        s = min(self.width(), self.height()) - 2 * self.R - 2
-        return QRectF((self.width() - s) / 2, (self.height() - s) / 2, s, s)
+        # 폭 전체 사용(높이가 낮은 노트북 화면에서도 조작하기 쉽게)
+        h = self.height() - 2 * self.R - 2
+        w = self.width() - 2 * self.R - 2
+        return QRectF((self.width() - w) / 2, (self.height() - h) / 2, w, h)
 
     def _to_px(self, x, y):
         a = self._area()

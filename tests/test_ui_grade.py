@@ -40,9 +40,9 @@ e._select_source(b.id); wait(1.0)
 gp._clear_all(); wait(0.2)
 for i in range(e.src_list.count()): e.src_list.item(i).setSelected(True)
 print("선택:", len(e._selected_sids()))
-gp._apply_preset(gp.preset.findData("잭피쉬 20m")); wait(0.3)
+gp._apply_preset("잭피쉬 20m"); wait(0.3)
 ga, gb = st.project.grade_for_source(a.id), st.project.grade_for_source(b.id)
-print("적용 후 채도/디헤이즈:", ga["sat"], ga["dehaze"], "/", gb["sat"], gb["dehaze"], "태그", e._tag(a.id), e._tag(b.id))
+print("적용 후 채도/디헤이즈:", ga["sat"], ga["dehaze"], "/", gb["sat"], gb["dehaze"], "태그", e._tag(a.id), e._tag(b.id), gp.preset.text())
 assert ga["sat"] == gb["sat"] == 1.4 and ga["dehaze"] == gb["dehaze"] == 30
 # 흰색 찍기
 e._select_source(a.id); wait(1.5); e.player.seek(100); wait(1.5)

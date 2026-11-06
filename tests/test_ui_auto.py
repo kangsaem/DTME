@@ -1,0 +1,126 @@
+"""AUTO 창 · 프리셋 창 · RGB 그래프 도움 · 반반 샘플 화면 점검(오프스크린).
+사용: python tests/test_ui_auto.py <4K테스트.mp4> <작업폴더>   (합성 수중 영상은 test_auto 와 같은 방식으로 만듦)"""
+import os, sys, time, shutil
+from pathlib import Path
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "app"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+os.environ["QT_QPA_PLATFORM"] = "offscreen"; os.environ["DTME_NO_AUDIO"] = "1"
+from PySide6.QtWidgets import QApplication, QDialog
+import main as M
+import test_auto as TA
+from dtme import paths, ui_auto
+from dtme.ui_main import MainWindow
+T4K, WORK = sys.argv[1:3]
+work = Path(WORK); work.mkdir(parents=True, exist_ok=True)
+shutil.rmtree(paths.app_dir() / "presets", ignore_errors=True)
+app = QApplication(sys.argv); M.dark(app)
+w = MainWindow(); w.resize(1536, 834); w.show()
+
+
+def wait(sec, cond=None):
+    t = time.time()
+    while time.time() - t < sec:
+        app.processEvents(); time.sleep(0.02)
+        if cond and cond(): return True
+    return False
+
+
+st, e, gp = w.state, w.edit, w.edit.grade
+v1 = TA.make_video(work / "shallow.mp4", ["shallow", "shallow"], 2.0)
+v2 = TA.make_video(work / "deep.mp4", ["deep", "deep"], 2.0)
+v3 = TA.make_video(work / "change.mp4", ["shallow", "deep", "deep", "shallow"], 2.0)
+e.import_files([v1.path, v2.path, v3.path, T4K])
+assert wait(120, lambda: len(st.project.sources) == 4 and all(st.status.get(s.id) == "준비" for s in st.project.sources))
+p = st.project
+p.grade["lut"] = ""                      # 합성 영상은 Log 가 아님
+p.output.encoder, p.output.gpu_decode = "x264", False
+a, b, c, d = p.sources
+# 4K 테스트 영상은 미리 손보정(C) → '기존 보정 유지' 면 제외
+d.grade = {"r_gain": 1.3}
+
+# ---------------- AUTO 창: 분석 · 인식 · 직접 지정 · 개별 보정
+dlg = e.make_auto_dialog(); dlg.show()
+print("체크:", [r.checked for r in dlg.rows], "(C 인 4번째는 제외)")
+assert [r.checked for r in dlg.rows] == [True, True, True, False]
+assert wait(120, lambda: not dlg.pending())
+for r in dlg.rows[:3]:
+    print("  인식:", r.rec, "→", r.result["preset"], "키", len(r.result["gkeys"].get("r_gain", [])), dlg.row_text(r))
+assert dlg.rows[0].result["scene"] == "shallow" and dlg.rows[1].result["scene"] == "deep" and dlg.rows[2].result["gkeys"]
+# 2번째 줄 선택 → 깊은 수심 · 거북이 직접 지정, 출력 세로
+dlg.list.setCurrentRow(1); wait(0.1)
+dlg.grid.btns["deep/turtle"].click(); dlg.out.btns["vertical"].click(); wait(0.1)
+lab, fixed, sub = dlg.row_text(dlg.rows[1])
+print("직접 지정:", lab, fixed, sub, dlg.rows[1].out)
+assert lab == "깊은 수심 · 거북이" and fixed and dlg.rows[1].out == "vertical"
+print("세부 정보:", dlg.detail.title.text(), dlg.detail.vals["r_gain"].text(), dlg.detail.vals["gy"].text())
+# 기존 보정 무시 → 4번째도 체크
+dlg.keep.btns["drop"].click(); wait(0.1); assert dlg.rows[3].checked
+dlg.keep.btns["keep"].click(); wait(0.1); assert not dlg.rows[3].checked
+dlg.keys.btns["auto"].click(); dlg.after.btns["each"].click()
+dlg.name.setText("BOHOL"); wait(0.1); print("이름 예:", dlg.name_eg.text())
+dlg.grab().save(str(work / "shot_auto.png"))
+# [샘플]: 저장 창 대신 설정 직접
+ui_auto.SampleDialog.exec = lambda self: QDialog.Accepted
+ui_auto.SampleDialog.folder_text = None
+sdir = work / "samples"; shutil.rmtree(sdir, ignore_errors=True)
+orig_init = ui_auto.SampleDialog.__init__
+def init(self, name, folder, parent=None):
+    orig_init(self, name, str(sdir), parent)
+    self.size.btns["1280"].click(); self.fmt.btns["jpg"].click(); self.att["preset"].setChecked(True)
+ui_auto.SampleDialog.__init__ = init
+e._auto_sample(dlg)
+assert wait(240, lambda: sdir.exists() and len(list(sdir.glob("*.jpg"))) >= 18 and not dlg.busy)
+names = sorted(x.name for x in sdir.glob("*.jpg"))
+print("샘플:", len(names), names[:2], "… 클립 값 그대로:", a.grade == {})
+assert len(names) == 18 and a.grade == {} and names[0].startswith("BOHOL_")
+# [시작] 개별 보정
+e._ask_folder = lambda title="": str(work / "out")
+e._auto_start(dlg); wait(1)
+print("적용:", [(s.auto.get("preset"), s.auto.get("by"), len(s.gkeys.get("r_gain", [])), s.out) for s in (a, b, c)])
+assert a.auto["preset"] == "shallow/fish" and b.auto == {**b.auto, "preset": "deep/turtle", "by": "user"} and b.out == "vertical"
+assert c.gkeys and d.grade == {"r_gain": 1.3} and p.output.prefix == "BOHOL"
+assert gp.view_mode() == "split"
+w.undo(); wait(0.5); print("실행취소 → 값 없음:", st.project.sources[0].grade == {}); assert st.project.sources[0].grade == {}
+w.redo = None
+p = st.project; a, b, c, d = p.sources
+
+# ---------------- AUTO 바로 렌더 (2개만)
+dlg2 = e.make_auto_dialog(); dlg2.show()
+dlg2.rows[2].checked = False
+dlg2.after.btns["render"].click()
+assert wait(60, lambda: not dlg2.pending())
+e._auto_start(dlg2)
+assert wait(300, lambda: not e.render_panel.running and len(list((work / "out").glob("*.mp4"))) >= 2)
+outs = sorted(x.name for x in (work / "out").glob("*.mp4"))
+print("렌더:", outs, "막대 숨김:", not e.auto_bar.isVisible())
+assert len(outs) == 2
+w.grab().save(str(work / "shot_main_auto.png"))
+
+# ---------------- 보정 탭 프리셋 창(고정값) · 추천(자동)
+e._select_source(p.sources[1].id); wait(1.0)
+gp.apply_choice("night", "mid"); wait(0.3)
+g = p.grade_for_source(p.sources[1].id)
+print("프리셋 야간:", g["r_gain"], g["water"], g["nr_chroma"], gp.preset.text())
+assert g["water"] == 0 and "야간" in gp.preset.text()
+pd = ui_auto.PresetDialog(p.grade, "night", "mid", gp); pd.show(); wait(0.2)
+pd.grid.hovered.emit("deep/diver"); wait(0.1); print("프리셋 창 세부:", pd.detail.title.text(), pd.detail.vals["r_gain"].text())
+pd.grab().save(str(work / "shot_preset.png")); pd.close()
+gp.apply_choice("auto", "strong")
+assert wait(60, lambda: "추천 →" in e.status.text())
+print("추천:", e.status.text()[-40:], p.sources[1].auto)
+# 물빛·녹황 슬라이더 표시
+print("물빛/녹황 슬라이더:", gp.sliders["water"].value(), gp.sliders["gy"].value())
+# ---------------- RGB: 겹침 → 파레이드 → 끔, [명암] [색 균형]
+e.player.seek(30); wait(2)
+gp.rgb.click(); wait(0.3); assert e.player.mon.scope == 1 and e.player.mon.sbox.isVisible()
+gp.rgb.click(); wait(1.0); assert e.player.mon.scope == 2
+w.grab().save(str(work / "shot_parade.png"))
+e.fix_contrast(); assert wait(20, lambda: "명암 →" in e.status.text())
+cv = p.grade_for_source(p.sources[1].id)["curve"]; print("명암 커브:", cv)
+e.fix_balance(); assert wait(20, lambda: "색 균형 →" in e.status.text()); print(e.status.text()[-30:])
+gp.rgb.click(); wait(0.2); assert e.player.mon.scope == 0 and not e.player.mon.sbox.isVisible()
+# ---------------- 반반 샘플 타일
+gp.make_samples(); assert wait(30, lambda: len(gp.pix) >= 6)
+print("샘플 타일:", len(gp.pix))
+w.grab().save(str(work / "shot_samples.png"))
+print("UI AUTO OK")

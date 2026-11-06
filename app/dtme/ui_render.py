@@ -4,7 +4,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QAction, QColor
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QFileDialog, QFormLayout, QListWidget,
                                QListWidgetItem, QStyle, QStyledItemDelegate,
@@ -185,7 +185,7 @@ class RenderDelegate(QStyledItemDelegate):
         p.save()
         p.setRenderHint(QPainter.Antialiasing)
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor("#c9c9c9") if done else QColor("#7a2a22") if failed else QColor("#3c3c3c"))
+        p.setBrush(QColor("#6b6b6b") if done else QColor("#7a2a22") if failed else QColor("#3c3c3c"))
         p.drawRoundedRect(r, 3, 3)
         if not done and not failed and frac > 0:
             pr = QRectF(r)
@@ -196,19 +196,26 @@ class RenderDelegate(QStyledItemDelegate):
             p.setPen(QPen(QColor("#4a8fe0"), 2))
             p.setBrush(Qt.NoBrush)
             p.drawRoundedRect(r.adjusted(1, 1, -1, -1), 3, 3)
-        p.setPen(QColor("#111") if done else QColor("#e6e6e6"))
+        p.setPen(QColor("#f2f2f2") if done else QColor("#e6e6e6"))
         f = p.font()
         f.setBold(True)
         p.setFont(f)
-        p.drawText(r.adjusted(10, 0, -6, 0), Qt.AlignVCenter | Qt.AlignLeft, index.data(Qt.DisplayRole))
+        info = index.data(Qt.UserRole + 1) or ""
         f.setBold(False)
         p.setFont(f)
-        p.drawText(r.adjusted(10, 0, -8, 0), Qt.AlignVCenter | Qt.AlignRight, index.data(Qt.UserRole + 1) or "")
+        iw = p.fontMetrics().horizontalAdvance(info)
+        p.drawText(r.adjusted(10, 0, -8, 0), Qt.AlignVCenter | Qt.AlignRight, info)
+        f.setBold(True)
+        p.setFont(f)
+        avail = int(r.width() - iw - 26)          # 이름이 길면 … (길이 글자와 겹치지 않게)
+        p.drawText(r.adjusted(10, 0, -6, 0), Qt.AlignVCenter | Qt.AlignLeft,
+                   p.fontMetrics().elidedText(index.data(Qt.DisplayRole), Qt.ElideRight, max(20, avail)))
         p.restore()
 
 
 class RenderPanel(QWidget):
     """렌더 설정 + 렌더 리스트(바) + 빨간 렌더 버튼."""
+    itemProgress = Signal(str, float, bool)       # (항목 id, 진행 0~1, 렌더 계속 중)
 
     def __init__(self, state, parent=None):
         super().__init__(parent)
@@ -257,13 +264,11 @@ class RenderPanel(QWidget):
         self.b_set.setToolTip("렌더 설정")
         self.b_set.setFocusPolicy(Qt.NoFocus)
         self.b_set.clicked.connect(lambda: (self.settings._load(), self.dlg.exec()))
-        self.b_render.setMaximumWidth(16777215)
-        self.b_render.setMinimumWidth(MAIN_W)
         top = QHBoxLayout()
         top.setSpacing(4)
         top.addWidget(self.b_prev, 1)
         top.addWidget(self.b_set)
-        top.addWidget(self.b_render, 1)
+        top.addWidget(self.b_render)
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 4, 0, 0)
@@ -378,16 +383,19 @@ class RenderPanel(QWidget):
         def prog(v, iid=it.id):
             self.progress[iid] = v
             self._repaint()
+            self.itemProgress.emit(iid, v, True)
 
         def done(_r, iid=it.id):
             self.status[iid] = f"완료 {time.time() - t0:.0f}초 → {path}"
             self.refresh()
+            self.itemProgress.emit(iid, 1.0, bool(self.queue))
             self._next()
 
         def err(msg, iid=it.id):
             hint = " (인코더를 x264로)" if "nvenc" in msg.lower() else ""
             self.status[iid] = f"실패{hint}: {msg[-300:]}"
             self.refresh()
+            self.itemProgress.emit(iid, 1.0, bool(self.queue))
             self._next()
 
         job.signals.progress.connect(prog)

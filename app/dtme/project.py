@@ -27,7 +27,7 @@ NR_LEVELS = ["off", "weak", "mid", "strong"]   # strong 은 스틸 전용
 # 옛 디노이즈 단계 → (색 노이즈, 밝기 노이즈) 0~100
 NR_LEGACY = {"off": (0, 0), "weak": (60, 25), "mid": (80, 45), "strong": (100, 70)}
 
-GRADE_KEYS = ["lut", "r_gain", "b_gain", "hue", "sat", "curve", "nr_chroma", "nr_luma", "sharpen", "dehaze", "lens", "stab"]
+GRADE_KEYS = ["lut", "r_gain", "b_gain", "hue", "sat", "water", "gy", "curve", "nr_chroma", "nr_luma", "sharpen", "dehaze", "lens", "stab"]
 
 # 출력: orientation 값 하나로 방향·크기를 함께 나타냄
 OUTPUTS = [("horizontal", "1920×1080"), ("horizontal1440", "2560×1440"), ("horizontal2160", "3840×2160"),
@@ -42,6 +42,8 @@ FACTORY_GRADE = {
     "b_gain": 1.05,
     "hue": 5.0,
     "sat": 1.0,          # 채도(vibrance 방식: 진한 색은 덜 올림) 0~2
+    "water": 0,          # 물빛: 청록·녹색 범위만 파랑 쪽으로(°) −10~40
+    "gy": 0,             # 녹황: 녹·황 채도만 줄임 0~100
     "curve": [[0.0, 0.0], [1.0, 1.0]],
     "nr_chroma": 25,     # 색 노이즈(푸른 물속의 보라·빨강 점) 0~100
     "nr_luma": 25,       # 밝기 노이즈 0~100
@@ -174,6 +176,8 @@ class Source:
     reframe: list = field(default_factory=list)  # 세로 크롭 키프레임 [{"f": 프레임, "dx": 원본 px}] (프레임 순)
     gkeys: dict = field(default_factory=dict)    # 색 키프레임 {"r_gain": [{"f", "v"}], …} (KEYABLE 만)
     stars: list = field(default_factory=list)    # ★ 장면 표시(프레임)
+    auto: dict = field(default_factory=dict)     # AUTO·프리셋 기록 {"preset": 키, "by": "auto"|"user", "rec": 인식 키, "nkeys": n}
+    out: str = ""                                # AUTO 전체렌더 출력(orientation). "" = 프로젝트 출력
     id: str = field(default_factory=_id)
 
     @property
@@ -231,7 +235,7 @@ def ease(u: float) -> float:
     return u * u * (3 - 2 * u)
 
 
-KEYABLE = ["r_gain", "b_gain", "hue", "sat"]     # 시간에 따라 바뀌는 보정(◆)
+KEYABLE = ["r_gain", "b_gain", "hue", "sat", "water", "gy"]     # 시간에 따라 바뀌는 보정(◆)
 
 
 def key_at(keys: list, f: float, field_: str = "v") -> float | None:
@@ -466,7 +470,7 @@ class Project:
     @classmethod
     def from_dict(cls, d: dict) -> "Project":
         p = cls()
-        p.sources = [Source(**s) for s in d.get("sources", [])]
+        p.sources = [Source(**{k: v for k, v in s.items() if k in Source.__dataclass_fields__}) for s in d.get("sources", [])]
         p.images = [ImageSource(**m) for m in d.get("images", [])]
         for s in p.sources:
             upgrade_grade(s.grade)

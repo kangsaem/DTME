@@ -7,13 +7,13 @@ from pathlib import Path
 
 from PySide6.QtCore import QEvent, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QImage, QImageReader, QPainter, QPen, QPixmap
-from PySide6.QtWidgets import (QAbstractSpinBox, QApplication, QButtonGroup, QCheckBox, QFileDialog, QFrame,
+from PySide6.QtWidgets import (QAbstractSpinBox, QApplication, QButtonGroup, QCheckBox, QDialog, QFileDialog, QFrame,
                                QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
                                QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSlider,
                                QSplitter, QStyle, QStyledItemDelegate, QTextEdit, QVBoxLayout, QWidget)
 
 from . import ff, jobs
-from .project import (MAX_LAYERS, TITLE_DEFAULT_SEC, Marker, RenderItem, Segment, display_name, new_layer,
+from .project import (MAX_LAYERS, TITLE_DEFAULT_SEC, Marker, RenderItem, Segment, display_name, grade_at, new_layer,
                       new_music, new_text, new_title_image, reframe_at, reframe_max, short_name,
                       speed_label, timecode)
 from .state import AppState
@@ -62,20 +62,28 @@ class SourceDelegate(QStyledItemDelegate):
         return QSize(option.rect.width(), 30)
 
     def paint(self, p: QPainter, option, index):
+        from .ui_auto import AUTO_FILL, LIST_BG, LIST_DIM, SUB, YELLOW, short_preset
         sid = index.data(Qt.UserRole)
         st = self.tab.state.status.get(sid, "")
         pct = self.tab.state.proxy_pct.get(sid, 0.0)
         ready = st == "준비"
+        src = self.tab.state.project.source(sid)
         r = QRectF(option.rect).adjusted(2, 2, -2, -2)
         p.save()
         p.setRenderHint(QPainter.Antialiasing)
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor("#c9c9c9") if ready else QColor("#3c3c3c"))
+        p.setBrush(QColor(LIST_BG) if ready else QColor(LIST_DIM))
         p.drawRoundedRect(r, 3, 3)
         if not ready and pct > 0:
             pr = QRectF(r)
             pr.setWidth(r.width() * pct)
-            p.setBrush(QColor("#6a6a6a"))
+            p.setBrush(QColor("#555555"))
+            p.drawRoundedRect(pr, 3, 3)
+        ap = self.tab.auto_prog.get(sid)          # AUTO 분석(파랑 기운) / 렌더(빨강 기운) 진행
+        if ap and 0 < ap[0] < 1:
+            pr = QRectF(r)
+            pr.setWidth(r.width() * ap[0])
+            p.setBrush(QColor(AUTO_FILL if ap[1] == "auto" else "#8a5a54"))
             p.drawRoundedRect(pr, 3, 3)
         if st in ("읽기 오류", "원본 없음", "프록시 오류"):
             p.setBrush(QColor("#7a2a22"))
@@ -84,11 +92,45 @@ class SourceDelegate(QStyledItemDelegate):
             p.setPen(QPen(QColor("#4a8fe0"), 2))
             p.setBrush(Qt.NoBrush)
             p.drawRoundedRect(r.adjusted(1, 1, -1, -1), 3, 3)
-        p.setPen(QColor("#111") if ready else QColor("#dddddd"))
         f = p.font()
         f.setBold(True)
         p.setFont(f)
-        p.drawText(r.adjusted(10, 0, -6, 0), Qt.AlignVCenter | Qt.AlignLeft, index.data(Qt.DisplayRole))
+        fm = p.fontMetrics()
+        name = index.data(Qt.DisplayRole)
+        nw = fm.horizontalAdvance(name)
+        p.setPen(QColor("#f2f2f2") if ready else QColor("#dddddd"))
+        p.drawText(r.adjusted(10, 0, -6, 0), Qt.AlignVCenter | Qt.AlignLeft, name)
+        # 오른쪽: C · ◆n · 프리셋(직접 = 흰색, 자동 = 흐린 흰색). 좁으면 프리셋만 …
+        if src is not None:
+            f.setBold(False)
+            p.setFont(f)
+            fm = p.fontMetrics()
+            x = r.right() - 6
+            rec = src.auto or {}
+            label = short_preset(rec)
+            left = r.left() + 10 + nw + 8
+            parts = []
+            if src.grade or src.gkeys:
+                parts.append(("C", YELLOW))
+            nk = len({k["f"] for ks in src.gkeys.values() for k in ks}) if src.gkeys else 0
+            if nk:
+                parts.append((f"◆{nk}", YELLOW))
+            fixed_w = sum(fm.horizontalAdvance(t) + 5 for t, _c in parts)
+            if label:
+                avail = int(x - left - fixed_w)
+                if avail > 16:
+                    t = fm.elidedText(label, Qt.ElideRight, avail)
+                    w = fm.horizontalAdvance(t)
+                    p.setPen(QColor("#ffffff" if rec.get("by") == "user" else SUB))
+                    p.drawText(QRectF(x - w, r.top(), w + 1, r.height()), Qt.AlignVCenter, t)
+                    x -= w + 5
+            for t, c in reversed(parts):
+                w = fm.horizontalAdvance(t)
+                if x - w < left:
+                    break
+                p.setPen(QColor(c))
+                p.drawText(QRectF(x - w, r.top(), w + 1, r.height()), Qt.AlignVCenter, t)
+                x -= w + 5
         p.restore()
 
 
@@ -145,6 +187,8 @@ class EditTab(QWidget):
         self._tl_img_cache = {}
         self._music_player = None
         self.pgen = 0
+        self.auto_prog: dict[str, tuple] = {}      # sid → (진행 0~1, "auto"|"render")
+        self._auto_items: set = set()               # AUTO 가 넣은 렌더 항목
 
         # ================= 소스
         self.src_list = QListWidget()
@@ -178,8 +222,23 @@ class EditTab(QWidget):
         self.load_bar = QProgressBar()
         self.load_bar.setTextVisible(False)
         self.load_bar.setFixedHeight(6)
+        from .ui_auto import RED_BTN, main_button
+        self.b_auto = main_button("AUTO", RED_BTN)
+        self.b_auto.setToolTip("전체 자동 보정 · 렌더")
+        self.b_auto.clicked.connect(self.open_auto)
+        self.auto_bar = QProgressBar()
+        self.auto_bar.setTextVisible(False)
+        self.auto_bar.setFixedHeight(3)
+        self.auto_bar.setVisible(False)
+        ab = QHBoxLayout()
+        ab.addStretch(1)
+        ab.addWidget(self.b_auto)
+        ab.addStretch(1)
         left = QVBoxLayout()
         left.setContentsMargins(0, 0, 0, 0)
+        left.setSpacing(3)
+        left.addLayout(ab)
+        left.addWidget(self.auto_bar)
         left.addWidget(self.src_list, 3)
         left.addWidget(self.img_list, 1)
         left.addWidget(self.mus_list, 1)
@@ -346,6 +405,9 @@ class EditTab(QWidget):
         self.grade.sampleClicked.connect(self._show_sample)
         self.grade.targets_fn = self._selected_sids
         self.grade.keysChanged.connect(self._refresh_marks)
+        self.grade.message.connect(lambda t, c: self._say(t, c))
+        self.player.mon.contrastRequested.connect(self.fix_contrast)
+        self.player.mon.balanceRequested.connect(self.fix_balance)
         self.sbar.gkeyDeleteRequested.connect(self._delete_gkeys)
         self.player.mon.whitePicked.connect(self._white_picked)
         self.player.mon.modeRequested.connect(self.set_mode)
@@ -358,6 +420,7 @@ class EditTab(QWidget):
         self.player.mon.viewChanged.connect(self._zoom_timer.start)
         self.zgen = 0
         self.render_panel = RenderPanel(state)
+        self.render_panel.itemProgress.connect(self._render_progress)
 
         # 3열: 보정 | 모니터·타임라인 | 소스·렌더
         rw = QWidget()
@@ -583,7 +646,7 @@ class EditTab(QWidget):
         for s in p.sources:
             it = QListWidgetItem(display_name(s.path))
             it.setData(Qt.UserRole, s.id)
-            it.setToolTip(s.path)
+            it.setToolTip(self._src_tip(s))
             self.src_list.addItem(it)
             if s.id == self.cur_sid:
                 sel = it
@@ -605,7 +668,7 @@ class EditTab(QWidget):
             if it.data(Qt.UserRole) == sid:
                 s = self.state.project.source(sid)
                 err = self.state.errors.get(sid, "")
-                tip = s.path if s else ""
+                tip = self._src_tip(s) if s else ""
                 if err:
                     tip += f"\n{self.state.status.get(sid, '')} — 클릭하면 다시 시도\n{err[-400:]}"
                 it.setToolTip(tip)
@@ -1052,6 +1115,8 @@ class EditTab(QWidget):
             self._apply_aspect()
         if what in ("project", "undo", "sources", "segments", "grade", "output"):
             self._refresh_timeline()
+        if what in ("grade", "undo", "project"):
+            self._refresh_tips()
         if what == "markers":
             self._refresh_sbar()
 
@@ -1514,6 +1579,248 @@ class EditTab(QWidget):
         self.state.checkpoint()
         p.music.append(new_music(a["path"], t0, a["dur"]))
         self.state.touch("titles")
+
+    # ================================================================ 소스 줄 툴팁(프리셋 · 인식 · 출력)
+    def _src_tip(self, s):
+        from . import auto
+        from .ui_auto import OUT_SHORT, preset_name
+        rec = s.auto or {}
+        lines = [s.path]
+        if preset_name(rec):
+            lines.append(f"{preset_name(rec)} ({'직접' if rec.get('by') == 'user' else '자동'})")
+        if rec.get("rec") and rec.get("rec") != rec.get("preset"):
+            lines.append(f"인식: {auto.preset_label(rec['rec'])}")
+        if s.out:
+            lines.append(f"출력 {OUT_SHORT.get(s.out, '')}")
+        return "\n".join(lines)
+
+    def _refresh_tips(self):
+        for i in range(self.src_list.count()):
+            it = self.src_list.item(i)
+            s = self.state.project.source(it.data(Qt.UserRole))
+            if s and not self.state.errors.get(s.id):
+                it.setToolTip(self._src_tip(s))
+        self.src_list.viewport().update()
+
+    # ================================================================ RGB 그래프 도움: [명암] [색 균형]
+    def _frame_array(self, g, done):
+        s = self._cur()
+        if not s or not s.frames:
+            return
+        frame = self.player.frame
+
+        def work():
+            import numpy as np
+            png = ff.render_preview(ff.cached_frame(s, frame), g)
+            im = QImage.fromData(png, "PNG").convertToFormat(QImage.Format_RGB888)
+            a = np.frombuffer(im.constBits(), np.uint8, im.bytesPerLine() * im.height()).reshape(im.height(), im.bytesPerLine())
+            return a[:, :im.width() * 3].reshape(im.height(), im.width(), 3).astype(np.float32) / 255
+        job = jobs.Job(work)
+        job.signals.done.connect(done)
+        job.signals.error.connect(lambda m: self._say(f"실패: {m[-120:]}", C_WARN))
+        jobs.submit(jobs.PREVIEW_POOL, job, priority=9)
+
+    def fix_contrast(self):
+        """[명암] 지금 화면(커브만 빼고 보정)의 양끝을 목표선에 맞추는 커브."""
+        from . import auto
+        s = self._cur()
+        if not s:
+            return
+        g = dict(self.state.project.grade_for_source(s.id, self.player.frame))
+        g["curve"] = [[0, 0], [1, 1]]
+
+        def done(a):
+            self.grade.set_values({"curve": auto.contrast_fix(a)})
+            self._say("명암 → 목표선", C_OK)
+        self._frame_array(g, done)
+
+    def fix_balance(self):
+        """[색 균형] LUT 만 입힌 화면의 중간 밝기에서 빨강·파랑을 초록에 맞춘 뒤 물빛만 파랑."""
+        from . import auto
+        s = self._cur()
+        if not s:
+            return
+        g = dict(self.state.project.grade_for_source(s.id, self.player.frame))
+        cur_water = float(g.get("water", 0))
+        g.update(r_gain=1.0, b_gain=1.0, curve=[[0, 0], [1, 1]], hue=0, sat=1.0, water=0, gy=0, dehaze=0, sharpen=0)
+
+        def done(a):
+            r, b = auto.balance_fix(a)
+            self.grade.set_values({"r_gain": r, "b_gain": b, "water": max(cur_water, 12)})
+            self._say(f"색 균형 → 빨강 {r:.2f}  파랑 {b:.2f}", C_OK)
+        self._frame_array(g, done)
+
+    # ================================================================ AUTO
+    def _set_auto_bar(self, v, color):
+        self.auto_bar.setVisible(0 <= v < 1)
+        self.auto_bar.setStyleSheet(f"QProgressBar{{background:#2a2a2a; border:none;}} QProgressBar::chunk{{background:{color};}}")
+        self.auto_bar.setValue(int(v * 100))
+
+    def open_auto(self):
+        if not self.state.project.sources:
+            return
+        self.player.pause()
+        self.make_auto_dialog().exec()
+
+    def make_auto_dialog(self):
+        from .ui_auto import AutoDialog
+        dlg = AutoDialog(self.state, self)
+        dlg.startRequested.connect(lambda: self._auto_start(dlg))
+        dlg.sampleRequested.connect(lambda: self._auto_sample(dlg))
+        dlg.rowProgress.connect(lambda sid, v: (self.auto_prog.__setitem__(sid, (v, "auto")), self.src_list.viewport().update()))
+        geo = self.window().geometry()
+        dlg.move(geo.center().x() - dlg.width() // 2, geo.center().y() - dlg.height() // 2)
+        self._auto_dlg = dlg
+        return dlg
+
+    def _ask_folder(self, title="저장폴더"):
+        from .project import get_setting, set_setting
+        o = self.state.project.output
+        start = o.folder or get_setting("last_folder", "") or (str(Path(self.state.project.sources[0].path).parent)
+                                                               if self.state.project.sources else "")
+        d = QFileDialog.getExistingDirectory(self, title, start)
+        if d:
+            try:
+                set_setting("last_folder", d)
+            except Exception:  # noqa: BLE001
+                pass
+        return d
+
+    def _auto_start(self, dlg):
+        """[시작] 저장폴더 → (분석 덜 끝났으면 기다림) → 클립에 적용 → 바로 렌더 또는 개별 보정."""
+        if not dlg.busy and not getattr(dlg, "_folder", ""):
+            d = self._ask_folder()
+            if not d:
+                return
+            dlg._folder = d
+        if dlg.wait_then("start"):
+            dlg.set_busy(True)
+            return
+        p = self.state.project
+        rows = dlg.chosen_rows()
+        if not rows:
+            dlg.set_busy(False)
+            return
+        st = dlg.settings()
+        from .project import set_setting
+        try:
+            set_setting("auto", st)
+        except Exception:  # noqa: BLE001
+            pass
+        self.state.checkpoint()
+        p.output.folder = dlg._folder
+        p.output.prefix = dlg.name.text().strip()
+        for r in rows:
+            s = p.source(r.sid)
+            res = r.result
+            s.grade = {k: v for k, v in res["grade"].items() if p.grade.get(k) != v}
+            if st["keys"] == "auto":
+                s.gkeys = copy.deepcopy(res["gkeys"])
+            s.auto = {"preset": res["preset"], "by": "auto" if r.choice == "auto" else "user", "rec": r.rec,
+                      "nkeys": len(res["gkeys"].get("r_gain", [])) if st["keys"] == "auto" else 0}
+            s.out = r.out
+        self.state.dirty = True
+        self.state.changed.emit("output")
+        self.state.changed.emit("grade")
+        self.grade._load_controls()
+        self.grade.keysChanged.emit()
+        self._refresh_tips()
+        if st["after"] == "render":
+            items = []
+            for r in rows:
+                s = p.source(r.sid)
+                a, b = s.io
+                it = RenderItem(name=short_name(s.path), segs=[Segment(s.id, a, b, 1.0, gkeys=copy.deepcopy(s.gkeys))],
+                                orientation=r.out, audio=True)
+                items.append(it)
+            p.render_items += items
+            self._auto_items = {it.id for it in items}
+            self.state.touch("render")
+            dlg.accept()
+            self._set_auto_bar(0.0, "#c0392b")
+            self.render_panel.render()
+        else:
+            dlg.accept()
+            self.grade.set_view("split")
+            if rows:
+                self._select_source(rows[0].sid)
+            self._say(f"AUTO 완료: {len(rows)}개 클립", C_OK)
+
+    def _auto_sample(self, dlg):
+        """[샘플] 저장 창(폴더·크기·형식·이름) → 클립마다 반반 PNG 6장. 클립 값은 바꾸지 않음."""
+        from . import auto
+        from .ui_auto import SampleDialog, sample_frames6, sample_name
+        if not dlg.busy and not getattr(dlg, "_scfg", None):
+            from .project import get_setting
+            sd = SampleDialog(dlg.name.text().strip(), self.state.project.output.folder or get_setting("last_folder", ""), dlg)
+            sd.move(dlg.geometry().center().x() - sd.width() // 2, dlg.geometry().center().y() - 150)
+            if sd.exec() != QDialog.Accepted:
+                return
+            dlg._scfg = sd.config()
+            dlg._sfolder = sd.folder.text().strip()
+        if dlg.wait_then("sample"):
+            dlg.set_busy(True)
+            return
+        cfg, folder = dlg._scfg, Path(dlg._sfolder)
+        dlg._scfg = None
+        folder.mkdir(parents=True, exist_ok=True)
+        rows = dlg.chosen_rows()
+        p = self.state.project
+        todo = []
+        for r in rows:
+            s = p.source(r.sid)
+            gk = r.result["gkeys"] if dlg.keys.value() == "auto" else s.gkeys
+            for k, f in enumerate(sample_frames6(s), start=1):
+                g = grade_at(r.result["grade"], gk, f) if gk else r.result["grade"]
+                out = unique(folder / sample_name(cfg, s, k, auto.preset_label(r.result["preset"])))
+                todo.append((s, f, g, str(out), r.out))
+        if not todo:
+            dlg.set_busy(False)
+            return
+        dlg.set_busy(True, "#d9822b")
+        dlg.bar.setValue(0)
+        gpu = p.output.gpu_decode
+        size, fmt = int(cfg.get("size", 1920)), cfg.get("fmt", "png8")
+
+        def work(prog, cancel):
+            for i, (s, f, g, out, orient) in enumerate(todo):
+                if cancel.is_set():
+                    raise ff.Cancelled()
+                ff.export_split(s, f, g, out, size, fmt, "vertical" if orient == "vertical" else "horizontal", gpu)
+                prog((i + 1) / len(todo))
+            return len(todo)
+        job = jobs.Job(work, with_progress=True)
+        dlg.jobs.append(job)
+        job.signals.progress.connect(lambda v: dlg.bar.setValue(int(v * 100)))
+
+        def done(n):
+            dlg.set_busy(False)
+            dlg.set_bar_color("#d9822b")
+            dlg.bar.setValue(100)
+            self._say(f"샘플 {n}장 저장 ✓  {folder}", C_OK)
+
+        def err(m):
+            dlg.set_busy(False)
+            self._say(f"샘플 실패: {m[-160:]}", C_WARN)
+        job.signals.done.connect(done)
+        job.signals.error.connect(err)
+        jobs.submit(jobs.RENDER_POOL, job)
+
+    def _render_progress(self, iid, v, running):
+        """AUTO 렌더 진행 → 맨 위 빨간 막대 + 소스 줄 배경."""
+        p = self.state.project
+        it = next((x for x in p.render_items if x.id == iid), None)
+        if it is not None and it.segs:
+            self.auto_prog[it.segs[0].src] = (v, "render") if v < 1 else (1.0, "render")
+        if self._auto_items:
+            ids = [x for x in p.render_items if x.id in self._auto_items]
+            done = sum(self.render_panel.progress.get(x.id, 0.0) if not self.render_panel.status.get(x.id, "").startswith(("완료", "실패")) else 1.0
+                       for x in ids)
+            tot = done / max(1, len(ids))
+            self._set_auto_bar(tot if running else 1.0, "#c0392b")
+            if not running:
+                self._auto_items = set()
+        self.src_list.viewport().update()
 
     def _refresh_timeline(self):
         p = self.state.project

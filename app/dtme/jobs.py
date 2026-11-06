@@ -78,3 +78,4 @@ PROXY_POOL = make_pool(1)     # GPU 디코딩 경합 방지
 PREVIEW_POOL = make_pool(4)
 GRAB_POOL = make_pool(2)      # 프록시 프레임 즉시 표시
 RENDER_POOL = make_pool(1)
+AUTO_POOL = make_pool(2)      # AUTO·추천: 샘플 추출
