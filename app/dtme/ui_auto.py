@@ -30,6 +30,8 @@ YELLOW = "#f2c94c"
 SUB = "#c4cad1"              # 자동 인식 글자(흐린 흰색)
 RED_BTN = ("QPushButton{color:white; background:#c0392b; border:none; border-radius:3px; font-weight:700;}"
            "QPushButton:hover{background:#d64535;} QPushButton:disabled{background:#7a2a22; color:#ddd;}")
+LIGHT_BTN = ("QPushButton{color:#111; background:#c9c9c9; border:1px solid #dcdcdc; border-radius:3px; font-weight:700;}"
+             "QPushButton:hover{background:#d6d6d6;} QPushButton:disabled{background:#6a6a6a; color:#bbb;}")
 ORANGE_BTN = ("QPushButton{color:white; background:#d9822b; border:none; border-radius:3px; font-weight:700;}"
               "QPushButton:hover{background:#e8964a;} QPushButton:disabled{background:#7a4a1a; color:#ddd;}")
 ON_BTN = (f"QPushButton{{background:#2e2e2e;}} QPushButton:checked{{background:{SEL_BLUE}; border:1px solid {EDGE_BLUE}; color:#fff;}}")
@@ -40,7 +42,7 @@ MAIN_W, MAIN_H = 88, 32
 OUT_SHORT = {"horizontal": "1080", "horizontal1440": "1440", "horizontal2160": "4K", "vertical": "세로"}
 VALUE_ROWS = [("r_gain", "빨강", "{:.2f}"), ("b_gain", "파랑", "{:.2f}"), ("hue", "색조", "{:.1f}°"), ("sat", "채도", "{:.2f}"),
               ("water", "물빛", "{:+.0f}°"), ("gy", "녹황", "{:.0f}"), ("curve", "명암 S", ""), ("dehaze", "디헤이즈", "{:.0f}"),
-              ("nr_chroma", "색 노이즈", "{:.0f}"), ("nr_luma", "밝기 노이즈", "{:.0f}")]
+              ("nr_chroma", "색 노이즈", "{:.0f}"), ("nr_luma", "밝기 노이즈", "{:.0f}"), ("wnr", "물 노이즈", "{:.0f}")]
 
 
 def main_button(text, style=None, w=MAIN_W):
@@ -55,16 +57,10 @@ def main_button(text, style=None, w=MAIN_W):
 
 
 def curve_s(curve) -> int:
-    """커브의 S 세기(표시용, 0~10): 1/4 지점이 얼마나 내려갔는지."""
+    """커브의 S 세기(표시용, 0~10 정도): 어두운 쪽 1/4 포인트가 0.25 에서 얼마나 내려갔는지(×100)."""
     pts = sorted(curve or [])
-    if len(pts) < 4:
-        return 0
-    from .ui_curve import natural_spline
-    sp = natural_spline(pts, 256)
-    lo, hi = pts[1][0], pts[-2][0]
-    x = lo + (hi - lo) * 0.25
-    y = min(sp, key=lambda p: abs(p[0] - x))[1]
-    return max(0, int(round((0.25 - y) * 100)))
+    q = [y for x, y in pts[1:-1] if 0.1 <= y <= 0.4]
+    return max(0, int(round((0.25 - q[0]) * 100))) if q else 0
 
 
 def preset_name(rec: dict) -> str:
@@ -208,10 +204,7 @@ class PresetGrid(QWidget):
         g.setHorizontalSpacing(5)
         g.setVerticalSpacing(5)
         self.btns: dict[str, QPushButton] = {}
-        b = self._btn("auto", "모두 자동", ON_BTN, 32)
-        f = b.font()
-        f.setBold(True)
-        b.setFont(f)
+        b = self._btn("auto", "프리셋 자동", ON_BTN, 30, tip="클립마다 프리셋을 자동 인식으로")   # 고르기(실행 아님)
         g.addWidget(b, 0, 1, 1, 5)
         for r, sc in enumerate(auto.SUBJECT_SCENES, start=1):
             lab = QLabel(auto.SCENE_NAME[sc])
@@ -335,7 +328,7 @@ class PresetDialog(QDialog):
         if key and "/" in key or key in ("bluewater", "night"):
             self.detail.show_values(auto.preset_label(key), auto.builtin_grade(key, self.base, self.strength.value()))
         elif key:
-            self.detail.show_values("모두 자동" if key == "auto" else f"{auto.SCENE_NAME.get(key[6:], '')} · 자동", None)
+            self.detail.show_values("프리셋 자동" if key == "auto" else f"{auto.SCENE_NAME.get(key[6:], '')} · 자동", None)
         else:
             self.detail.show_values("", None)
 
@@ -530,30 +523,41 @@ class AutoDialog(QDialog):
         self.keep.changed.connect(self._keep)
         self.keys = Seg([("keep", "키프레임 유지"), ("auto", "키프레임 자동")], keys)
         self.keys.changed.connect(lambda _k: self.list.viewport().update())
-        self.after = Seg([("render", "자동 보정 후 바로 렌더"), ("each", "자동 보정 후 개별 보정")], after)
-        for sgm in (self.keep, self.keys, self.after):
+        self.mode = after if after in ("render", "each") else "render"   # [보정만] = each, [보정+렌더] = render
+        for sgm in (self.keep, self.keys):
             for b in sgm.btns.values():
-                b.setMinimumWidth(130)
-        r1 = QHBoxLayout()
-        r1.setSpacing(10)
-        r1.addWidget(self._lab("기존 값"))
-        r1.addWidget(self.keep)
-        r1.addSpacing(6)
-        r1.addWidget(self.keys)
-        r1.addStretch(1)
+                b.setMinimumWidth(110)
         self.b_cancel = main_button("취소")
         self.b_cancel.clicked.connect(self.cancel)
         self.b_sample = main_button("샘플", ORANGE_BTN)
         self.b_sample.clicked.connect(self.sampleRequested.emit)
-        self.b_start = main_button("시작", RED_BTN)
-        self.b_start.clicked.connect(self.startRequested.emit)
-        r2 = QHBoxLayout()
-        r2.setSpacing(10)
-        r2.addWidget(self._lab("이후"))
-        r2.addWidget(self.after)
-        r2.addStretch(1)
-        for b in (self.b_cancel, self.b_sample, self.b_start):
-            r2.addWidget(b)
+        self.b_each = main_button("보정만", LIGHT_BTN)
+        self.b_each.setToolTip("클립에 값을 넣고 개별 보정(반반 보기)")
+        self.b_each.clicked.connect(lambda: self._go("each"))
+        self.b_start = main_button("보정+렌더", RED_BTN)
+        self.b_start.setToolTip("클립에 값을 넣고 바로 렌더")
+        self.b_start.clicked.connect(lambda: self._go("render"))
+        # 아래 줄: 왼쪽 = 클립 목록 폭 안 가운데 [기존 보정 유지|무시] [키프레임 유지|자동] / 오른쪽 = 버튼 4개
+        lw = QHBoxLayout()
+        lw.setSpacing(5)
+        lw.addStretch(1)
+        lw.addWidget(self.keep)
+        lw.addSpacing(16)
+        lw.addWidget(self.keys)
+        lw.addStretch(1)
+        rb = QHBoxLayout()
+        rb.setSpacing(8)
+        rb.addStretch(1)
+        for b in (self.b_cancel, self.b_sample, self.b_each, self.b_start):
+            rb.addWidget(b)
+        rbw = QWidget()
+        rbw.setLayout(rb)
+        rbw.setFixedWidth(470)
+        rb.setContentsMargins(0, 0, 0, 0)
+        r1 = QHBoxLayout()
+        r1.setSpacing(16)
+        r1.addLayout(lw, 1)
+        r1.addWidget(rbw)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(16, 16, 16, 16)
         lay.setSpacing(10)
@@ -562,7 +566,6 @@ class AutoDialog(QDialog):
         lay.addWidget(self.bar)
         lay.addSpacing(4)
         lay.addLayout(r1)
-        lay.addLayout(r2)
         self.resize(1040, 720)
         self._name_preview()
         if self.list.count():
@@ -761,17 +764,21 @@ class AutoDialog(QDialog):
             return True
         return False
 
+    def _go(self, mode):
+        self.mode = mode
+        self.startRequested.emit()
+
     def settings(self):
         return {"strength": self.strength.value(), "keep": self.keep.value(), "keys": self.keys.value(),
-                "after": self.after.value()}
+                "after": self.mode}
 
     def chosen_rows(self):
         return [r for r in self.rows if r.checked and r.result]
 
     def set_busy(self, on, color=None):
         self.busy = on
-        for w in (self.grid, self.strength, self.out, self.name, self.keep, self.keys, self.after, self.b_sample,
-                  self.b_start, self.list):
+        for w in (self.grid, self.strength, self.out, self.name, self.keep, self.keys, self.b_sample,
+                  self.b_each, self.b_start, self.list):
             w.setEnabled(not on)
         if color:
             self.set_bar_color(color)

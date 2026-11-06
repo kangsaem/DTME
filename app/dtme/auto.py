@@ -25,12 +25,12 @@ SCENE_BASE = {
     # 원색(특히 빨강)을 되살리거나 그랑블루로 만들 필요 없음 — **색이 틀어지거나 노이즈가 나오지 않는 것이 먼저**.
     # 파란 물의 빨간 점·노이즈 = 빨강 게인·커브 늘이기·채도가 원인 → 셋 다 작게, 색 노이즈 제거는 강하게(60 이상 = 색 채널 미디언)
     # r/b = 고정 프리셋 게인, rmax = 빨강 최대, k = 영상별 흰색 맞춤 정도, ref = 흰색 기준(밝은 쪽 비율),
-    # s = 커브 S 세기, lo = 검정점 배율, sh = 샤픈
-    "light":     dict(r=1.05, b=1.00, rmax=1.15, k=0.25, ref=0.10, water=8, gy=25, sat=1.00, nrc=60, nrl=30, dehaze=0, s=0.04, lo=0.8, sh=0.15),
-    "shallow":   dict(r=1.10, b=1.00, rmax=1.20, k=0.40, ref=0.30, water=8, gy=30, sat=1.00, nrc=60, nrl=30, dehaze=0, s=0.04, lo=0.8, sh=0.15),
-    "deep":      dict(r=1.15, b=1.00, rmax=1.28, k=0.40, ref=0.50, water=8, gy=30, sat=1.00, nrc=65, nrl=35, dehaze=0, s=0.03, lo=0.5, sh=0.10),
-    "bluewater": dict(r=1.00, b=1.00, rmax=1.08, k=0.15, ref=0.30, water=12, gy=40, sat=1.00, nrc=65, nrl=30, dehaze=5, s=0.05, lo=0.8, sh=0.10),
-    "night":     dict(r=1.00, b=1.00, rmax=1.10, k=0.25, ref=0.10, water=0, gy=20, sat=1.00, nrc=65, nrl=40, dehaze=0, s=0.04, lo=0.8, sh=0.10),
+    # s = 커브 S 세기, lo = 검정점 배율, sh = 샤픈, wnr = 물 노이즈(파란 영역 붉은 노이즈 정리)
+    "light":     dict(r=1.05, b=1.00, rmax=1.15, k=0.25, ref=0.10, water=8, gy=25, sat=1.00, nrc=60, nrl=30, dehaze=0, s=0.04, lo=0.8, sh=0.15, wnr=30),
+    "shallow":   dict(r=1.10, b=1.00, rmax=1.20, k=0.40, ref=0.30, water=8, gy=30, sat=1.00, nrc=60, nrl=30, dehaze=0, s=0.04, lo=0.8, sh=0.15, wnr=40),
+    "deep":      dict(r=1.15, b=1.00, rmax=1.28, k=0.40, ref=0.50, water=8, gy=30, sat=1.00, nrc=65, nrl=35, dehaze=0, s=0.03, lo=0.5, sh=0.10, wnr=65),
+    "bluewater": dict(r=1.00, b=1.00, rmax=1.08, k=0.15, ref=0.30, water=12, gy=40, sat=1.00, nrc=65, nrl=30, dehaze=5, s=0.05, lo=0.8, sh=0.10, wnr=70),
+    "night":     dict(r=1.00, b=1.00, rmax=1.10, k=0.25, ref=0.10, water=0, gy=20, sat=1.00, nrc=65, nrl=40, dehaze=0, s=0.04, lo=0.8, sh=0.10, wnr=50),
 }
 # 피사체별 차이(더하기). 산호초 = 보통 라이트를 비춰 찍음 → 빨강 덜, 거북이 = 등껍질(노란 갈색) 지키려고 녹황 약하게, 다이버 = 피부
 SUBJECT_DELTA = {
@@ -99,7 +99,8 @@ def builtin_grade(key: str, base: dict | None = None, strength: str = "mid") -> 
     g.update(r_gain=round(min(2.0, 1 + (p["r"] - 1) * st), 3), b_gain=round(1 + (p["b"] - 1) * st, 3), hue=0.0,
              sat=round(1 + (p["sat"] - 1) * st, 3), water=int(round(p["water"] * st)), gy=int(round(min(100, p["gy"] * st))),
              nr_chroma=int(p["nrc"]), nr_luma=int(p["nrl"]), dehaze=int(round(p["dehaze"] * st)),
-             curve=s_curve(0.04, 0.95, p["s"] * st), stab=0, sharpen=p.get("sh", 0.15))
+             curve=s_curve(0.04, 0.95, p["s"] * st), stab=0, sharpen=p.get("sh", 0.15),
+             wnr=int(p.get("wnr", 0)))
     return g
 
 

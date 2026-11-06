@@ -60,7 +60,7 @@ return {{}};
 
 def slider(name, pct, val, key_state="", new=False):
     ks = {"on": "background:#5a4a1a;border-color:#f2c94c;color:#f2c94c", "has": "color:#f2c94c", "": "color:#777"}[key_state]
-    cls = ' class="new"' if new else ""
+    cls = ''
     return (f'<div{cls} style="display:flex;gap:6px;align-items:center"><span class="lbl" style="width:30px;flex:none;white-space:nowrap">{name}</span>'
             f'<div class="sl"><span style="width:{pct}%"></span><i style="left:{pct - 2}%"></i></div><span class="val">{val}</span>'
             f'<button class="b s" aria-label="{name} 키프레임" style="{ks}">◆</button></div>')
@@ -94,6 +94,12 @@ def parade(w, h, lines=True, dots=True):
     return "".join(out)
 
 
+def dslider(name, pct, val, new=False):
+    cls = ' class="new"' if new else ""
+    return (f'<div{cls} style="display:flex;gap:6px;align-items:center"><span class="lbl" style="width:72px;flex:none;text-align:right;white-space:nowrap">{name}</span>'
+            f'<div class="sl"><span style="width:{pct}%"></span><i style="left:{max(0, pct - 2)}%"></i></div><span class="val">{val}</span></div>')
+
+
 def src_row(name, preset, auto, out, sel=False, prog=None, wait=False, c=False, keys=0):
     bg = "#3c3c3c;color:#ddd" if wait else "#6b6b6b;color:#f2f2f2"
     sh = "box-shadow:inset 0 0 0 2px #4a8fe0;" if sel else ""
@@ -104,7 +110,7 @@ def src_row(name, preset, auto, out, sel=False, prog=None, wait=False, c=False, 
     ctag = '<span style="color:#f2c94c;font-size:11px;position:relative">C</span>' if c else ""
     k = f'<span style="color:#f2c94c;font-size:10px;position:relative">◆{keys}</span>' if keys else ""
     pl = (f'<span style="font-size:11px;font-weight:400;color:{"#c4cad1" if auto else "#fff"};position:relative;white-space:nowrap">{preset}</span>' if preset else "")
-    return (f'<div class="new" style="height:22px;background:{bg};{sh}border-radius:3px;font-size:12px;font-weight:700;display:flex;'
+    return (f'<div style="height:22px;background:{bg};{sh}border-radius:3px;font-size:12px;font-weight:700;display:flex;'
             f'align-items:center;gap:5px;padding:0 6px 0 8px;position:relative;overflow:hidden">{fill}'
             f'<span style="flex:1;white-space:nowrap;overflow:hidden;position:relative">{name}</span>{ctag}{k}{pl}'
             f'</div>')
@@ -115,7 +121,7 @@ def auto_board():
     left = f"""
 <div style="width:300px;background:#202020;padding:6px;box-sizing:border-box;display:flex;flex-direction:column;gap:5px;font-size:12px;overflow:hidden">
 <div style="display:flex;gap:4px"><button class="b">리셋</button><button class="b">기본값</button><span style="flex:1"></span><button class="b">기본값으로 저장</button></div>
-<div class="new" style="display:flex;gap:6px;align-items:center"><button class="b" style="flex:1;justify-content:space-between;height:24px"><span>프리셋: 얕은 수심 · 산호초</span><span>▾</span></button><button class="b" style="width:60px;min-width:60px">저장…</button></div>
+<div style="display:flex;gap:6px;align-items:center"><button class="b" style="flex:1;justify-content:space-between;height:24px"><span>프리셋: 얕은 수심 · 산호초</span><span>▾</span></button><button class="b" style="width:60px;min-width:60px">저장…</button></div>
 <div style="display:flex;gap:6px;align-items:center"><div class="cb" style="flex:1"><span>1920×1080</span><span>▾</span></div><button class="b on" style="width:60px;min-width:60px">오디오</button></div>
 <div style="display:flex;gap:6px;align-items:center"><div style="flex:1;display:flex;border:1px solid #555;border-radius:3px;overflow:hidden;height:24px;font-size:12px"><span style="flex:1;display:flex;align-items:center;justify-content:center;background:#2a2a2a">보정</span><span style="flex:1;display:flex;align-items:center;justify-content:center;background:#2a2a2a;border-left:1px solid #555">원본</span><span style="flex:1;display:flex;align-items:center;justify-content:center;background:#2f4f78;border-left:1px solid #555;color:#fff">반반</span></div><button class="b on" style="width:60px;min-width:60px">RGB</button></div>
 <div class="sec"><span>▾</span><span>색</span></div>
@@ -129,10 +135,14 @@ def auto_board():
 {slider("녹황", 40, "40", new=True)}
 <div style="display:flex;gap:6px"><div aria-label="커브" style="flex:1;height:92px;background:#151515;position:relative"><svg aria-hidden="true" width="100%" height="92" viewBox="0 0 230 128" preserveAspectRatio="none" style="position:absolute;inset:0"><g stroke="#2c2c2c"><line x1="57" y1="0" x2="57" y2="128"/><line x1="115" y1="0" x2="115" y2="128"/><line x1="172" y1="0" x2="172" y2="128"/><line x1="0" y1="32" x2="230" y2="32"/><line x1="0" y1="64" x2="230" y2="64"/><line x1="0" y1="96" x2="230" y2="96"/></g><path d="M2 126 C 40 124, 60 110, 80 92 S 150 30, 180 14 S 220 3, 228 2" fill="none" stroke="#fff" stroke-width="2"/></svg></div><span style="width:22px"></span></div>
 <div style="display:flex;justify-content:flex-end;padding-right:28px"><button class="b">커브리셋</button></div>
-<div class="sec"><span>▸</span><span>디테일</span></div>
+<div class="sec"><span>▾</span><span>디테일</span></div>
+{dslider("샤픈", 15, "0.15")}
+{dslider("디헤이즈", 0, "0")}
+{dslider("색 노이즈", 60, "60")}
+{dslider("밝기 노이즈", 30, "30")}
+{dslider("물 노이즈", 70, "70", new=True)}
 <div class="sec"><span>▸</span><span>렌즈 · 흔들림</span></div>
-<div class="sec"><span>▾</span><span>샘플</span></div>
-<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:3px">{''.join(f'<div style="height:44px;background:linear-gradient(180deg,{c},#3f86a8)"></div>' for c in ("#123f74", "#0f3d72", "#14467c", "#103a6a", "#154a80", "#0e3866"))}</div>
+<div class="sec"><span>▸</span><span>샘플</span></div>
 </div>"""
     scope_w, scope_h = 210, 108
     mon = f"""
@@ -143,7 +153,7 @@ def auto_board():
 <div style="position:absolute;left:390px;top:0;bottom:0;width:2px;background:#fff"></div>
 <div style="position:absolute;left:381px;top:210px;width:20px;height:20px;border-radius:10px;background:#fff;border:2px solid #1b1b1b;box-sizing:border-box"></div>
 <div style="position:absolute;left:8px;top:8px;display:flex;border:1px solid #666;border-radius:3px;overflow:hidden;font-size:11px"><span style="padding:3px 10px;background:#2f4f78;color:#fff">소스</span><span style="padding:3px 10px;background:rgba(30,30,30,.85);color:#bbb">타임라인</span></div>
-<div class="new" style="position:absolute;right:8px;top:8px;width:{scope_w}px;display:flex;flex-direction:column;gap:3px;align-items:flex-end">
+<div style="position:absolute;right:8px;top:8px;width:{scope_w}px;display:flex;flex-direction:column;gap:3px;align-items:flex-end">
 <div style="width:{scope_w}px;height:{scope_h}px;background:rgba(10,10,10,.85);border:1px solid #444;position:relative">{parade(scope_w, scope_h)}</div>
 <div style="display:flex;gap:3px"><button class="b" style="height:22px;min-width:52px;font-size:11px;background:rgba(40,40,40,.92)">명암</button><button class="b" style="height:22px;min-width:52px;font-size:11px;background:rgba(40,40,40,.92)">색 균형</button></div>
 </div>
@@ -181,7 +191,7 @@ def auto_board():
     ])
     right = f"""
 <div style="width:220px;display:flex;flex-direction:column;gap:3px;background:#1a1a1a">
-<div class="new" style="display:flex;justify-content:center"><button class="b m red" style="width:88px;height:32px;font-weight:700;letter-spacing:1px;box-shadow:0 2px 6px rgba(0,0,0,.6)">AUTO</button></div>
+<div style="display:flex;justify-content:center"><button class="b m red" style="width:88px;height:32px;font-weight:700;letter-spacing:1px;box-shadow:0 2px 6px rgba(0,0,0,.6)">AUTO</button></div>
 <div style="height:3px;background:#2a2a2a;border-radius:2px;position:relative"><span style="position:absolute;left:0;top:0;bottom:0;width:62%;background:#4a8fe0;border-radius:2px"></span></div>
 <div style="flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column;gap:3px">{rows}</div>
 <div style="display:flex;gap:4px;padding-top:4px"><button class="b" style="flex:1">영상 추가</button><button class="b" style="flex:1">삭제</button></div>
@@ -200,7 +210,7 @@ def auto_board():
 def grid_block(tip=False):
     """오른쪽: [자동 인식] / 줄마다 [자동](장면 고정·피사체 자동) + 피사체 4 / 기타. 세부 값은 툴팁."""
     g = '<div style="display:grid;grid-template-columns:70px 52px repeat(4,1fr);gap:5px;align-items:center;position:relative">'
-    g += '<span></span><button class="b on" style="grid-column:span 5;min-width:0;height:32px;font-weight:700">모두 자동</button>'
+    g += '<span></span><button class="b on new" style="grid-column:span 5;min-width:0;height:30px">프리셋 자동</button>'
     for lab, sel, auto in (("라이트", 2, False), ("얕은 수심", -1, True), ("깊은 수심", -1, False)):
         g += f'<span class="lbl" style="text-align:right;padding-right:4px">{lab}</span>'
         g += f'<button class="b" style="min-width:0;height:30px;border-style:dashed;{"border:1px solid #f2c94c;color:#f2c94c;background:#3a3420;" if auto else "color:#bbb;"}">자동</button>'
@@ -227,10 +237,10 @@ def detail_box(title="깊은 수심 · 다이버"):
 
 
 def seg(label, opts, on, lw=76):
-    bs = "".join(f'<span style="flex:1;display:flex;align-items:center;justify-content:center;{"background:#2f4f78;color:#fff;" if i == on else "background:#2a2a2a;"}'
-                 f'{"border-left:1px solid #555;" if i else ""}">{o}</span>' for i, o in enumerate(opts))
+    """앱과 같게: 떨어진 둥근 버튼 30px, 간격 5, 켜짐 = 파랑."""
+    bs = "".join(f'<button class="b{" on" if i == on else ""}" style="flex:1;min-width:0;height:30px">{o}</button>' for i, o in enumerate(opts))
     return (f'<div style="display:grid;grid-template-columns:{lw}px 1fr;gap:5px;align-items:center"><span class="lbl" style="text-align:right;padding-right:4px">{label}</span>'
-            f'<div style="display:flex;border:1px solid #555;border-radius:3px;overflow:hidden;height:28px;font-size:12px">{bs}</div></div>')
+            f'<div style="display:flex;gap:5px">{bs}</div></div>')
 
 
 def auto_popup():
@@ -259,25 +269,24 @@ def auto_popup():
     right = (f'<div style="width:470px;display:flex;flex-direction:column;gap:12px">{grid_block()}'
              '<div style="border-top:1px solid #3a3a3a"></div>'
              f'{seg("강도", ("약", "중", "강"), 1)}{seg("출력", ("1080", "1440", "4K", "세로"), 0)}'
-             '<div class="new" style="display:grid;grid-template-columns:76px 1fr;gap:5px;align-items:center"><span class="lbl" style="text-align:right;padding-right:4px">이름</span>'
+             '<div style="display:grid;grid-template-columns:76px 1fr;gap:5px;align-items:center"><span class="lbl" style="text-align:right;padding-right:4px">이름</span>'
              '<div style="display:flex;gap:8px;align-items:center"><div style="width:160px;height:28px;box-sizing:border-box;background:#1a1a1a;border:1px solid #555;border-radius:3px;display:flex;align-items:center;padding:0 8px;font-size:12px">DTME</div>'
              '<span style="font-size:12px;color:#c4cad1;font-family:Consolas,monospace">DTME_202610251207.mp4</span></div></div>'
              f'{detail_box()}</div>')
     def btns(opts, on):
-        return ('<div style="display:flex;border:1px solid #555;border-radius:3px;overflow:hidden;height:32px">' + "".join(
-            f'<span style="padding:0 16px;display:flex;align-items:center;{"background:#2f4f78;color:#fff;" if k in on else "background:#2a2a2a;"}'
-            f'{"border-left:1px solid #555;" if i else ""}">{t}</span>' for i, (k, t) in enumerate(opts)) + '</div>')
+        return ('<div style="display:flex;gap:5px">' + "".join(
+            f'<button class="b{" on" if k in on else ""}" style="height:30px;padding:0 14px">{t}</button>' for k, t in opts) + '</div>')
     bottom = ('<div style="display:flex;flex-direction:column;gap:8px;font-size:12px">'
               '<div style="height:6px;background:#2a2a2a;border-radius:3px;position:relative">'
               '<span style="position:absolute;left:0;top:0;bottom:0;width:58%;background:#4a8fe0;border-radius:3px"></span></div>'
-              '<div style="display:flex;gap:10px;align-items:center;padding-top:4px"><span class="lbl" style="width:52px;text-align:right">기존 값</span>'
+              '<div style="display:flex;gap:10px;align-items:center;padding-top:4px">'
               + btns((("keep", "기존 보정 유지"), ("drop", "기존 보정 무시")), ("keep",)) + '<span style="width:6px"></span>'
               + btns((("keys", "키프레임 유지"), ("autok", "키프레임 자동")), ("keys",)) + '</div>'
-              '<div style="display:flex;gap:10px;align-items:center"><span class="lbl" style="width:52px;text-align:right">이후</span>'
-              + btns((("render", "자동 보정 후 바로 렌더"), ("each", "자동 보정 후 개별 보정")), ("render",)) +
-              '<span style="flex:1"></span><button class="b" style="height:32px;width:88px;min-width:88px">취소</button>'
-              '<button class="b new" style="height:32px;width:88px;min-width:88px;background:#d9822b;border-color:#e8964a;color:#fff;font-weight:700;box-shadow:0 2px 6px rgba(0,0,0,.6)">샘플</button>'
-              '<button class="b red" style="height:32px;width:88px;min-width:88px;font-weight:700;box-shadow:0 2px 6px rgba(0,0,0,.6)">시작</button></div></div>')
+              '<div style="display:flex;gap:8px;align-items:center;justify-content:flex-end">'
+              '<button class="b" style="height:32px;width:88px;min-width:88px">취소</button>'
+              '<button class="b" style="height:32px;width:88px;min-width:88px;background:#d9822b;border-color:#e8964a;color:#fff;font-weight:700;box-shadow:0 2px 6px rgba(0,0,0,.6)">샘플</button>'
+              '<button class="b new" style="height:32px;width:88px;min-width:88px;font-weight:700;background:#c9c9c9;border-color:#dcdcdc;color:#111;box-shadow:0 2px 6px rgba(0,0,0,.6)">보정만</button>'
+              '<button class="b red new" style="height:32px;width:88px;min-width:88px;font-weight:700;box-shadow:0 2px 6px rgba(0,0,0,.6)">보정+렌더</button></div></div>')
     return (f'<div style="width:1040px;height:720px;background:#262626;border:1px solid #555;border-radius:6px;box-sizing:border-box;padding:16px;'
             f'display:flex;flex-direction:column;gap:14px;box-shadow:0 10px 30px rgba(0,0,0,.6)">'
             f'<div style="flex:1;display:flex;gap:16px;min-height:0">{left}{right}</div>{bottom}</div>')
@@ -299,7 +308,7 @@ def pop_board():
         for n in ("물고기", "산호초", "거북이", "다이버"):
             hl = ' style="background:#2f4f78;color:#fff"' if (grp, n) == ("얕은 수심", "산호초") else ""
             items.append(f'<div class="mi"{hl}>{grp} · {n}</div>')
-    items.append('<div class="new" style="margin:2px 0"><div style="padding:2px 10px;color:#888;font-size:11px">기타</div>'
+    items.append('<div style="margin:2px 0"><div style="padding:2px 10px;color:#888;font-size:11px">기타</div>'
                  '<div class="mi">블루워터</div><div class="mi">야간</div></div>')
     items += ['<div style="border-top:1px solid #3a3a3a;margin:3px 0"></div>',
               '<div style="padding:3px 10px">잭피쉬 20m</div>', '<div style="padding:3px 10px">보홀 오후</div>']
@@ -316,7 +325,7 @@ def pop_board():
         else:
             dot = '<span style="position:absolute;left:8px;color:#f2c94c">●</span>' if chk else ""
             mh.append(f'<div class="mi">{dot}{n}</div>')
-    menu = (f'<div class="new" style="width:150px;display:flex;flex-direction:column;gap:2px">'
+    menu = (f'<div style="width:150px;display:flex;flex-direction:column;gap:2px">'
             f'<div style="display:flex;justify-content:flex-start"><button class="b" style="border-radius:3px 0 0 3px;min-width:46px">추천</button><button class="b on" style="border-radius:0 3px 3px 0;border-left:none;min-width:18px;width:18px;padding:0">▾</button></div>'
             f'<div style="background:#262626;border:1px solid #555;border-radius:3px;font-size:12px;color:#ddd;padding:3px 0;box-shadow:0 6px 18px rgba(0,0,0,.5)">{"".join(mh)}</div></div>')
     sw, sh = 330, 170
@@ -329,7 +338,7 @@ def pop_board():
             '<path d="M0 80 L30 78 L60 60 L90 30 L120 40 L145 66 L150 70" fill="none" stroke="#4a8fe0" stroke-width="1.5"/>',
             '<circle cx="5" cy="76" r="1.8" fill="#4a8fe0"/><circle cx="145" cy="66" r="1.8" fill="#e5484d"/></svg>']
     scopes = f"""
-<div class="new" style="display:flex;flex-direction:column;gap:6px">
+<div style="display:flex;flex-direction:column;gap:6px">
 <div style="display:flex;gap:10px">
 <div style="display:flex;flex-direction:column;gap:3px;align-items:flex-end"><div style="width:{sw}px;height:{sh}px;background:rgba(10,10,10,.92);border:1px solid #444;position:relative">{''.join(hist)}</div></div>
 <div style="display:flex;flex-direction:column;gap:3px;align-items:flex-end"><div style="width:{sw}px;height:{sh}px;background:rgba(10,10,10,.92);border:1px solid #444;position:relative">{parade(sw, sh)}</div>
@@ -339,7 +348,7 @@ def pop_board():
 </div>"""
     body = (f'<div style="width:{w}px;height:{h}px;background:#1b1b1b;font-family:\'Malgun Gothic\',system-ui,sans-serif;color:#ddd;'
             f'display:flex;gap:36px;padding:24px;box-sizing:border-box">'
-            f'<div class="new">{auto_popup()}</div><div class="new" style="align-self:flex-start">{preset_popup()}</div>{scopes}</div>')
+            f'<div class="new">{auto_popup()}</div><div style="align-self:flex-start">{preset_popup()}</div>{scopes}</div>')
     return HEAD.format(title="DTME 칩 창·프리셋·추천 메뉴·RGB", style=STYLE) + body + TAIL.format(w=w, h=h)
 
 

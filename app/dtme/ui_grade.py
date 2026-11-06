@@ -29,7 +29,7 @@ ON_STYLE = ("QPushButton:checked{background:#2f4f78; border:1px solid #4a8fe0; c
 SLIDERS = {
     "r_gain": (50, 200, 100, "{:.2f}"), "b_gain": (50, 150, 100, "{:.2f}"), "hue": (-30, 30, 2, "{:+.1f}°"),
     "sat": (0, 200, 100, "{:.2f}"), "water": (-10, 40, 1, "{:+.0f}°"), "gy": (0, 100, 1, "{:.0f}"), "sharpen": (0, 100, 100, "{:.2f}"), "dehaze": (0, 100, 1, "{:.0f}"),
-    "nr_chroma": (0, 100, 1, "{:.0f}"), "nr_luma": (0, 100, 1, "{:.0f}"), "lens": (0, 100, 1, "{:.0f}"),
+    "nr_chroma": (0, 100, 1, "{:.0f}"), "nr_luma": (0, 100, 1, "{:.0f}"), "wnr": (0, 100, 1, "{:.0f}"), "lens": (0, 100, 1, "{:.0f}"),
     "stab": (0, 100, 1, "{:.0f}"),
 }
 
@@ -273,8 +273,9 @@ class GradePanel(QWidget):
 
         # --- 묶음: 디테일 / 렌즈·흔들림
         s_det = Section("detail", "디테일")
-        for key, name in (("sharpen", "샤픈"), ("dehaze", "디헤이즈"), ("nr_chroma", "색 노이즈"), ("nr_luma", "밝기 노이즈")):
-            s_det.lay.addLayout(self._row(key, name, 72, Qt.AlignRight))
+        for key, name, tip in (("sharpen", "샤픈", ""), ("dehaze", "디헤이즈", ""), ("nr_chroma", "색 노이즈", ""),
+                               ("nr_luma", "밝기 노이즈", ""), ("wnr", "물 노이즈", "파란 물 영역의 붉은 점·색 노이즈만 정리")):
+            s_det.lay.addLayout(self._row(key, name, 72, Qt.AlignRight, tip))
         s_lens = Section("lens", "렌즈 · 흔들림")
         s_lens.lay.addLayout(self._row("lens", "렌즈 보정", 72, Qt.AlignRight, "액션캠 휘어짐 보정"))
         s_lens.lay.addLayout(self._row("stab", "흔들림 보정", 72, Qt.AlignRight, "렌더에만 적용"))

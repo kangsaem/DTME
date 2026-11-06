@@ -27,7 +27,7 @@ NR_LEVELS = ["off", "weak", "mid", "strong"]   # strong 은 스틸 전용
 # 옛 디노이즈 단계 → (색 노이즈, 밝기 노이즈) 0~100
 NR_LEGACY = {"off": (0, 0), "weak": (60, 25), "mid": (80, 45), "strong": (100, 70)}
 
-GRADE_KEYS = ["lut", "r_gain", "b_gain", "hue", "sat", "water", "gy", "curve", "nr_chroma", "nr_luma", "sharpen", "dehaze", "lens", "stab"]
+GRADE_KEYS = ["lut", "r_gain", "b_gain", "hue", "sat", "water", "gy", "curve", "nr_chroma", "nr_luma", "wnr", "sharpen", "dehaze", "lens", "stab"]
 
 # 출력: orientation 값 하나로 방향·크기를 함께 나타냄
 OUTPUTS = [("horizontal", "1920×1080"), ("horizontal1440", "2560×1440"), ("horizontal2160", "3840×2160"),
@@ -47,6 +47,7 @@ FACTORY_GRADE = {
     "curve": [[0.0, 0.0], [1.0, 1.0]],
     "nr_chroma": 25,     # 색 노이즈(푸른 물속의 보라·빨강 점) 0~100
     "nr_luma": 25,       # 밝기 노이즈 0~100
+    "wnr": 0,            # 물 노이즈: 파란 영역의 붉은 색 노이즈만 정리 0~100
     "sharpen": 0.3,      # 밝기에만 적용
     "dehaze": 0,         # 디헤이즈(넓은 범위 대비) 0~100
     "lens": 0,           # 렌즈 왜곡 보정(액션캠 휘어짐) 0~100

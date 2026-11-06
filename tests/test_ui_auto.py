@@ -52,11 +52,15 @@ dlg.grid.btns["deep/turtle"].click(); dlg.out.btns["vertical"].click(); wait(0.1
 lab, fixed, sub = dlg.row_text(dlg.rows[1])
 print("직접 지정:", lab, fixed, sub, dlg.rows[1].out)
 assert lab == "깊은 수심 · 거북이" and fixed and dlg.rows[1].out == "vertical"
-print("세부 정보:", dlg.detail.title.text(), dlg.detail.vals["r_gain"].text(), dlg.detail.vals["gy"].text())
+print("세부 정보:", dlg.detail.title.text(), dlg.detail.vals["r_gain"].text(), dlg.detail.vals["gy"].text(), "물 노이즈", dlg.detail.vals["wnr"].text())
+# 버튼 글자 가운데 정렬·크기
+for bt in (dlg.b_cancel, dlg.b_sample, dlg.b_each, dlg.b_start):
+    assert bt.size().toTuple() == (88, 32), bt.text()
+print("아래 버튼:", [bt.text() for bt in (dlg.b_cancel, dlg.b_sample, dlg.b_each, dlg.b_start)], "격자 맨 위:", dlg.grid.btns["auto"].text())
 # 기존 보정 무시 → 4번째도 체크
 dlg.keep.btns["drop"].click(); wait(0.1); assert dlg.rows[3].checked
 dlg.keep.btns["keep"].click(); wait(0.1); assert not dlg.rows[3].checked
-dlg.keys.btns["auto"].click(); dlg.after.btns["each"].click()
+dlg.keys.btns["auto"].click()
 dlg.name.setText("BOHOL"); wait(0.1); print("이름 예:", dlg.name_eg.text())
 dlg.grab().save(str(work / "shot_auto.png"))
 # [샘플]: 저장 창 대신 설정 직접
@@ -75,7 +79,7 @@ print("샘플:", len(names), names[:2], "… 클립 값 그대로:", a.grade == 
 assert len(names) == 18 and a.grade == {} and names[0].startswith("BOHOL_")
 # [시작] 개별 보정
 e._ask_folder = lambda title="": str(work / "out")
-e._auto_start(dlg); wait(1)
+dlg.mode = "each"; e._auto_start(dlg); wait(1)        # [보정만]
 print("적용:", [(s.auto.get("preset"), s.auto.get("by"), len(s.gkeys.get("r_gain", [])), s.out) for s in (a, b, c)])
 assert a.auto["preset"] == "shallow/fish" and b.auto == {**b.auto, "preset": "deep/turtle", "by": "user"} and b.out == "vertical"
 assert c.gkeys and d.grade == {"r_gain": 1.3} and p.output.prefix == "BOHOL"
@@ -87,9 +91,8 @@ p = st.project; a, b, c, d = p.sources
 # ---------------- AUTO 바로 렌더 (2개만)
 dlg2 = e.make_auto_dialog(); dlg2.show()
 dlg2.rows[2].checked = False
-dlg2.after.btns["render"].click()
 assert wait(60, lambda: not dlg2.pending())
-e._auto_start(dlg2)
+dlg2.b_start.click()                                   # [보정+렌더]
 assert wait(300, lambda: not e.render_panel.running and len(list((work / "out").glob("*.mp4"))) >= 2)
 outs = sorted(x.name for x in (work / "out").glob("*.mp4"))
 print("렌더:", outs, "막대 숨김:", not e.auto_bar.isVisible())

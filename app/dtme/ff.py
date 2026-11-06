@@ -301,7 +301,52 @@ def grade_chain(g: dict, lut_file: str | None, width: int = 1920, named: bool = 
     sat = float(g.get("sat", 1.0))
     if abs(sat - 1) > 1e-3:
         f.append(f"vibrance=intensity={max(-2.0, min(2.0, sat - 1)):.3f}")
+    f += wnr_mark(g, width)
     return f
+
+
+# ------------------------------------------------------------------ 물 노이즈: 파란 영역의 붉은 색 노이즈만 정리
+WNR = "§wnr:"
+
+
+def wnr_mark(g: dict, width: int) -> list[str]:
+    """체인 안 표시(나중에 graph() 가 갈래 그래프로 바꿈). 0 이면 없음."""
+    w = float(g.get("wnr", 0))
+    return [f"{WNR}{w:.1f}:{int(width)}"] if w > 0.5 else []
+
+
+def wnr_graph(mark: str, inlab: str, outlab: str, uid: str) -> list[str]:
+    """[in] → 원본 / 색만 흐리게 + 빨강·자주 채도 낮춤 / 파란 영역 지도(넓게 흐린 B−R) → 지도만큼 섞음 → [out].
+    밝기(Y)는 그대로라 디테일은 안 뭉개짐. 빨간 피사체(산호·거북이) 위치는 지도 값이 0 이라 그대로(실측)."""
+    w, width = (float(x) for x in mark[len(WNR):].split(":"))
+    k = width / 1920
+    sc = max(1.0, (2 + 8 * w / 100) * k)          # 색 흐림 정도
+    sm = max(4.0, 24 * k)                          # 파란 영역 지도의 넓이
+    gain = min(2.0, 1.4 * w / 80)                  # 지도 세기
+    desat = -min(1.0, 0.85 * w / 80)
+    o, c, m, cb, mk = (f"[wn{uid}{x}]" for x in ("o", "c", "m", "cb", "mk"))
+    return [f"{inlab}format=gbrp16le,split=3{o}{c}{m}",
+            f"{c}scale=out_color_matrix=bt709:out_range=pc,format=yuv444p16le,gblur=sigma={sc:.2f}:planes=6,"
+            f"scale=in_color_matrix=bt709:in_range=pc,format=gbrp16le,huesaturation=colors=r+m:saturation={desat:.3f}:strength=2{cb}",
+            f"{m}gblur=sigma={sm:.1f},colorchannelmixer=rr=-2:rb=2:gr=-2:gb=2:br=-2:bb=2,"
+            f"colorchannelmixer=rr={gain:.3f}:gg={gain:.3f}:bb={gain:.3f}{mk}",
+            f"{o}{cb}{mk}maskedmerge{outlab}"]
+
+
+def graph(chain: list[str], inlab: str, outlab: str, uid: str = "0") -> str:
+    """필터 목록 → filter_complex 문자열. 물 노이즈 표시가 있으면 그 자리에서 갈래 그래프로."""
+    parts, cur, seg, k = [], inlab, [], 0
+    for f in chain:
+        if f.startswith(WNR):
+            lab = f"[wa{uid}_{k}]"
+            parts.append(f"{cur}{','.join(seg) or 'null'}{lab}")
+            nxt = f"[wb{uid}_{k}]"
+            parts += wnr_graph(f, lab, nxt, f"{uid}_{k}")
+            cur, seg, k = nxt, [], k + 1
+        else:
+            seg.append(f)
+    parts.append(f"{cur}{','.join(seg) or 'null'}{outlab}")
+    return ";".join(parts)
 
 
 def _grade_named(g, lut_file, width):
@@ -316,7 +361,7 @@ def _grade_named(g, lut_file, width):
     f.append(f"huesaturation@w={WATER_OPT}:hue={float(g.get('water', 0)):.2f}")
     f.append(f"huesaturation@y={GY_OPT}:saturation={-float(g.get('gy', 0)) / 100:.4f}")
     f.append(f"vibrance@g=intensity={max(-2.0, min(2.0, float(g.get('sat', 1)) - 1)):.3f}")
-    return f
+    return f + wnr_mark(g, width)
 
 
 def has_gkeys(seg) -> bool:
@@ -554,8 +599,8 @@ def render_preview(cached: CachedFrame, g: dict | None) -> bytes:
         cwd, lut = _lut_for(g)
         vf = lens_chain(g) + grade_chain(g, lut, 1280)
     vf += [f"select=gte(n\\,{cached.lead})", "format=rgb24"]
-    return run([paths.ffmpeg(), "-v", "error", "-f", "nut", "-i", "-", "-frames:v", "1",
-                "-vf", ",".join(vf), "-f", "image2pipe", "-c:v", "png", "-"], cwd=cwd, data=cached.data)
+    return run([paths.ffmpeg(), "-v", "error", "-f", "nut", "-i", "-", "-filter_complex", graph(vf, "[0:v]", "[po]"),
+                "-map", "[po]", "-frames:v", "1", "-f", "image2pipe", "-c:v", "png", "-"], cwd=cwd, data=cached.data)
 
 
 def render_region(src: Source, frame: int, g: dict | None, rect, max_w: int = 2560) -> bytes:
@@ -574,7 +619,8 @@ def render_region(src: Source, frame: int, g: dict | None, rect, max_w: int = 25
         vf += grade_chain(g, lut, 3840)
     vf += [f"select=gte(n\\,{lead})", "format=rgb24"]
     return run([paths.ffmpeg(), "-v", "error", "-ss", _seek(frame - lead, src.fps), "-i", _abs(src.path),
-                "-frames:v", str(lead + 1), "-an", "-vf", ",".join(vf), "-f", "image2pipe", "-c:v", "png", "-"], cwd=cwd)
+                "-frames:v", str(lead + 1), "-an", "-filter_complex", graph(vf, "[0:v]", "[po]"), "-map", "[po]",
+                "-f", "image2pipe", "-c:v", "png", "-"], cwd=cwd)
 
 
 # ------------------------------------------------------------------ 선명도
@@ -868,11 +914,11 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orien
         lays = seg_layers(project, seg)
         if not lays:
             v += [TO_YUV709, "setsar=1"]
-            fparts.append(f"[{i}:v:0]{','.join(v)}[v{i}]")
+            fparts.append(graph(v, f"[{i}:v:0]", f"[v{i}]", str(i)))
         else:
             # 보정 끝난 화면에 이미지 합성(보정 없음). 10bit 4:4:4 에서 합성 후 4:2:0 으로만 바꿈(행렬 재변환 없음)
             v.append(YUV444_709)
-            fparts.append(f"[{i}:v:0]{','.join(v)}[b{i}_0]")
+            fparts.append(graph(v, f"[{i}:v:0]", f"[b{i}_0]", str(i)))
             ow, oh = out_size(orientation)
             e = 0.25 / float(OUT_FPS)
             for k, (lay, img, lf, lo) in enumerate(lays):
@@ -980,7 +1026,8 @@ def export_still(src: Source, frame: int, g: dict, out_file: str, gpu: bool = Fa
     vf = lens_chain(g) + grade_chain(g, lut, 3840) + [SRGB_TAG, "format=rgb48be" if is_png else "format=rgb48le"]
     codec = ["-c:v", "png", "-compression_level", "3"] if is_png else ["-c:v", "tiff", "-compression_algo", "deflate"]
     cmd = [paths.ffmpeg(), "-v", "error", "-y", *_hw(gpu), "-ss", _seek(start, src.fps), "-i", _abs(src.path),
-           "-frames:v", str(lead + 1), "-an", "-vf", ",".join(vf), "-update", "1", *codec, _abs(out_file)]
+           "-frames:v", str(lead + 1), "-an", "-filter_complex", graph(vf, "[0:v]", "[so]"), "-map", "[so]",
+           "-update", "1", *codec, _abs(out_file)]
     try:
         run(cmd, cwd=cwd)
     except FFError:
@@ -1007,10 +1054,10 @@ def split_vf(g: dict, lut: str | None, orientation: str, size: int, fmt: str) ->
     sc = f"scale=-2:{size}:flags=lanczos" if vert else f"scale={size}:-2:flags=lanczos"
     lens = lens_chain(g)
     pre = ",".join(lens + [crop_filter(orientation), sc])
-    grade = ",".join(grade_chain(g, lut, size * 9 // 16 if vert else size))
+    gr = graph(grade_chain(g, lut, size * 9 // 16 if vert else size) +
+               ["format=gbrp16le", "crop=iw-trunc(iw/4)*2:ih:trunc(iw/4)*2:0"], "[sb]", "[sr]", "s")
     out = {"png16": SRGB_TAG + ",format=rgb48be", "jpg": "format=yuvj444p"}.get(fmt, SRGB_TAG + ",format=rgb24")
-    return (f"[0:v]{pre},split=2[sa][sb];[sa]format=gbrp16le,crop=trunc(iw/4)*2:ih:0:0[sl];"
-            f"[sb]{grade},format=gbrp16le,crop=iw-trunc(iw/4)*2:ih:trunc(iw/4)*2:0[sr];"
+    return (f"[0:v]{pre},split=2[sa][sb];[sa]format=gbrp16le,crop=trunc(iw/4)*2:ih:0:0[sl];{gr};"
             f"[sl][sr]hstack=2,drawbox=x=trunc(iw/4)*2-1:y=0:w=2:h=ih:color=white@0.9:t=fill,{out}[so]")
 
 
