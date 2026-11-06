@@ -123,4 +123,16 @@ gp.rgb.click(); wait(0.2); assert e.player.mon.scope == 0 and not e.player.mon.s
 gp.make_samples(); assert wait(30, lambda: len(gp.pix) >= 6)
 print("샘플 타일:", len(gp.pix))
 w.grab().save(str(work / "shot_samples.png"))
+# ---------------- 영상을 넣자마자 AUTO: 로딩이 끝나는 대로 분석(분석 실패 없음)
+v4 = TA.make_video(work / "fresh.mp4", ["shallow", "deep"], 3.0)
+v5 = TA.make_video(work / "fresh2.mp4", ["deep", "deep"], 3.0)
+e.import_files([v4.path, v5.path]); wait(0.05)
+dlg3 = e.make_auto_dialog(); dlg3.show()
+fresh = [r for r in dlg3.rows if st.project.source(r.sid).path.endswith(("fresh.mp4", "fresh2.mp4"))]
+print("바로 연 AUTO:", [(dlg3.row_text(r)[2], r.checked) for r in fresh])
+assert all(r.checked for r in fresh)
+assert wait(180, lambda: all(r.result for r in fresh)), [r.error for r in fresh]
+print("로딩 후 분석:", [r.result["preset"] for r in fresh], "실패", [r.error for r in fresh])
+assert not any(r.error for r in fresh)
+dlg3.grab().save(str(work / "shot_auto_fresh.png")); dlg3.cancel()
 print("UI AUTO OK")

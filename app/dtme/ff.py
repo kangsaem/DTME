@@ -241,9 +241,23 @@ def lut_ref(name: str) -> tuple[str, str] | None:
     d.mkdir(exist_ok=True)
     h = hashlib.sha1(src.read_bytes()).hexdigest()[:10]
     dst = d / f"lut_{h}.cube"
-    if not dst.exists():
-        shutil.copyfile(src, dst)
+    _safe_copy(src, dst)
     return str(d), dst.name
+
+
+_copy_lock = threading.Lock()
+
+
+def _safe_copy(src, dst) -> None:
+    """작업 폴더로 복사(여러 작업이 동시에 같은 파일을 쓰면 반쯤 써진 파일을 읽어 실패 → 잠금 + 임시 파일 → 이름 바꾸기).
+    AUTO 분석·프록시·미리보기가 동시에 시작될 때 '분석 실패'가 나던 원인."""
+    dst = Path(dst)
+    with _copy_lock:
+        if dst.exists() and dst.stat().st_size == Path(src).stat().st_size:
+            return
+        tmp = dst.with_name(dst.name + f".{threading.get_ident()}.part")
+        shutil.copyfile(src, tmp)
+        replace_retry(tmp, dst)
 
 
 def list_luts() -> list[str]:
@@ -701,8 +715,7 @@ def _work_copy(path: str, prefix: str) -> str:
     src = Path(path)
     h = hashlib.sha1(f"{src.resolve()}|{src.stat().st_size}".encode()).hexdigest()[:10]
     dst = d / f"{prefix}_{h}{src.suffix.lower()}"
-    if not dst.exists():
-        shutil.copyfile(src, dst)
+    _safe_copy(src, dst)
     return dst.name
 
 

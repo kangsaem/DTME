@@ -21,18 +21,23 @@ STRENGTH_NAME = {"weak": "약", "mid": "중", "strong": "강"}
 
 # 장면 기준값. r/b = 고정 프리셋 게인, k = 영상별 흰색 맞춤 정도, ref = 흰색 기준(밝은 쪽 비율), s = 커브 S 세기
 SCENE_BASE = {
-    "light":     dict(r=1.25, b=0.97, k=0.55, ref=0.10, water=10, gy=30, sat=1.05, nrc=30, nrl=25, dehaze=10, s=0.06),
-    "shallow":   dict(r=1.45, b=0.97, k=0.85, ref=0.30, water=12, gy=35, sat=1.10, nrc=25, nrl=20, dehaze=15, s=0.06),
-    "deep":      dict(r=1.85, b=0.95, k=0.90, ref=0.50, water=8, gy=25, sat=1.00, nrc=45, nrl=35, dehaze=25, s=0.05, lo=0.5),
-    "bluewater": dict(r=1.60, b=0.97, k=0.60, ref=0.30, water=16, gy=40, sat=1.00, nrc=35, nrl=25, dehaze=20, s=0.05, lo=0.5),
-    "night":     dict(r=1.15, b=1.00, k=0.50, ref=0.10, water=0, gy=20, sat=1.05, nrc=50, nrl=40, dehaze=0, s=0.05),
+    # 실제 수중 샘플(2026-11-06, 보홀) 보고 조정. 원칙(사용자): 물속은 원래 파랗고 어느 정도 뿌연 것.
+    # 원색(특히 빨강)을 되살리거나 그랑블루로 만들 필요 없음 — **색이 틀어지거나 노이즈가 나오지 않는 것이 먼저**.
+    # 파란 물의 빨간 점·노이즈 = 빨강 게인·커브 늘이기·채도가 원인 → 셋 다 작게, 색 노이즈 제거는 강하게(60 이상 = 색 채널 미디언)
+    # r/b = 고정 프리셋 게인, rmax = 빨강 최대, k = 영상별 흰색 맞춤 정도, ref = 흰색 기준(밝은 쪽 비율),
+    # s = 커브 S 세기, lo = 검정점 배율, sh = 샤픈
+    "light":     dict(r=1.05, b=1.00, rmax=1.15, k=0.25, ref=0.10, water=8, gy=25, sat=1.00, nrc=60, nrl=30, dehaze=0, s=0.04, lo=0.8, sh=0.15),
+    "shallow":   dict(r=1.10, b=1.00, rmax=1.20, k=0.40, ref=0.30, water=8, gy=30, sat=1.00, nrc=60, nrl=30, dehaze=0, s=0.04, lo=0.8, sh=0.15),
+    "deep":      dict(r=1.15, b=1.00, rmax=1.28, k=0.40, ref=0.50, water=8, gy=30, sat=1.00, nrc=65, nrl=35, dehaze=0, s=0.03, lo=0.5, sh=0.10),
+    "bluewater": dict(r=1.00, b=1.00, rmax=1.08, k=0.15, ref=0.30, water=12, gy=40, sat=1.00, nrc=65, nrl=30, dehaze=5, s=0.05, lo=0.8, sh=0.10),
+    "night":     dict(r=1.00, b=1.00, rmax=1.10, k=0.25, ref=0.10, water=0, gy=20, sat=1.00, nrc=65, nrl=40, dehaze=0, s=0.04, lo=0.8, sh=0.10),
 }
-# 피사체별 차이(더하기). 거북이 = 등껍질(노란 갈색) 지키려고 녹황 약하게, 다이버 = 피부 지키기
+# 피사체별 차이(더하기). 산호초 = 보통 라이트를 비춰 찍음 → 빨강 덜, 거북이 = 등껍질(노란 갈색) 지키려고 녹황 약하게, 다이버 = 피부
 SUBJECT_DELTA = {
     "fish": {},
-    "coral": dict(sat=0.05, gy=-5),
-    "turtle": dict(gy=-20),
-    "diver": dict(sat=-0.05, gy=-10, k=0.05),
+    "coral": dict(r=-0.05, rmax=-0.08, k=-0.15, gy=-5),
+    "turtle": dict(gy=-20, rmax=-0.05),
+    "diver": dict(sat=-0.05, gy=-10),
 }
 
 
@@ -67,7 +72,7 @@ def scene_params(scene: str, subject: str, strength: str = "mid") -> dict:
     return b
 
 
-def s_curve(lo: float, hi: float, s: float, min_range: float = 0.55) -> list:
+def s_curve(lo: float, hi: float, s: float, min_range: float = 0.75) -> list:
     """명암: 암부 lo → 거의 0, 명부 hi → 거의 1, 사이는 S자(s). 포인트는 양 끝 포함 최대 7개(중간 5개)."""
     lo, hi = max(0.0, min(0.45, lo)), max(0.4, min(1.0, hi))
     if hi - lo < min_range:               # 너무 좁으면 늘이는 양 제한(노이즈가 커짐)
@@ -94,7 +99,7 @@ def builtin_grade(key: str, base: dict | None = None, strength: str = "mid") -> 
     g.update(r_gain=round(min(2.0, 1 + (p["r"] - 1) * st), 3), b_gain=round(1 + (p["b"] - 1) * st, 3), hue=0.0,
              sat=round(1 + (p["sat"] - 1) * st, 3), water=int(round(p["water"] * st)), gy=int(round(min(100, p["gy"] * st))),
              nr_chroma=int(p["nrc"]), nr_luma=int(p["nrl"]), dehaze=int(round(p["dehaze"] * st)),
-             curve=s_curve(0.04, 0.95, p["s"] * st), stab=0)
+             curve=s_curve(0.04, 0.95, p["s"] * st), stab=0, sharpen=p.get("sh", 0.15))
     return g
 
 
@@ -125,8 +130,9 @@ def grab_small(src: Source, frame: int, lut: str, gpu: bool = False, w: int = SA
     try:
         raw = ff.run(cmd, cwd=ref[0] if ref else None)
     except ff.FFError:
-        if not gpu:
-            raise
+        # GPU 실패 또는 일시적 실패(다른 작업과 겹침) → CPU 로 잠시 뒤 한 번 더
+        import time
+        time.sleep(0.3)
         raw = ff.run([c for c in cmd if c not in ("-hwaccel", "cuda")], cwd=ref[0] if ref else None)
     h = len(raw) // (w * 3)
     return np.frombuffer(raw[:w * h * 3], np.uint8).reshape(h, w, 3).astype(np.float32) / 255.0
@@ -218,8 +224,9 @@ def gains_for(st: dict, p: dict) -> tuple[float, float]:
     bg = (1 + 0.5 * k * (g / b - 1)) * (1 + (p["b"] - 1) * p["st"])
     # 프리셋 값 주변으로만(물속은 빨강을 줄이지 않음, 물만 보이는 화면에서 회색으로 가지 않게)
     pr, pb = min(2.0, 1 + (p["r"] - 1) * p["st"]), 1 + (p["b"] - 1) * p["st"]
-    return (float(np.clip(rg, max(1.0, pr - 0.35), min(2.0, pr + 0.35))),
-            float(np.clip(bg, pb - 0.08, pb + 0.08)))
+    rmax = min(2.0, 1 + (p["rmax"] - 1) * p["st"])
+    return (float(np.clip(rg, max(1.0, pr - 0.15), min(rmax, pr + 0.15))),
+            float(np.clip(bg, pb - 0.05, pb + 0.05)))
 
 
 def tone_ends(a: np.ndarray) -> tuple[float, float]:
@@ -258,7 +265,7 @@ def _med3(v: list[float]) -> list[float]:
     return [v[0]] + [float(np.median(v[i - 1:i + 2])) for i in range(1, len(v) - 1)] + [v[-1]]
 
 
-KEY_TOL_R, KEY_TOL_B = 0.15, 0.08       # 이보다 크게 변하면 키프레임
+KEY_TOL_R, KEY_TOL_B = 0.08, 0.05       # 이보다 크게 변하면 키프레임(빨강을 조금만 쓰는 값에 맞춤)
 
 
 def recommend(samples: list[tuple[int, np.ndarray]], base: dict, scene: str | None = None, subject: str | None = None,
@@ -281,7 +288,7 @@ def recommend(samples: list[tuple[int, np.ndarray]], base: dict, scene: str | No
     # 커브는 클립 전체 1개 → 깊은 구간이 섞여 있으면 깊은 곳 기준(S·검정점 약하게). 깊은 곳은 빨강이 암부에 있음
     mixed = any(classify([x]) == "deep" for x in sts) and sc != "deep"
     pd = SCENE_BASE["deep"] if mixed else p
-    lo *= pd.get("lo", 0.8)
+    lo *= pd.get("lo", 0.9)
     s_amt = min(p["s"], pd["s"]) * (0.6 if mixed else 1.0)
     st = p["st"]
     g = builtin_grade(f"{sc}/{sb}" if sb else sc, base, strength)

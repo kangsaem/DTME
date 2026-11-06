@@ -73,7 +73,7 @@ def check_classify():
     s = [(0, scene("shallow"))]
     rv = [auto.recommend(s, dict(lut=""), strength=k)["grade"]["r_gain"] for k in ("weak", "mid", "strong")]
     print("강도 약·중·강 빨강:", rv)
-    assert rv[0] < rv[1] < rv[2] <= 2.0
+    assert rv[0] < rv[1] < rv[2] <= 1.5
     # 장면 직접 지정
     assert auto.recommend(s, dict(lut=""), scene="light")["scene"] == "light"
     # 프리셋 14개
@@ -107,7 +107,7 @@ def check_video(work):
     print("변화 클립:", r["scene"], "키 빨강", r["gkeys"].get("r_gain"))
     assert r["gkeys"] and 2 <= len(r["gkeys"]["r_gain"]) <= 6
     vals = [k["v"] for k in r["gkeys"]["r_gain"]]
-    assert max(vals) - min(vals) > 0.15
+    assert max(vals) - min(vals) > 0.08
     # 변화 없는 클립: 키 없음
     src2 = make_video(d / "same.mp4", ["deep"] * 3, 2.0)
     r2 = auto.analyze_source(src2, dict(lut=""))
@@ -131,8 +131,8 @@ def check_video(work):
     a = np.frombuffer(raw, np.uint8).reshape(180, 320, 3).astype(float).reshape(-1, 3).mean(0)
     b = scene("deep").reshape(-1, 3).mean(0) * 255
     print(f"깊은 구간 빨강 평균 원본 {b[0]:.1f} → 보정 {a[0]:.1f}, R/G {b[0] / b[1]:.2f} → {a[0] / a[1]:.2f}")
-    # 합성 화면 기준: 깊은 구간 빨강이 원본보다 줄지 않아야(S커브가 암부를 누르는 것과 균형)
-    assert a[0] > b[0] * 1.05 and a[0] / a[1] >= b[0] / b[1] - 0.02
+    # 원칙: 빨강을 완전히 되살리지 않음(노이즈·계단 현상) → 빨강은 원본 근처, 크게 줄지도 늘지도 않게
+    assert b[0] * 0.8 < a[0] < b[0] * 1.6
 
 
 def check_fix():

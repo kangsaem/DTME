@@ -35,8 +35,7 @@ ORANGE_BTN = ("QPushButton{color:white; background:#d9822b; border:none; border-
 ON_BTN = (f"QPushButton{{background:#2e2e2e;}} QPushButton:checked{{background:{SEL_BLUE}; border:1px solid {EDGE_BLUE}; color:#fff;}}")
 AUTO_BTN = ("QPushButton{border:1px dashed #666; color:#bbb; background:#2e2e2e;}"
             f"QPushButton:checked{{border:1px solid {YELLOW}; color:{YELLOW}; background:#3a3420;}}")
-SEG_BTN = (f"QPushButton{{border-radius:0; background:#2a2a2a; border:1px solid #555;}}"
-           f"QPushButton:checked{{background:{SEL_BLUE}; color:#fff;}}")
+SEG_BTN = ON_BTN              # [a|b] 도 격자 버튼과 같은 모양(떨어진 둥근 버튼, 켜짐 = 파랑)
 MAIN_W, MAIN_H = 88, 32
 OUT_SHORT = {"horizontal": "1080", "horizontal1440": "1440", "horizontal2160": "4K", "vertical": "세로"}
 VALUE_ROWS = [("r_gain", "빨강", "{:.2f}"), ("b_gain", "파랑", "{:.2f}"), ("hue", "색조", "{:.1f}°"), ("sat", "채도", "{:.2f}"),
@@ -127,11 +126,11 @@ class Seg(QWidget):
     """[a|b|c] 하나만 켜짐."""
     changed = Signal(str)
 
-    def __init__(self, opts, cur=None, height=28, parent=None):
+    def __init__(self, opts, cur=None, height=30, parent=None):
         super().__init__(parent)
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(0)
+        lay.setSpacing(5)
         self.group = QButtonGroup(self)
         self.group.setExclusive(True)
         self.btns = {}
@@ -463,7 +462,8 @@ class AutoDialog(QDialog):
             has_c = bool(s.grade or s.gkeys)
             rec = s.auto or {}
             choice = rec.get("preset", "") if rec.get("by") == "user" and not rec.get("preset", "").startswith("user:") else "auto"
-            self.rows.append(AutoRow(s, s.frames > 0 and not (keep == "keep" and has_c), choice or "auto",
+            bad = state.status.get(s.id) in ("읽기 오류", "원본 없음")
+            self.rows.append(AutoRow(s, not bad and not (keep == "keep" and has_c), choice or "auto",
                                      s.out or p.output.orientation))
         self.jobs = []
         self.waiting = None              # 'start' | 'sample' (분석 끝나길 기다리는 중)
@@ -474,6 +474,7 @@ class AutoDialog(QDialog):
         self.list.setItemDelegate(AutoDelegate(self))
         self.list.setSelectionMode(QListWidget.ExtendedSelection)
         self.list.setFocusPolicy(Qt.NoFocus)
+        self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.list.setStyleSheet("QListWidget{background:#1e1e1e; border:1px solid #333; border-radius:3px; padding:4px;}")
         for s in p.sources:
             it = QListWidgetItem(display_name(s.path))
@@ -525,11 +526,11 @@ class AutoDialog(QDialog):
         self.bar.setTextVisible(False)
         self.bar.setFixedHeight(6)
         self.set_bar_color(EDGE_BLUE)
-        self.keep = Seg([("keep", "기존 보정 유지"), ("drop", "기존 보정 무시")], keep, 32)
+        self.keep = Seg([("keep", "기존 보정 유지"), ("drop", "기존 보정 무시")], keep)
         self.keep.changed.connect(self._keep)
-        self.keys = Seg([("keep", "키프레임 유지"), ("auto", "키프레임 자동")], keys, 32)
+        self.keys = Seg([("keep", "키프레임 유지"), ("auto", "키프레임 자동")], keys)
         self.keys.changed.connect(lambda _k: self.list.viewport().update())
-        self.after = Seg([("render", "자동 보정 후 바로 렌더"), ("each", "자동 보정 후 개별 보정")], after, 32)
+        self.after = Seg([("render", "자동 보정 후 바로 렌더"), ("each", "자동 보정 후 개별 보정")], after)
         for sgm in (self.keep, self.keys, self.after):
             for b in sgm.btns.values():
                 b.setMinimumWidth(130)
@@ -566,7 +567,24 @@ class AutoDialog(QDialog):
         self._name_preview()
         if self.list.count():
             self.list.setCurrentRow(0)
+        state.sourceStatus.connect(self._src_status)      # 영상을 막 넣었으면 로딩이 끝나는 대로 분석
         QTimer.singleShot(0, self.analyze_all)
+
+    def _src_status(self, sid):
+        if any(r.sid == sid for r in self.rows):
+            self.list.viewport().update()
+            if self.state.status.get(sid) == "준비":
+                self.analyze_all()
+
+    def loading(self, r) -> str:
+        """로딩 중이면 표시 글자(프록시 n%), 아니면 ''."""
+        st = self.state.status.get(r.sid, "")
+        if st == "준비":
+            return ""
+        if st in ("읽기 오류", "원본 없음", "프록시 오류"):
+            return st
+        pct = self.state.proxy_pct.get(r.sid, 0.0)
+        return f"로딩 중 {int(pct * 100)}%" if pct > 0 else "로딩 중"
 
     def _lab(self, t):
         lab = QLabel(t)
@@ -591,6 +609,9 @@ class AutoDialog(QDialog):
         else:
             label = "자동"
         sub = []
+        ld = self.loading(row)
+        if ld and row.result is None:
+            sub.append(ld)
         if row.error:
             sub.append("분석 실패")
         if fixed and row.rec and row.result and row.rec != row.result["preset"]:
@@ -685,6 +706,8 @@ class AutoDialog(QDialog):
             s = p.source(r.sid)
             if not r.checked or s is None or not s.frames or r.result is not None or r.prog > 0 or r.error:
                 continue
+            if self.state.status.get(s.id) != "준비":      # 로딩(분석·프록시) 끝난 뒤에
+                continue
             lut = p.grade_for_source(s.id).get("lut", "")
             r.prog = 0.01
 
@@ -697,8 +720,12 @@ class AutoDialog(QDialog):
                 self._progress()
 
             def err(msg, r=r):
-                r.error, r.prog = msg, 1.0
                 ff.log_error("AUTO 분석", msg)
+                if msg != "취소됨" and not getattr(r, "retried", False):
+                    r.retried, r.prog = True, 0.0
+                    QTimer.singleShot(800, self.analyze_all)
+                    return
+                r.error, r.prog = msg, 1.0
                 self.list.viewport().update()
                 self._progress()
 
@@ -713,7 +740,9 @@ class AutoDialog(QDialog):
         self._progress()
 
     def pending(self):
-        return [r for r in self.rows if r.checked and r.result is None and not r.error]
+        """아직 결과가 없는 체크된 줄(로딩 중 포함). 읽기 오류는 제외."""
+        return [r for r in self.rows if r.checked and r.result is None and not r.error
+                and self.state.status.get(r.sid) not in ("읽기 오류", "원본 없음", "프록시 오류")]
 
     def _progress(self):
         rows = [r for r in self.rows if r.checked]
