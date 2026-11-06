@@ -1003,19 +1003,23 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orien
         fparts[:] = [f.replace("[vo]", "[vm]").replace("[ao]", "[am]") for f in fparts]
         post_graph(fparts, cmd, project, extras, total, orientation, audio, len(segs) + len(img_inputs))
         cwd = cwd or str(paths.cache_dir() / "lut")
-    cmd += ["-filter_complex", ";".join(fparts), "-map", "[vo]"]
+    import re as _re                 # [테스트 ENC] 끝까지 10bit 유지(8bit 로 내리는 format=yuv420p → yuv420p10le)
+    fc = _re.sub(r"format=yuv420p(?![0-9a-z])", "format=yuv420p10le", ";".join(fparts)) if not fast else ";".join(fparts)
+    cmd += ["-filter_complex", fc, "-map", "[vo]"]
     if audio:
         cmd += ["-map", "[ao]", "-c:a", "aac", "-b:a", "192k"]
     br = int(o.bitrate_mbps * {"horizontal1440": 1.5, "horizontal2160": 2.5}.get(orientation, 1.0))   # 설정값 = 1080p 기준
     if fast:                         # 미리보기 렌더: 작고 빠르게
         cmd += ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "26"]
-    elif o.encoder == "nvenc":
-        cmd += ["-c:v", "h264_nvenc", "-preset", "p6", "-tune", "hq", "-rc", "vbr", "-cq", "19",
-                "-b:v", f"{br}M", "-maxrate", f"{int(br * 1.5)}M", "-bufsize", f"{br * 2}M", "-profile:v", "high"]
-    else:
-        cmd += ["-c:v", "libx264", "-preset", "medium", "-crf", "18",
-                "-maxrate", f"{int(br * 1.5)}M", "-bufsize", f"{br * 2}M"]
-    cmd += ["-pix_fmt", "yuv420p", "-r", f"{OUT_FPS.numerator}/{OUT_FPS.denominator}",
+    elif o.encoder == "nvenc":       # [테스트 ENC] HEVC 10bit(main10), 같은 비트레이트
+        cmd += ["-c:v", "hevc_nvenc", "-preset", "p6", "-tune", "hq", "-rc", "vbr", "-cq", "19",
+                "-b:v", f"{br}M", "-maxrate", f"{int(br * 1.5)}M", "-bufsize", f"{br * 2}M", "-profile:v", "main10",
+                "-tag:v", "hvc1"]
+    else:                            # [테스트 ENC] x265 10bit
+        cmd += ["-c:v", "libx265", "-preset", "medium", "-crf", "18", "-tag:v", "hvc1",
+                "-x265-params", f"vbv-maxrate={int(br * 1500)}:vbv-bufsize={br * 2000}:log-level=error"]
+    pixf = "yuv420p" if fast else ("p010le" if o.encoder == "nvenc" else "yuv420p10le")
+    cmd += ["-pix_fmt", pixf, "-r", f"{OUT_FPS.numerator}/{OUT_FPS.denominator}",
             "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709", "-color_range", "tv",
             "-map_metadata", "-1", "-write_tmcd", "0", "-movflags", "+faststart", _abs(out_file)]
     # 모든 LUT 는 같은 캐시 폴더에 있으므로 cwd 하나로 충분
