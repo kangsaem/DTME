@@ -40,8 +40,10 @@ d.grade = {"r_gain": 1.3}
 
 # ---------------- AUTO 창: 분석 · 인식 · 직접 지정 · 개별 보정
 dlg = e.make_auto_dialog(); dlg.show()
-print("체크:", [r.checked for r in dlg.rows], "(C 인 4번째는 제외)")
-assert [r.checked for r in dlg.rows] == [True, True, True, False]
+print("체크:", [r.checked for r in dlg.rows], "(기본 = 기존 보정 무시·키프레임 자동 → 모두)")
+assert [r.checked for r in dlg.rows] == [True] * 4 and dlg.keep.value() == "drop" and dlg.keys.value() == "auto"
+dlg.keep.btns["keep"].click(); wait(0.1)
+assert [r.checked for r in dlg.rows] == [True, True, True, False]      # C 인 4번째는 제외
 assert wait(120, lambda: not dlg.pending())
 for r in dlg.rows[:3]:
     print("  인식:", r.rec, "→", r.result["preset"], "키", len(r.result["gkeys"].get("r_gain", [])), dlg.row_text(r))
@@ -68,8 +70,8 @@ ui_auto.SampleDialog.exec = lambda self: QDialog.Accepted
 ui_auto.SampleDialog.folder_text = None
 sdir = work / "samples"; shutil.rmtree(sdir, ignore_errors=True)
 orig_init = ui_auto.SampleDialog.__init__
-def init(self, name, folder, parent=None):
-    orig_init(self, name, str(sdir), parent)
+def init(self, name, folder, parent=None, layout=""):
+    orig_init(self, name, str(sdir), parent, layout)
     self.size.btns["1280"].click(); self.fmt.btns["jpg"].click(); self.att["preset"].setChecked(True)
 ui_auto.SampleDialog.__init__ = init
 e._auto_sample(dlg)
@@ -96,6 +98,7 @@ p = st.project; a, b, c, d = p.sources
 
 # ---------------- AUTO 바로 렌더 (2개만)
 dlg2 = e.make_auto_dialog(); dlg2.show()
+dlg2.keep.btns["keep"].click(); wait(0.1)              # 기본은 무시 → 손보정(C) 4번째 제외
 dlg2.rows[2].checked = False
 assert wait(60, lambda: not dlg2.pending())
 dlg2.b_start.click()                                   # [보정+렌더]

@@ -241,20 +241,27 @@ def labeled(text, w, lw=76):
 
 
 # ------------------------------------------------------------------ 보정 탭 프리셋 창
-class PresetDialog(QDialog):
-    """누르면 바로 적용하고 닫힘. picked('auto'|'scene:x'|키|'user:이름'|'base', 강도)."""
+class PresetDialog(DragMove, QDialog):
+    """떠 있는 프리셋 창(v0.16.8): 고르면 바로 적용하고 열린 채 그대로. 끌어서 옮김, [프리셋] 다시 누르기·Esc 로 닫힘.
+    picked('auto'|'scene:x'|키|'user:이름'|'base', 강도)."""
     picked = Signal(str, str)
+    closed = Signal()
 
     def __init__(self, base: dict, current: str = "", strength: str = "mid", parent=None):
-        super().__init__(parent, Qt.Popup)
+        super().__init__(parent, Qt.Tool | Qt.FramelessWindowHint)
         self.base = base
-        self.setStyleSheet("PresetDialog{background:#262626; border:1px solid #555;}")
+        self.setModal(False)
+        self.setObjectName("PresetDialog")
+        self.setStyleSheet("#PresetDialog{background:#262626; border:1px solid #555; border-radius:6px;}")
         v = QVBoxLayout(self)
         v.setContentsMargins(16, 16, 16, 16)
         v.setSpacing(12)
         self.grid = PresetGrid()
         self.grid.set_current(current)
-        v.addWidget(self.grid)
+        gl = QHBoxLayout()                        # 격자 왼쪽 끝 = 강도 [약] x
+        gl.addSpacing(81)
+        gl.addWidget(self.grid, 1)
+        v.addLayout(gl)
         v.addWidget(self._line())
         self.strength = Seg([("weak", "약"), ("mid", "중"), ("strong", "강")], strength)
         self.strength.changed.connect(lambda _k: self._hover(self._last_hover))
@@ -269,6 +276,7 @@ class PresetDialog(QDialog):
         ul.setSpacing(5)
         ul.addSpacing(81)
         self.user_box = ul
+        self.user_btns = {}
         for name in ["기본값"] + list_presets():
             b = QPushButton(name)
             b.setFixedHeight(28)
@@ -281,6 +289,7 @@ class PresetDialog(QDialog):
             if key != "base":
                 b.setContextMenuPolicy(Qt.CustomContextMenu)
                 b.customContextMenuRequested.connect(lambda pos, n=name, bb=b: self.userMenu.emit(n, bb.mapToGlobal(pos)))
+            self.user_btns[key] = b
             ul.addWidget(b)
         ul.addStretch(1)
         v.addLayout(ul)
@@ -308,8 +317,17 @@ class PresetDialog(QDialog):
             self.detail.show_values("", None)
 
     def _pick(self, key):
+        self.set_current(key)
         self.picked.emit(key, self.strength.value() or "mid")
-        self.accept()
+
+    def set_current(self, key):
+        self.grid.set_current(key)
+        for k, b in self.user_btns.items():
+            b.setChecked(k == key)
+
+    def done(self, r):
+        super().done(r)
+        self.closed.emit()
 
 
 # ------------------------------------------------------------------ AUTO 창 클립 목록
@@ -424,8 +442,7 @@ class AutoDialog(DragMove, QDialog):
         p = state.project
         st = get_setting("auto", {}) or {}
         self.strength_v = st.get("strength", "mid")
-        keep = st.get("keep", "keep")
-        keys = st.get("keys", "keep")
+        keep, keys = "drop", "auto"           # 늘 [기존 보정 무시][키프레임 자동]으로 시작(사용자 2026-11-07)
         after = st.get("after", "render")
         self.rows: list[AutoRow] = []
         for s in p.sources:
@@ -482,10 +499,14 @@ class AutoDialog(DragMove, QDialog):
         self.detail = DetailBox()
         right = QVBoxLayout()
         right.setSpacing(12)
+        right.setContentsMargins(9, 9, 9, 9)       # 아래 버튼 줄 x 맞춤에 씀
         self._top_opts = QHBoxLayout()           # [기존 보정 유지|무시] [키프레임 유지|자동] — [프리셋 자동] 위 (사용자 2026-11-06)
         self._top_opts.setSpacing(5)
         right.addLayout(self._top_opts)
-        right.addWidget(self.grid)
+        gl = QHBoxLayout()                        # 프리셋 격자 왼쪽 끝 = 강도 [약] x (사용자 2026-11-07)
+        gl.addSpacing(81)
+        gl.addWidget(self.grid, 1)
+        right.addLayout(gl)
         line = QFrame()
         line.setFrameShape(QFrame.HLine)
         line.setStyleSheet("color:#3a3a3a;")
@@ -531,17 +552,20 @@ class AutoDialog(DragMove, QDialog):
         self.b_start.setToolTip("클립에 값을 넣고 바로 렌더")
         self.b_start.clicked.connect(lambda: self._go("render"))
         # 기존 보정·키프레임 = 오른쪽 맨 위, 아래 줄 = 오른쪽 버튼 4개
+        self._top_opts.addSpacing(81)             # 왼쪽 끝 = 강도 [약] 버튼 x (라벨 76 + 간격 5)
         self._top_opts.addWidget(self.keep)
-        self._top_opts.addStretch(1)
+        self._top_opts.addSpacing(8)
         self._top_opts.addWidget(self.keys)
+        self._top_opts.addStretch(1)
         for sgm in (self.keep, self.keys):
             for b in sgm.btns.values():
-                b.setMinimumWidth(100)
+                b.setFixedWidth(90)             # 4개 + 간격 = [약] 부터 오른쪽 끝까지
         rb = QHBoxLayout()
         rb.setSpacing(8)
-        rb.addStretch(1)
+        rb.addSpacing(81 + 9)   # 왼쪽 끝 = 강도 [약] 버튼 x (오른쪽 열 바깥 여백 포함)
         for b in (self.b_cancel, self.b_sample, self.b_each, self.b_start):
             rb.addWidget(b)
+        rb.addStretch(1)
         rbw = QWidget()
         rbw.setLayout(rb)
         rbw.setFixedWidth(470)
@@ -865,7 +889,7 @@ def sample_name(cfg: dict, src, k: int, preset: str = "") -> str:
 
 
 class SampleDialog(DragMove, QDialog):
-    def __init__(self, name: str, folder: str, parent=None):
+    def __init__(self, name: str, folder: str, parent=None, layout: str = ""):
         super().__init__(parent, Qt.Dialog | Qt.FramelessWindowHint)
         self.setObjectName("SampleDialog")
         self.setStyleSheet("#SampleDialog{background:#262626; border:1px solid #555; border-radius:6px;}")
@@ -889,8 +913,8 @@ class SampleDialog(DragMove, QDialog):
         self.fmt = Seg(SAMPLE_FMTS, cfg.get("fmt", "png8"))
         self.fmt.changed.connect(self._eg)
         v.addLayout(labeled("형식", self.fmt))
-        self.layout_seg = Seg([("side", "나란히"), ("tb", "위아래"), ("lr", "좌우")], cfg.get("layout", "side"))
-        self.layout_seg.setToolTip("나란히 = 보정 전·후 전체 화면 2장 / 위아래·좌우 = 반반")
+        self.layout_seg = Seg([("side", "나란히"), ("tb", "상하"), ("lr", "좌우")], layout or cfg.get("layout", "side"))
+        self.layout_seg.setToolTip("나란히 = 보정 전·후 전체 화면 2장 / 상하·좌우 = 반반")
         v.addLayout(labeled("배치", self.layout_seg))
         line = QFrame()
         line.setFrameShape(QFrame.HLine)

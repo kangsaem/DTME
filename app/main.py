@@ -39,13 +39,19 @@ def main():
     app.setApplicationName("DTME")
     dark(app)
     w = MainWindow()
-    w.show()
+    args = [a for a in sys.argv[1:] if Path(a).suffix.lower() in (".mp4", ".mov")]
+    if args or os.environ.get("DTME_NO_LAUNCHER"):
+        w.show()
+    else:                                  # 시작 창: 큰 AUTO + 작은 MANUAL (v0.16.8)
+        from dtme.ui_launch import Launcher
+        w._launcher = Launcher(w)
+        w._launcher.center()
+        w._launcher.show()
     if os.environ.get("DTME_SELFTEST"):   # 빌드 점검용: 창을 띄우고 2초 뒤 종료
         from PySide6.QtCore import QTimer
         from PySide6.QtMultimedia import QMediaFormat
         n = len(QMediaFormat().supportedFileFormats(QMediaFormat.Decode))
         QTimer.singleShot(2000, lambda: app.exit(0 if n > 0 else 3))
-    args = [a for a in sys.argv[1:] if Path(a).suffix.lower() in (".mp4", ".mov")]
     if args:
         w.edit.import_files(args)
     sys.exit(app.exec())

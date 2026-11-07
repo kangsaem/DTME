@@ -10,7 +10,7 @@ import math
 import os
 from fractions import Fraction
 
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QPoint, QPointF, QRectF, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer, QVideoSink
 from PySide6.QtWidgets import QSizePolicy, QWidget
@@ -27,6 +27,7 @@ class Monitor(QWidget):
     cropDragged = Signal(float)        # 세로 크롭 이동량(원본 px)
     whitePicked = Signal(float, float)   # 흰색 찍기: 영상 안 위치(0~1)
     viewChanged = Signal()               # 확대·이동 바뀜(→ 확대 영역 고화질 다시 만들기)
+    splitFlipped = Signal(bool)          # 반반 선 우클릭 → 방향(True = 좌우)
     titlePressed = Signal(str)           # 타임라인 모드: 글자·이미지를 잡음(실행취소 지점)
     titleChanged = Signal()
     modeRequested = Signal(str)          # "source" | "timeline"
@@ -424,7 +425,9 @@ class Monitor(QWidget):
             return
         if e.button() == Qt.RightButton and self._split_hit(pos):     # 반반 선 우클릭 = 좌우 ↔ 위아래
             self.split_v = not self.split_v
+            self._split_tip(pos, True)
             self.update()
+            self.splitFlipped.emit(self.split_v)
             return
         if e.button() != Qt.LeftButton:
             return
@@ -485,7 +488,9 @@ class Monitor(QWidget):
             return
         if self._split_hit(pos):
             self.setCursor(Qt.SplitHCursor if self.split_v else Qt.SplitVCursor)
+            self._split_tip(pos, True)
             return
+        self._split_tip(pos, False)
         if self._drag and (e.buttons() & Qt.LeftButton):
             mode, lay, p0, cx, cy, sc = self._drag
             c = self._out_rect
@@ -516,6 +521,21 @@ class Monitor(QWidget):
             self.setCursor(Qt.SizeAllCursor)
         else:
             self.setCursor(Qt.SizeHorCursor if self._crop_mode() and self._out_rect.contains(pos) else Qt.ArrowCursor)
+
+    def _split_tip(self, pos, on):
+        """반반 선 위 = '우클릭 = 상하 반반' 알림(선에서 벗어나면 바로 숨김)."""
+        from PySide6.QtWidgets import QToolTip
+        if on:
+            t = "우클릭 = 상하 반반" if self.split_v else "우클릭 = 좌우 반반"
+            QToolTip.showText(self.mapToGlobal(pos.toPoint()) + QPoint(14, 18), t, self)
+            self._tip_on = True
+        elif getattr(self, "_tip_on", False):
+            QToolTip.hideText()
+            self._tip_on = False
+
+    def leaveEvent(self, e):
+        self._split_tip(None, False)
+        super().leaveEvent(e)
 
     def mouseReleaseEvent(self, _):
         if self._pan is not None:

@@ -6,9 +6,9 @@ from pathlib import Path
 
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QAction, QKeySequence
-from PySide6.QtWidgets import QFileDialog, QMainWindow, QMessageBox, QToolBar
+from PySide6.QtWidgets import QFileDialog, QMainWindow, QToolBar
 
-from . import __version__, paths
+from . import __version__, paths, ui_style
 from .project import AUDIO_EXT, IMAGE_EXT, Project
 from .state import AppState
 from .ui_edit import EditTab
@@ -73,11 +73,11 @@ class MainWindow(QMainWindow):
     def _confirm_discard(self) -> bool:
         if not self.state.dirty:
             return True
-        r = QMessageBox.question(self, "저장", "변경 내용을 저장할까요?",
-                                 QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel)
-        if r == QMessageBox.Save:
+        from .ui_style import confirm_save
+        r = confirm_save(self)                      # MOSCO 와 같은 어두운 창 [취소][저장 안 함][저장]
+        if r == "save":
             return self.save_project()
-        return r == QMessageBox.Discard
+        return r == "discard"
 
     def new_project(self):
         if self._confirm_discard():
@@ -95,13 +95,13 @@ class MainWindow(QMainWindow):
         try:
             p = Project.load(f)
         except Exception as e:  # noqa: BLE001
-            QMessageBox.warning(self, "불러오기 실패", str(e))
+            ui_style.notice(self, f"불러오기 실패: {e}")
             return
         missing = [s.name for s in p.sources if not Path(s.path).exists()]
         self.state.set_project(p)
         self._title()
         if missing:
-            QMessageBox.warning(self, "원본 없음", "원본 파일을 찾을 수 없습니다:\n" + "\n".join(missing))
+            ui_style.notice(self, "원본 파일을 찾을 수 없습니다:\n" + "\n".join(missing))
 
     def save_project(self, save_as=False) -> bool:
         p = self.state.project
@@ -138,7 +138,9 @@ class MainWindow(QMainWindow):
 
     def dropEvent(self, e):
         files = [u.toLocalFile() for u in e.mimeData().urls()]
+        from .ui_launch import collect_videos
         vids = [f for f in files if Path(f).suffix.lower() in VIDEO_EXT]
+        vids += collect_videos([f for f in files if Path(f).is_dir()])      # 폴더 = 그 안의 영상
         projs = [f for f in files if f.endswith(".json")]
         if vids:
             self.edit.import_files(vids)

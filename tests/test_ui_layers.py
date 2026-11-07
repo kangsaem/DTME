@@ -197,8 +197,8 @@ print("통째 이동 자석(다른 레이어):", l1["fin"], l1["fout"]); assert 
 src.sel_in, src.sel_out = 40, 120; e._after_io()
 print("IO 줄이면 레이어도:", [(l["fin"], l["fout"]) for l in src.layers]); assert all(40 <= l["fin"] < l["fout"] <= 120 for l in src.layers)
 e._select_layer(l2["id"]); e._key("del"); print("Del 레이어 →", len(src.layers)); assert len(src.layers) == 1
-from PySide6.QtWidgets import QMessageBox
-QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
+from dtme import ui_style
+ui_style.confirm = lambda *a, **k: "ok"              # 삭제 확인 창 = [삭제]
 e._set_target("img"); e.img_list.setCurrentRow(0); e._key("del"); wait(0.2)
 print("Del 이미지 →", len(st.project.images)); assert not st.project.images
 e._set_target("src"); e._key("del"); wait(0.3)

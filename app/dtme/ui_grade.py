@@ -9,7 +9,7 @@ from pathlib import Path
 from PySide6.QtCore import QEvent, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QPixmap
 from PySide6.QtWidgets import (QButtonGroup, QComboBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QInputDialog,
-                               QLabel, QLineEdit, QListWidget, QListWidgetItem, QMenu, QMessageBox, QPushButton,
+                               QLabel, QLineEdit, QListWidget, QListWidgetItem, QMenu, QPushButton,
                                QScrollArea, QSizePolicy, QSlider, QVBoxLayout, QWidget)
 
 from . import ff, jobs, paths, ui_style
@@ -162,6 +162,7 @@ class Section(QWidget):
 class GradePanel(QWidget):
     gradeChanged = Signal()
     viewChanged = Signal(str)                    # "grade" | "raw" | "split"
+    splitDirChanged = Signal(bool)               # 반반 방향: True = 좌우 · False = 상하
     scopeToggled = Signal(int)                   # 0 끔 · 1 겹침 · 2 파레이드
     message = Signal(str, str)                   # (글, 색) → 상태줄
     whitePickToggled = Signal(bool)
@@ -206,7 +207,8 @@ class GradePanel(QWidget):
         self.preset.setFixedHeight(26)
         self.preset.setFocusPolicy(Qt.NoFocus)
         self.preset.setStyleSheet(ui_style.PRESET)          # 왼쪽 정렬(같은 입체감)
-        self.preset.clicked.connect(self.open_presets)
+        self.preset.setCheckable(True)                       # 창이 열려 있는 동안 켜짐(파랑)
+        self.preset.clicked.connect(self.toggle_presets)
         self.strength = get_setting("preset_strength", "mid") or "mid"
         self._rec_jobs = 0
         b_ps = self._side(QPushButton("저장…"))
@@ -234,7 +236,7 @@ class GradePanel(QWidget):
         self.view = QButtonGroup(self)
         vbox = QHBoxLayout()
         vbox.setSpacing(0)
-        for i, (k, t, tip) in enumerate((("grade", "보정", ""), ("raw", "원본", "보정 전 = LUT만 (B)"), ("split", "반반", "왼쪽 보정 전(LUT만) · 오른쪽 보정"))):
+        for i, (k, t, tip) in enumerate((("grade", "보정", ""), ("raw", "원본", "보정 전 = LUT만 (B)"), ("split", "좌우", "보정 전(LUT만) · 보정 반반 — 다시 누르면 좌우 ↔ 상하"))):
             b = QPushButton(t)
             b.setCheckable(True)
             b.setFocusPolicy(Qt.NoFocus)
@@ -245,7 +247,9 @@ class GradePanel(QWidget):
             self.view.addButton(b, i)
             vbox.addWidget(b, 1)
         self.view.button(0).setChecked(True)
-        self.view.buttonClicked.connect(lambda b: self.viewChanged.emit(b.property("key")))
+        self.split_v = True
+        self._view_prev = "grade"
+        self.view.buttonClicked.connect(self._view_clicked)
         self.rgb = self._side(QPushButton("RGB"), checkable=True)
         self.rgb.setToolTip("RGB 그래프 (누를 때마다 겹침 → 파레이드 → 끔)")
         self.scope_mode = 0
@@ -509,7 +513,29 @@ class GradePanel(QWidget):
         for b in self.view.buttons():
             if b.property("key") == key:
                 b.setChecked(True)
+        self._view_prev = key
         self.viewChanged.emit(key)
+
+    def _view_clicked(self, b):
+        k = b.property("key")
+        if k == "split" and self._view_prev == "split":      # 켜진 [좌우]/[상하]를 다시 누름 = 방향 바꿈
+            self.set_split_dir(not self.split_v)
+            return
+        self._view_prev = k
+        self.viewChanged.emit(k)
+
+    def set_split_dir(self, v: bool, emit: bool = True):
+        """반반 방향(모니터 선 우클릭과 같음). 버튼 글자·샘플 칸도 같이."""
+        v = bool(v)
+        changed = v != self.split_v
+        self.split_v = v
+        for b in self.view.buttons():
+            if b.property("key") == "split":
+                b.setText("좌우" if v else "상하")
+        if emit:
+            self.splitDirChanged.emit(v)
+        if changed and self.view_mode() != "raw":
+            self.refresh_samples()
 
     # ------------------------------------------------------------ 출력
     def _load_output(self):
@@ -557,12 +583,31 @@ class GradePanel(QWidget):
         src = self._src()
         name = preset_name(src.auto) if src else ""
         self.preset.setText(f"프리셋: {name}  ▾" if name else "프리셋  ▾")
+        dlg = getattr(self, "_pdlg", None)
+        if dlg is not None and src:                       # 떠 있는 창 = 지금 클립 표시
+            cur = (src.auto or {}).get("preset", "") or ("base" if not src.grade else "")
+            dlg.set_current(cur)
 
     def _sids(self):
         return (self.targets_fn() if self.targets_fn else []) or ([self.cur_sid] if self.cur_sid else [])
 
+    def toggle_presets(self):
+        dlg = getattr(self, "_pdlg", None)
+        if dlg is not None and dlg.isVisible():
+            dlg.reject()
+        else:
+            self.open_presets()
+
+    def _presets_closed(self, dlg):
+        if getattr(self, "_pdlg", None) is dlg:
+            self._pdlg = None
+        self.preset.setChecked(False)
+
     def open_presets(self):
         from .ui_auto import PresetDialog
+        old = getattr(self, "_pdlg", None)
+        if old is not None:
+            old.reject()
         src = self._src()
         cur = (src.auto or {}).get("preset", "") if src else ""
         if src and not cur and not src.grade:
@@ -574,7 +619,11 @@ class GradePanel(QWidget):
         g = self.preset.mapToGlobal(self.preset.rect().bottomLeft())
         dlg.move(g)
         self._pdlg = dlg
-        dlg.exec()
+        dlg.closed.connect(lambda d=dlg: self._presets_closed(d))
+        self.preset.setChecked(True)
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
 
     def apply_choice(self, key, strength="mid"):
         """프리셋 창에서 고른 것 적용(현재 클립 또는 Ctrl·Shift 로 고른 여러 클립).
@@ -597,7 +646,7 @@ class GradePanel(QWidget):
             try:
                 g = load_preset(key[5:])
             except Exception as e:  # noqa: BLE001
-                QMessageBox.warning(self, "프리셋", str(e))
+                ui_style.notice(self, f"프리셋: {e}")
                 return
         else:
             g = auto.builtin_grade(key, {**FACTORY_GRADE, **p.grade}, strength)
@@ -678,7 +727,7 @@ class GradePanel(QWidget):
         name = name.strip()
         if not ok or not name:
             return
-        if name in list_presets() and QMessageBox.question(self, "프리셋", f"{name} 덮어쓰기?") != QMessageBox.Yes:
+        if name in list_presets() and not ui_style.ask(self, f"{name} 덮어쓰기?", "덮어쓰기"):
             return
         save_preset(name, self._effective())
         if src:
@@ -717,7 +766,7 @@ class GradePanel(QWidget):
             self._load_controls()
             self._emit_change()
         elif act is a_del:
-            if QMessageBox.question(self, "삭제", f"{name} 삭제?") == QMessageBox.Yes:
+            if ui_style.ask(self, f"{name} 삭제?"):
                 delete_preset(name)
         self._fill_presets()
 
@@ -831,7 +880,7 @@ class GradePanel(QWidget):
         save_default_grade(p.grade)
         self._load_controls()
         self._emit_change()
-        QMessageBox.information(self, "저장", "기본값으로 저장됨")
+        ui_style.notice(self, "기본값으로 저장됨")
 
     # ------------------------------------------------------------ 샘플 (PNG)
     def make_samples(self):
@@ -868,15 +917,15 @@ class GradePanel(QWidget):
             if m.id in self.pix:
                 it.setIcon(self.pix[m.id])
             self.samples.addItem(it)
-            out = sample_dir() / f"{s.id}_{m.frame}{'_raw' if raw else ''}.png"
+            out = sample_dir() / f"{s.id}_{m.frame}{'_raw' if raw else ('' if self.split_v else '_tb')}.png"
 
-            def work(s=s, fr=m.frame, out=out, grade=grade, full=full):
+            def work(s=s, fr=m.frame, out=out, grade=grade, full=full, vertical=self.split_v):
                 c = ff.cached_frame(s, fr)
                 before = ff.render_preview(c, ff.lut_only(full))        # 보정 전 = LUT만
                 if grade is None:
                     data = before
                 else:
-                    data = split_png(before, ff.render_preview(c, grade))
+                    data = split_png(before, ff.render_preview(c, grade), vertical)
                 tmp = out.with_suffix(f".{gen}.part")
                 tmp.write_bytes(data)
                 try:
@@ -985,8 +1034,8 @@ class GradePanel(QWidget):
             self._load_output()
 
 
-def split_png(raw_png: bytes, graded_png: bytes) -> bytes:
-    """반반 샘플: 왼쪽 반 = 보정 전(LUT만), 오른쪽 반 = 보정, 가운데 흰 선 (QImage 라 작업 스레드에서도 안전)."""
+def split_png(raw_png: bytes, graded_png: bytes, vertical: bool = True) -> bytes:
+    """반반 샘플: 왼쪽(상하면 위) 반 = 보정 전(LUT만), 나머지 반 = 보정, 경계 흰 선 (QImage 라 작업 스레드에서도 안전)."""
     from PySide6.QtCore import QBuffer, QByteArray, QIODevice
     from PySide6.QtGui import QColor, QImage, QPainter
     a, b = QImage.fromData(raw_png, "PNG"), QImage.fromData(graded_png, "PNG")
@@ -994,9 +1043,15 @@ def split_png(raw_png: bytes, graded_png: bytes) -> bytes:
         return graded_png
     out = b.convertToFormat(QImage.Format_RGB32)
     p = QPainter(out)
-    h = out.width() // 2
-    p.drawImage(0, 0, a.scaled(out.width(), out.height()), 0, 0, h, out.height())
-    p.fillRect(h - 1, 0, 2, out.height(), QColor(255, 255, 255, 230))
+    a = a.scaled(out.width(), out.height())
+    if vertical:
+        h = out.width() // 2
+        p.drawImage(0, 0, a, 0, 0, h, out.height())
+        p.fillRect(h - 1, 0, 2, out.height(), QColor(255, 255, 255, 230))
+    else:
+        h = out.height() // 2
+        p.drawImage(0, 0, a, 0, 0, out.width(), h)
+        p.fillRect(0, h - 1, out.width(), 2, QColor(255, 255, 255, 230))
     p.end()
     ba = QByteArray()
     buf = QBuffer(ba)

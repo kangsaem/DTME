@@ -1,10 +1,10 @@
 # HANDOFF — DTME (Diving Tour Movie Editor)
 
-다음 대화는 이 문서를 기준으로 이어서 작업한다. **v0.16.7 완료(원본 구간 캐시 = 멈춤 보정 화면 빠르게, 샘플 이름 클립 날짜 항상, AUTO 줄 이름 …). v0.16.6(꺼진 색 버튼이 확실히 꺼져 보이게, MOSCO 용 버튼 기준서 `design/BUTTON_UI.md` · 견본 `design/button_ref.png` · **MOSCO 버튼 목록·계획·시안 `design/mosco/MOSCO_BUTTONS.md`**(MOSCO 원본은 안 건드림)). v0.16.5(버튼 모양 통일 = 그림자 없음 · 버튼 안 입체감, 샘플 이름 날짜시간 뺌). v0.16.4(DJI 메타로 D-Log M/일반 판단 → 불러올 때 LUT 자동, 일반·알 수 없음 = LUT 없음, 프록시 = 클립 LUT, AUTO 창 LUT 줄). v0.16.3(테두리 없는 창 끌어서 이동, 샘플 배치 나란히·위아래·좌우, 모니터 반반 선 우클릭 = 좌우↔위아래). v0.16.2(디헤이즈 뺌 = 물빛 계단 원인 · 블루워터 커브 밝기 맞춤, 스틸 8bit 기본, WinError 32 자동 재시도, 보정 전 = LUT만, 렌더 리스트 보정값 사본·노란 점·완료 저장, 렌더 설정 창 어두운 창·취소/확인·새 프로젝트 기본값). v0.16.1(불러오면 LUT만, 이름 클릭 끄기, 로딩 표시, 프록시 2개·GPU 축소, AUTO 렌즈/흔들림). 다음: 사용자 PC 실기 확인(블루워터 밝기, 프록시 속도 = cache/dtme.log). MOSCO 에 같은 UI = `design/AUTO_UI.md`.**
+다음 대화는 이 문서를 기준으로 이어서 작업한다. **v0.16.8 완료(시작 창 [AUTO]/[MANUAL] → 파일·폴더 고르면 AUTO 창만, AUTO 창 줄 맞춤·기본 무시+자동, 프리셋 떠 있는 창, 보기 [좌우]↔[상하]·샘플도 따라감, 빨간 스틸 ➜ 옆, [AUTO][영상 추가][삭제] 한 줄, 확인 창 MOSCO 모양, 빌드 이름 DTME-버전-windows). v0.16.7(원본 구간 캐시 = 멈춤 보정 화면 빠르게, 샘플 이름 클립 날짜 항상, AUTO 줄 이름 …). v0.16.6(꺼진 색 버튼이 확실히 꺼져 보이게, MOSCO 용 버튼 기준서 `design/BUTTON_UI.md` · 견본 `design/button_ref.png` · **MOSCO 버튼 목록·계획·시안 `design/mosco/MOSCO_BUTTONS.md`**(MOSCO 원본은 안 건드림)). v0.16.5(버튼 모양 통일 = 그림자 없음 · 버튼 안 입체감, 샘플 이름 날짜시간 뺌). v0.16.4(DJI 메타로 D-Log M/일반 판단 → 불러올 때 LUT 자동, 일반·알 수 없음 = LUT 없음, 프록시 = 클립 LUT, AUTO 창 LUT 줄). v0.16.3(테두리 없는 창 끌어서 이동, 샘플 배치 나란히·위아래·좌우, 모니터 반반 선 우클릭 = 좌우↔위아래). v0.16.2(디헤이즈 뺌 = 물빛 계단 원인 · 블루워터 커브 밝기 맞춤, 스틸 8bit 기본, WinError 32 자동 재시도, 보정 전 = LUT만, 렌더 리스트 보정값 사본·노란 점·완료 저장, 렌더 설정 창 어두운 창·취소/확인·새 프로젝트 기본값). v0.16.1(불러오면 LUT만, 이름 클릭 끄기, 로딩 표시, 프록시 2개·GPU 축소, AUTO 렌즈/흔들림). 다음: 사용자 PC 실기 확인(블루워터 밝기, 프록시 속도 = cache/dtme.log). MOSCO 에 같은 UI = `design/AUTO_UI.md`.**
 
-## 1. 현재 상태 — v0.16.7 (2026-11-06)
+## 1. 현재 상태 — v0.16.8 (2026-11-07)
 
-- 저장소: `kangsaem/DTME` (main). push 하면 GitHub Actions 가 Windows 빌드 → Actions → 최신 "Windows build" → Artifacts `DTME-windows`(약 200MB, 30일)
+- 저장소: `kangsaem/DTME` (main). push 하면 GitHub Actions 가 Windows 빌드 → Actions → 최신 "Windows build" → Artifacts `DTME-<버전>-windows`(예 DTME-0.16.8-windows, 약 200MB, 30일)
 - Linux 작업 환경에서 엔진·화면(오프스크린) 검증, Actions(Windows)에서 빌드·엔진·exe 실행 점검 통과
 - **사용자 PC 실기 테스트 진행 중** — 사용자가 화면을 보며 하나씩 수정 요청하는 단계
 - Claude 세션에서는 git 태그 push 가 막혀 있음(Release zip 필요하면 사용자가 GitHub 웹에서 태그/Release 생성)
@@ -217,6 +217,21 @@ UI 시안: Claude Design 캔버스 https://claude.ai/artifact/C4YHhA1vrZEKLp76BF
   - 측정(이 환경 2코어, 960px 프록시): 프레임 표시 80ms → 2ms, 120프레임 구간 디코딩 ≈ 0.6초. 정확성 = 한 장씩 디코딩과 같은 화면(`tests/test_framecache.py`)
   - 한계: 보정 미리보기(원본 4K 디코딩 + 필터) 자체 속도는 그대로 — 처음 보는 프레임·값 바꾼 직후는 예전과 같음. 보정을 프로그램 안에서 다시 구현(MOSCO 3단계)은 안 함
 
+### v0.16.8 (2026-11-07, 사용자 확정)
+- **시작 창**(`ui_launch.py` Launcher, `main.py`): 420×300 화면 가운데, 큰 빨강 [AUTO](240×110, 40px) + 작은 [MANUAL](수동 작업, 이름 사용자 확인). 영상 인자가 있거나 `DTME_NO_LAUNCHER` 면 바로 메인 창
+  - [AUTO] → [파일 선택…][폴더 선택…] 또는 창에 끌어 놓기(폴더 = 그 안 영상, 하위 제외 `collect_videos`) → **늘 새 작업**(set_project) → 메인 창은 숨긴 채 AUTO 창만
+  - [보정만] → 메인 편집 화면(로딩 중이어도) · 시작 창 닫음 / [샘플] → AUTO 창 그대로 / [보정+렌더] → 시작 창으로 돌아와 빨간 진행 막대(EditTab.autoRenderProgress), 끝나면 "완료 n개" + [폴더 열기], 렌더 중 [AUTO] 꺼짐 / [취소]·Esc → 시작 창
+  - 렌더 중 메인 창 없이 닫으면 확인. [MANUAL] → 빈 프로젝트 메인 창
+  - MOSCO 도 같은 흐름 예정(사용자: 나중에 맞춤)
+- **AUTO 창**: 위 [기존 보정 유지|무시][키프레임 유지|자동](각 90px), 프리셋 격자, 아래 [취소][샘플][보정만][보정+렌더] 모두 **왼쪽 끝 = 강도 [약] x**(라벨 76 + 5 = 81, 오른쪽 열 여백 9 고정). 열 때마다 **무시 + 자동**(설정 저장값 안 씀)
+- **프리셋 창**(보정 패널 [프리셋 ▾]): 떠 있는 창(Tool·테두리 없음·끌어 이동), 열린 동안 버튼 파랑(checkable), 고르면 적용하고 열린 채, 버튼 다시 누르기·Esc 로 닫힘, 클립 바꾸면 표시 따라감. 격자도 [약] x 에 맞춤
+- **보기 [보정|원본|좌우]**: 켜진 [좌우]를 다시 누르면 [상하](글자 바뀜) ↔ [좌우]. 모니터 반반 선 우클릭과 동기(GradePanel.splitDirChanged ↔ Monitor.splitFlipped). 선 위 마우스 = 말풍선 "우클릭 = 상하 반반"/"좌우 반반"(벗어나면 숨김)
+- **샘플 방향**: 패널 샘플 칸(G)이 상하면 위 = 보정 전(split_png vertical), AUTO [샘플] 창 배치 기본 = 모니터 방향(lr/tb), 이름 [나란히|상하|좌우]
+- 편집 화면: 컷 줄 [샘플][★][글자] · [스틸(빨강)][➜], 소스 위 [AUTO][영상 추가][삭제] 한 줄(좁으면 같이 줄어듦). 메인 창에 폴더 끌어 놓기 = 그 안 영상
+- **확인 창 = MOSCO confirm_save 와 같은 모양**(`ui_style.confirm/confirm_save/ask/notice`): 테두리 없는 어두운 창, 저장 확인 [취소][저장 안 함][저장(빨강)], 삭제·덮어쓰기 [취소][삭제/덮어쓰기(빨강)], 알림·오류 [확인]. OS 기본 QMessageBox 안 씀
+- 빌드: Actions 아티팩트·Release zip 이름 `DTME-<__version__>-windows`(build.yml Version 단계)
+- 테스트: tests/test_launcher.py(시작 창 → AUTO 창만 → 취소 = 시작 창, 보정만 = 메인 창, 새 작업). test_ui_auto 기본값 바뀐 것 반영. tests/test_ui_layers.py 는 이번 전부터 `src.io == (20, 180)` 에서 실패(이번 변경과 무관, CI·suite 미포함) — 고칠지 다음에 확인
+
 ### v0.16.7 (2026-11-06, 사용자 확정)
 - 사용자 작업 방식: **소스에서 앞뒤 자르고(인/아웃) 보정 → 멈춰서 보정 화면 확인 → 렌더가 대부분. 타임라인은 거의 안 씀** → 속도 개선은 소스 보정 미리보기 우선
 - **원본 구간 캐시**(`ff.prefetch_range` · `range_lookup` · `range_clear`): 멈춰서 보정 화면을 요청하면(EditTab.request_preview) 뒤에서(PREVIEW_POOL 낮은 우선순위) 그 프레임 앞뒤 1초(`RANGE_HALF` 60 → 120장)를 한 번에 1280 폭 yuv420p10le 로 디코딩해 메모리에 둠(1장 ≈ 2.8MB, 120장 ≈ 330MB, `RANGE_MAX` 4개, 오래 안 쓴 것부터 지움). `cached_frame` 은 구간에 (앞 4장 + 그 프레임)이 있으면 디코딩 없이 `CachedFrame(fmt="raw")` → `render_preview` 가 rawvideo 로 받음(`input_args`)
@@ -358,7 +373,8 @@ tests/test_ui_titles.py  글자·이미지·음악 화면(자석·우클릭·렌
 tests/test_ui_tlpreview.py 타임라인 모드(정지 화면 프레임·글자 표시·모니터 끌기·재생 중 컷 넘김)
 tests/test_ui_grade.py   보정 패널(숫자 입력·프리셋 여러 클립·흰색 찍기·출력 크기·반반)
 app/dtme/ui_trans.py     컷편집 창(SVG 샘플)
-app/dtme/ui_style.py     버튼 모양(BevelStyle · tone · bevel) — 모든 버튼 한 곳
+app/dtme/ui_style.py     버튼 모양(BevelStyle · tone · bevel) — 모든 버튼 한 곳 · 확인 창(confirm·ask·notice)
+app/dtme/ui_launch.py    시작 창(AUTO/MANUAL, 파일·폴더·끌어 놓기 → AUTO 창만)
 app/dtme/auto.py         자동 보정 분석(샘플·통계·장면 판단·값·키프레임·명암/색 균형·목표선 표시), 기본 프리셋 14
 app/dtme/ui_auto.py      AUTO 창 · 보정 탭 프리셋 창 · 샘플 창 · 공통 부품(PresetGrid, Seg, DetailBox)
 tests/test_auto.py       자동 보정 엔진(합성 장면) — CI
@@ -422,6 +438,7 @@ DTME_SELFTEST=1 DTME_NO_AUDIO=1 QT_QPA_PLATFORM=offscreen python app/main.py   #
 
 ## 11. 변경 이력
 
+- v0.16.8: 시작 창(AUTO/MANUAL), AUTO 창 줄 맞춤·기본 무시+자동, 프리셋 떠 있는 창, 좌우↔상하 보기·샘플, 빨간 스틸, 확인 창 MOSCO 모양, 빌드 이름에 버전
 - v0.16.7: 원본 구간 캐시(멈춤 보정 화면 ≈3배), 샘플 이름 클립 날짜 항상, AUTO 줄 이름 …
 - v0.16.6: 꺼진 버튼 확실히 흐리게, MOSCO 용 버튼 기준서(design/BUTTON_UI.md · button_ref.png)
 - v0.16.5: 버튼 모양 통일(BevelStyle: 그림자 없음 · 입체감 · 켜짐 파랑), 샘플 이름 날짜시간 뺌, 일반 10bit 판단 확인

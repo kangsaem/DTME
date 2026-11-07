@@ -7,11 +7,11 @@ import os
 from collections import OrderedDict
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QRectF, QSize, Qt, QTimer
+from PySide6.QtCore import QEvent, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QImage, QImageReader, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (QAbstractSpinBox, QApplication, QButtonGroup, QCheckBox, QDialog, QFileDialog, QFrame,
                                QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-                               QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSlider,
+                               QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSlider,
                                QSplitter, QStyle, QStyledItemDelegate, QTextEdit, QVBoxLayout, QWidget)
 
 from . import ff, jobs, ui_style
@@ -22,7 +22,7 @@ from .state import AppState
 from .ui_bars import LayerBar, SeqTimeline, SourceBar
 from .ui_grade import GradePanel
 from .ui_player import Player
-from .ui_render import (ADD_H, ADD_W, RenderPanel, fix_size, item_base, out_dir,
+from .ui_render import (ADD_H, ADD_W, MAIN_H, MAIN_W, RenderPanel, fix_size, item_base, out_dir,
                         render_list_button, unique)
 
 MEDIA_FILTER = ("영상·이미지·음악 (*.mp4 *.MP4 *.mov *.MOV *.jpg *.JPG *.jpeg *.JPEG *.png *.PNG "
@@ -171,6 +171,8 @@ class ImageDelegate(QStyledItemDelegate):
 
 
 class EditTab(QWidget):
+    autoRenderProgress = Signal(float, bool)      # AUTO 렌더 전체 진행(0~1, 계속 중) → 시작 창
+
     def __init__(self, state: AppState, parent=None):
         super().__init__(parent)
         self.state = state
@@ -236,9 +238,17 @@ class EditTab(QWidget):
         self.auto_bar.setTextVisible(False)
         self.auto_bar.setFixedHeight(3)
         self.auto_bar.setVisible(False)
-        ab = QHBoxLayout()
-        ab.addStretch(1)
-        ab.addWidget(self.b_auto)
+        ab = QHBoxLayout()                      # [AUTO][영상 추가][삭제] 한 줄(v0.16.8)
+        ab.setSpacing(4)
+        self.b_auto.setMinimumWidth(64)         # 열이 좁으면(노트북) 셋이 같이 줄어듦
+        self.b_auto.setMaximumWidth(MAIN_W)
+        ab.addWidget(self.b_auto, 4)
+        for text, fn in (("영상 추가", self.add_files), ("삭제", self._remove_selected)):
+            b = _btn(text, "", fn)
+            b.setFixedHeight(MAIN_H)
+            b.setMinimumWidth(48)
+            b.setMaximumWidth(ADD_W)
+            ab.addWidget(b, 3)
         ab.addStretch(1)
         left = QVBoxLayout()
         left.setContentsMargins(0, 0, 0, 0)
@@ -249,12 +259,6 @@ class EditTab(QWidget):
         left.addWidget(self.img_list, 1)
         left.addWidget(self.mus_list, 1)
         left.addWidget(self.load_bar)
-        row = QHBoxLayout()
-        for text, fn in (("영상 추가", self.add_files), ("삭제", self._remove_selected)):
-            b = _btn(text, "", fn)
-            b.setFixedSize(ADD_W, ADD_H)
-            row.addWidget(b)
-        left.addLayout(row)
         self.src_box = QWidget()          # 오른쪽 열 위: 소스. 높이 = 모니터+바(렌더가 재생 버튼 줄부터 시작)
         self.src_box.setLayout(left)
 
@@ -334,11 +338,13 @@ class EditTab(QWidget):
             cut.addWidget(b)
         self.speed_group.button(1).setChecked(True)
         cut.addSpacing(12)
-        cut.addWidget(_btn("스틸", "S", lambda: self._key("s")))
         cut.addWidget(_btn("샘플", "G", lambda: self._key("g")))
         cut.addWidget(_btn("★", "장면 표시 (M) · 다시 누르면 지움", lambda: self._key("m")))
         cut.addWidget(_btn("글자", "타임라인 재생 위치에 글자 추가", self.add_text))
         cut.addSpacing(12)
+        b_still = _btn("스틸", "S", lambda: self._key("s"))         # 빨강, ➜ 바로 왼쪽(v0.16.8)
+        ui_style.tone(b_still, "red")
+        cut.addWidget(b_still)
         cut.addWidget(render_list_button(lambda: self._key("enter"), "렌더리스트로 (Enter)"))
         cut.addStretch(1)
 
@@ -408,6 +414,8 @@ class EditTab(QWidget):
         self.grade = GradePanel(state)
         self.grade.gradeChanged.connect(self._on_grade_changed)
         self.grade.viewChanged.connect(lambda _k: self.request_preview())
+        self.grade.splitDirChanged.connect(self._set_split_dir)
+        self.player.mon.splitFlipped.connect(lambda v: self.grade.set_split_dir(v, emit=False))
         self.grade.scopeToggled.connect(self.player.mon.set_scope)
         self.grade.whitePickToggled.connect(self._white_mode)
         self.grade.sampleClicked.connect(self._show_sample)
@@ -633,7 +641,7 @@ class EditTab(QWidget):
         if self._last_list == "img" and self.img_list.currentItem() is not None:
             iid = self.img_list.currentItem().data(Qt.UserRole)
             m = self.state.project.image(iid)
-            if m and QMessageBox.question(self, "삭제", f"{Path(m.path).name} 삭제?") == QMessageBox.Yes:
+            if m and ui_style.ask(self, f"{Path(m.path).name} 삭제?"):
                 self.state.remove_image(iid)
                 self._img_cache.pop(iid, None)
             return
@@ -643,7 +651,7 @@ class EditTab(QWidget):
         s = self._cur()
         if not s:
             return
-        if QMessageBox.question(self, "삭제", f"{display_name(s.path)} 삭제?") == QMessageBox.Yes:
+        if ui_style.ask(self, f"{display_name(s.path)} 삭제?"):
             self.cur_sid = ""
             self.state.remove_source(s.id)
 
@@ -1728,6 +1736,10 @@ class EditTab(QWidget):
         self._auto_dlg = dlg
         return dlg
 
+    def _set_split_dir(self, v):
+        self.player.mon.split_v = v
+        self.player.mon.update()
+
     def _ask_folder(self, title="저장폴더"):
         from .project import get_setting, set_setting
         o = self.state.project.output
@@ -1810,7 +1822,8 @@ class EditTab(QWidget):
         from .ui_auto import SampleDialog, sample_frames6, sample_name
         if not dlg.busy and not getattr(dlg, "_scfg", None):
             from .project import get_setting
-            sd = SampleDialog(dlg.name.text().strip(), self.state.project.output.folder or get_setting("last_folder", ""), dlg)
+            sd = SampleDialog(dlg.name.text().strip(), self.state.project.output.folder or get_setting("last_folder", ""), dlg,
+                              "lr" if self.player.mon.split_v else "tb")      # 배치 기본 = 모니터 반반 방향
             sd.move(dlg.geometry().center().x() - sd.width() // 2, dlg.geometry().center().y() - 150)
             if sd.exec() != QDialog.Accepted:
                 return
@@ -1876,6 +1889,7 @@ class EditTab(QWidget):
                        for x in ids)
             tot = done / max(1, len(ids))
             self._set_auto_bar(tot if running else 1.0, "#c0392b")
+            self.autoRenderProgress.emit(tot if running else 1.0, running)
             if not running:
                 self._auto_items = set()
         self.src_list.viewport().update()

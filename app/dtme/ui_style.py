@@ -9,7 +9,7 @@
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QRectF
+from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPalette, QPen
 from PySide6.QtWidgets import QProxyStyle, QStyle, QStyleFactory, QStyleOptionButton
 
@@ -113,7 +113,8 @@ def bevel_on(sel: str = "QPushButton:checked", alpha: int = 255) -> str:
 
 
 HEAD = bevel("#2b2b2b", "#e0e0e0", bold=True, extra="text-align:left; padding:0 8px;")   # 접는 묶음 머리
-PRESET = bevel(BASE, extra="text-align:left; padding:0 8px;")                             # [프리셋: 이름 ▾]
+PRESET = (bevel(BASE, extra="text-align:left; padding:0 8px;")                            # [프리셋: 이름 ▾]
+          + bevel_on("QPushButton:checked") + "QPushButton:checked{text-align:left; padding:0 8px;}")   # 창 열림 = 파랑
 
 
 # ------------------------------------------------------------------ 그리기
@@ -212,3 +213,53 @@ def tone(b, name: str = "", color: str = "", fg: str = "", sel: bool = False):
         b.setFont(f)
     b.update()
     return b
+
+
+# ------------------------------------------------------------------ 확인 창 (MOSCO confirm_save 와 같은 모양, v0.16.8)
+def confirm(parent, text: str, buttons) -> str:
+    """테두리 없는 어두운 확인 창. buttons = [(값, 글자, 폭, 색 이름|None), ...] 왼→오. Esc·바깥 = 'cancel'."""
+    from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
+    dlg = QDialog(parent, Qt.Dialog | Qt.FramelessWindowHint)
+    dlg.setModal(True)
+    dlg.setObjectName("Confirm")
+    dlg.setStyleSheet("#Confirm{background:#262626; border:1px solid #555; border-radius:6px;}"
+                      "QLabel{color:#e6e6e6; font-size:13px;}")
+    lay = QVBoxLayout(dlg)
+    lay.setContentsMargins(24, 22, 24, 18)
+    lay.setSpacing(20)
+    lay.addWidget(QLabel(text))
+    row = QHBoxLayout()
+    row.setSpacing(8)
+    row.addStretch(1)
+    res = {"v": "cancel"}
+    for val, label, w, t in buttons:
+        b = QPushButton(label)
+        b.setFixedSize(w, 30)
+        b.setFocusPolicy(Qt.NoFocus)
+        if t:
+            tone(b, t)
+        b.clicked.connect(lambda _=False, v=val: (res.__setitem__("v", v), dlg.accept()))
+        row.addWidget(b)
+    lay.addLayout(row)
+    if parent is not None and parent.isVisible():
+        dlg.adjustSize()
+        c = parent.window().geometry().center()
+        dlg.move(c.x() - dlg.width() // 2, c.y() - dlg.height() // 2)
+    dlg.exec()
+    return res["v"]
+
+
+def confirm_save(parent, text: str = "변경 내용을 저장할까요?") -> str:
+    """닫기·새 프로젝트·불러오기 전. 반환 save|discard|cancel."""
+    return confirm(parent, text, [("cancel", "취소", 72, None), ("discard", "저장 안 함", 92, None),
+                                  ("save", "저장", 80, "red")])
+
+
+def ask(parent, text: str, ok: str = "삭제", red: bool = True) -> bool:
+    """[취소][ok] 확인 — 삭제·덮어쓰기."""
+    return confirm(parent, text, [("cancel", "취소", 72, None), ("ok", ok, 80, "red" if red else "blue")]) == "ok"
+
+
+def notice(parent, text: str):
+    """알림·오류 [확인] 하나."""
+    confirm(parent, text, [("ok", "확인", 80, None)])
