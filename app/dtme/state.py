@@ -24,6 +24,7 @@ class AppState(QObject):
         self.img_status: dict[str, str] = {}  # 이미지 id → "" (정상) | "읽기 오류" | "원본 없음"
         self.proxy_pct: dict[str, float] = {}
         self.errors: dict[str, str] = {}      # sid → 마지막 오류 내용
+        self.defer_proxy = False              # 시작 창 AUTO: 프록시(재생용)를 [보정+편집] 때까지 미룸 → 상태 "읽음"
         self.work: dict[str, tuple] = {}      # sid → (단계 "analyze"|"sample"|"render", 진행 0~1 | -1 = 대기, 글자 | "")
         self._proxy_jobs: dict[str, jobs.Job] = {}
         self._undo: list[dict] = []
@@ -109,7 +110,7 @@ class AppState(QObject):
         if not n:
             return 0, 0, 0, 1.0
         a = sum(1 for s in srcs if s.frames > 0 or self.status.get(s.id) in ("읽기 오류", "원본 없음"))
-        done = sum(1 for s in srcs if self.status.get(s.id) in ("준비", "읽기 오류", "원본 없음", "프록시 오류"))
+        done = sum(1 for s in srcs if self.status.get(s.id) in ("준비", "읽음", "읽기 오류", "원본 없음", "프록시 오류"))
         part = sum(self.proxy_pct.get(s.id, 0) for s in srcs if self.status.get(s.id, "").startswith("프록시 "))
         return a, done, n, min(1.0, (done + part) / n)
 
@@ -305,12 +306,22 @@ class AppState(QObject):
             return
         self._queue_proxy(src)
 
+    def resume_proxies(self):
+        """미뤄 둔 프록시를 지금 만듦([보정+편집] → 편집 화면)."""
+        self.defer_proxy = False
+        for s in self.project.sources:
+            if self.status.get(s.id) == "읽음" and s.frames:
+                self._queue_proxy(s)
+
     def _queue_proxy(self, src: Source):
         lut = self.project.grade_for_source(src.id, off=False).get("lut", "")      # 클립 LUT 로(일반 영상 = LUT 없음)
         pp = ff.proxy_path(src.path, lut)
-        if pp.exists() and pp.stat().st_size > 0:
+        if pp.exists() and pp.stat().st_size > 0:          # 만들어 둔 것이 있으면 미룸과 상관없이 바로
             src.proxy = str(pp)
             self._set_status(src.id, "준비")
+            return
+        if self.defer_proxy:                                # 분석·샘플·렌더는 원본에서 → 프록시는 편집 화면에서만 필요
+            self._set_status(src.id, "읽음")
             return
         self._set_status(src.id, "프록시 대기")
         gpu = self.project.output.gpu_decode

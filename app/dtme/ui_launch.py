@@ -139,8 +139,10 @@ class Launcher(QWidget):
         self._say("")
         mw = self.mw
         mw.state.set_project(Project())             # 시작 창 AUTO = 늘 새 작업
+        mw.state.defer_proxy = True                 # 프록시(재생용)는 [보정+편집] 때 — 분석·샘플·렌더는 원본에서
         mw.edit.import_files(files)
         if not mw.state.project.sources:
+            mw.state.defer_proxy = False
             self._say("영상 없음")
             return
         dlg = mw.edit.make_auto_dialog()
@@ -149,6 +151,7 @@ class Launcher(QWidget):
         self.hide()
         r = dlg.exec()
         if r == QDialog.Accepted and dlg.mode == "each":       # [보정+편집] → 메인 편집 화면
+            mw.state.resume_proxies()
             mw.show()
             mw.raise_()
             self.close()

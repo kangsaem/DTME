@@ -750,7 +750,7 @@ class EditTab(QWidget):
         """모니터 가운데 '로딩 중 n%' (재생용 프록시 준비 중). 정지 화면·보정·AUTO 는 그동안에도 됨."""
         s = self._cur()
         st = self.state.status.get(s.id, "") if s else ""
-        if s is None or st in ("준비", "읽기 오류", "원본 없음", "프록시 오류"):
+        if s is None or st in ("준비", "읽음", "읽기 오류", "원본 없음", "프록시 오류"):
             self.player.mon.set_loading(None)
         else:
             self.player.mon.set_loading(self.state.proxy_pct.get(s.id, 0.0) if st.startswith("프록시 ") else 0.0)

@@ -884,12 +884,13 @@ class AutoDialog(DragMove, QDialog):
         parts, kind, val = [], "proxy", 0.0
         st = self.state.status
         bad = [r for _i, r in rows if st.get(r.sid) in SG.ERRORS]
-        pdone = sum(1 for _i, r in rows if st.get(r.sid) in ("준비",) or st.get(r.sid) in SG.ERRORS)
-        if pdone < n:
-            cur = next(((i, self.state.proxy_pct.get(r.sid, 0.0)) for i, r in rows
-                        if st.get(r.sid, "").startswith("프록시 ") and st.get(r.sid) != "프록시 대기"), None)
-            parts.append(f"프록시 {pdone}/{n}" + (f" ({cur[0]}번 {int(cur[1] * 100)}%)" if cur else ""))
-            val = sum(1.0 if st.get(r.sid) == "준비" else self.state.proxy_pct.get(r.sid, 0.0) for _i, r in rows) / n
+        pend = [(i, r) for i, r in rows if st.get(r.sid, "") in ("분석 대기", "프록시 대기")
+                or (st.get(r.sid, "").startswith("프록시 ") and st.get(r.sid) not in SG.ERRORS)]
+        if pend:                                    # 프록시를 만드는 중일 때만(미룸 = "읽음" 은 표시 안 함)
+            cur = next(((i, self.state.proxy_pct.get(r.sid, 0.0)) for i, r in pend
+                        if st.get(r.sid, "") not in ("분석 대기", "프록시 대기")), None)
+            parts.append(f"프록시 {n - len(pend)}/{n}" + (f" ({cur[0]}번 {int(cur[1] * 100)}%)" if cur else ""))
+            val = (n - len(pend) + sum(self.state.proxy_pct.get(r.sid, 0.0) for _i, r in pend)) / n
         if self.armed:
             adone = sum(1 for _i, r in rows if r.result is not None or r.error)
             cur = next(((i, r.prog) for i, r in rows if 0 < r.prog < 1), None)
