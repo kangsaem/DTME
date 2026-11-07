@@ -845,6 +845,8 @@ class AutoDialog(DragMove, QDialog):
                 r.prog = 1.0
                 self.state.set_work(r.sid, None)
                 self._compute(r)
+                if self.waiting == "start" and self.mode == "render" and self.pending():
+                    self.startRequested.emit()          # [보정+렌더]: 이 영상은 바로 렌더 시작(뒤 영상은 계속 분석)
                 self.list.viewport().update()
                 self._show_detail()
                 self._progress()

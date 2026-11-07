@@ -73,9 +73,18 @@ def make_pool(n: int) -> QThreadPool:
     return p
 
 
+def _cores() -> int:
+    import os
+    return os.cpu_count() or 4
+
+
+CORES = _cores()
+RENDER_N = max(1, min(3, CORES // 16))     # 동시 렌더: 코어 16개당 1개(1~3, NVENC 인코더 수 한계로 최대 3)
+AUTO_N = max(2, min(8, CORES // 4))        # 동시 분석(샘플 추출): 코어 4개당 1개(2~8)
+
 ANALYZE_POOL = make_pool(4)   # ffprobe
 PROXY_POOL = make_pool(2)     # 동시에 2개(사용자 PC 32코어·RTX 4090 기준, 2026-11-06)
 PREVIEW_POOL = make_pool(4)
 GRAB_POOL = make_pool(2)      # 프록시 프레임 즉시 표시
-RENDER_POOL = make_pool(1)
-AUTO_POOL = make_pool(2)      # AUTO·추천: 샘플 추출
+RENDER_POOL = make_pool(RENDER_N)
+AUTO_POOL = make_pool(AUTO_N)  # AUTO·추천: 샘플 추출

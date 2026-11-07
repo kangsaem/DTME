@@ -212,6 +212,7 @@ class EditTab(QWidget):
         self._music_player = None
         self.pgen = 0
         self._auto_items: set = set()               # AUTO 가 넣은 렌더 항목
+        self._auto_feeding = False                  # [보정+렌더] 분석이 덜 끝나 렌더 항목이 더 들어올 예정
 
         # ================= 소스
         self.src_list = QListWidget()
@@ -757,6 +758,9 @@ class EditTab(QWidget):
 
     def _load_current(self):
         s = self._cur()
+        if not self.window().isVisible():       # 시작 창 AUTO 중(메인 창 숨김) = 모니터 작업 안 함 → 보일 때 불러옴
+            self._load_pending = True
+            return
         self._sync_loading()
         if s is None:
             return
@@ -818,7 +822,7 @@ class EditTab(QWidget):
     def request_preview(self):
         s = self._cur()
         p = self.player
-        if not s or not s.frames or p.is_busy():
+        if not s or not s.frames or p.is_busy() or not self.window().isVisible():   # 숨김 = 보정 화면·원본 구간 캐시 안 만듦
             return
         if not self.chk_preview.isChecked() and p.has_media:
             p.overlay_frame = None
@@ -981,6 +985,9 @@ class EditTab(QWidget):
 
     def showEvent(self, e):
         super().showEvent(e)
+        if getattr(self, "_load_pending", False):     # 숨어 있는 동안 미룬 모니터 불러오기
+            self._load_pending = False
+            QTimer.singleShot(0, self._load_current)
         if not self._sized:                  # 처음 한 번: 화면 폭에 비례(노트북 ≈ 310 | … | 230, 4K 는 더 넓게)
             self._sized = True
             QTimer.singleShot(0, self._init_sizes)
@@ -1909,24 +1916,41 @@ class EditTab(QWidget):
             if not d:
                 return
             dlg._folder = d
+        if dlg.mode == "render":
+            self._auto_render_step(dlg)
+            return
         if dlg.wait_then("start"):
             dlg.set_busy(True)
             return
-        p = self.state.project
         rows = dlg.chosen_rows()
         if not rows:
             dlg.set_busy(False)
             return
-        st = dlg.settings()
+        self._auto_begin(dlg)
+        self._auto_apply(dlg, rows)
+        dlg.accept()
+        self.grade.set_view("split")
+        if rows:
+            self._select_source(rows[0].sid)
+        self._say(f"AUTO 완료: {len(rows)}개 클립", C_OK)
+
+    def _auto_begin(self, dlg):
+        """AUTO 적용 시작: 설정 저장 · 실행취소 지점 1번 · 저장폴더·이름."""
         from .project import set_setting
+        p = self.state.project
         try:
-            set_setting("auto", st)
+            set_setting("auto", dlg.settings())
         except Exception:  # noqa: BLE001
             pass
         self.state.checkpoint()
         if getattr(dlg, "_folder", ""):
             p.output.folder = dlg._folder
         p.output.prefix = dlg.name.text().strip()
+
+    def _auto_apply(self, dlg, rows):
+        """줄 결과를 클립에 넣음(보정값·◆·출력)."""
+        p = self.state.project
+        st = dlg.settings()
         for r in rows:
             s = p.source(r.sid)
             res = r.result
@@ -1937,33 +1961,50 @@ class EditTab(QWidget):
             s.auto = {"preset": res["preset"], "by": "auto" if r.choice == "auto" else "user", "rec": r.rec,
                       "nkeys": len(res["gkeys"].get("r_gain", [])) if st["keys"] == "auto" else 0}
             s.out = r.out
-            self.state.ensure_proxy(s)               # LUT 가 바뀌었으면 그 LUT 로 프록시
+            self.state.ensure_proxy(s)               # LUT 가 바뀌었으면 그 LUT 로 프록시(시작 창 AUTO = 미룸)
         self.state.dirty = True
         self.state.changed.emit("output")
         self.state.changed.emit("grade")
         self.grade._load_controls()
         self.grade.keysChanged.emit()
         self._refresh_tips()
-        if st["after"] == "render":
+
+    def _auto_render_step(self, dlg):
+        """[보정+렌더]: 분석이 끝난 영상부터 바로 값 넣고 렌더 시작(뒤 영상은 그동안 분석). 모두 끝나면 창 닫음."""
+        p = self.state.project
+        if not getattr(dlg, "_started", False):
+            dlg._started, dlg._applied = True, set()
+            self._auto_begin(dlg)
+            self._auto_items = set()
+            self._auto_feeding = True
+        ready = [r for r in dlg.chosen_rows() if r.sid not in dlg._applied]
+        if ready:
+            self._auto_apply(dlg, ready)
             items = []
-            for r in rows:
+            for r in ready:
+                dlg._applied.add(r.sid)
                 s = p.source(r.sid)
                 a, b = s.io
-                it = RenderItem(name=short_name(s.path), segs=[p.snap_seg(Segment(s.id, a, b, 1.0))],
-                                orientation=r.out, audio=True)
-                items.append(it)
+                items.append(RenderItem(name=short_name(s.path), segs=[p.snap_seg(Segment(s.id, a, b, 1.0))],
+                                        orientation=r.out, audio=True))
             p.render_items += items
-            self._auto_items = {it.id for it in items}
+            self._auto_items |= {it.id for it in items}
             self.state.touch("render")
-            dlg.accept()
-            self._set_auto_bar(0.0, "#d9604f")
-            self.render_panel.render()
-        else:
-            dlg.accept()
-            self.grade.set_view("split")
-            if rows:
-                self._select_source(rows[0].sid)
-            self._say(f"AUTO 완료: {len(rows)}개 클립", C_OK)
+            if not self.render_panel.running:
+                self._set_auto_bar(0.0, "#d9604f")
+            self.render_panel.enqueue(items)
+        if dlg.pending():
+            dlg.waiting = "start"
+            dlg.set_busy(True)
+            dlg.analyze_all()
+            return
+        dlg.waiting = None
+        self._auto_feeding = False
+        dlg.accept()
+        if not dlg._applied:
+            dlg.set_busy(False)
+        elif not self.render_panel.running:          # 이미 다 끝남
+            self._render_progress("", 1.0, False)
 
     def _auto_sample(self, dlg):
         """[샘플] 저장 창(폴더·크기·형식·이름) → 클립마다 반반 PNG 6장. 클립 값은 바꾸지 않음."""
@@ -2069,6 +2110,7 @@ class EditTab(QWidget):
             done = sum(self.render_panel.progress.get(x.id, 0.0) if not self.render_panel.status.get(x.id, "").startswith(("완료", "실패")) else 1.0
                        for x in ids)
             tot = done / max(1, len(ids))
+            running = running or self._auto_feeding           # 뒤 영상이 아직 분석 중이면 계속
             self._set_auto_bar(tot if running else 1.0, "#d9604f")
             self.autoRenderProgress.emit(tot if running else 1.0, running)
             if not running:

@@ -105,13 +105,14 @@ def out_dir(project) -> Path:
     return d
 
 
-def unique(path: Path) -> Path:
-    if not path.exists():
+def unique(path: Path, taken=()) -> Path:
+    """있는 파일·taken(동시 렌더가 잡아 둔 이름)과 겹치지 않는 이름."""
+    if not path.exists() and path not in taken:
         return path
     i = 2
-    while (path.with_name(f"{path.stem}_{i}{path.suffix}")).exists():
+    while (q := path.with_name(f"{path.stem}_{i}{path.suffix}")).exists() or q in taken:
         i += 1
-    return path.with_name(f"{path.stem}_{i}{path.suffix}")
+    return q
 
 
 def item_base(project, segs) -> str:
@@ -243,6 +244,7 @@ class RenderPanel(QWidget):
         self.status: dict[str, str] = {}
         self.progress: dict[str, float] = {}
         self.queue: list = []
+        self.active: dict = {}           # 렌더 중인 항목 id → 출력 경로(코어 수만큼 동시, jobs.RENDER_N)
         self.running = False
 
         self.table = QListWidget()      # 이름은 table 유지(키 입력 필터에서 사용)
@@ -372,6 +374,18 @@ class RenderPanel(QWidget):
         self.b_render.setEnabled(False)
         self._next()
 
+    def enqueue(self, items):
+        """렌더 중이면 뒤에 붙여 이어서, 아니면 바로 시작(AUTO: 분석 끝난 영상부터)."""
+        if not self.running:
+            self.render()
+            return
+        p = self.state.project
+        known = {x.id for x in self.queue} | set(self.active)
+        for it in items:
+            if it.id not in known and not it.done and all(p.source(g.src) for g in it.segs):
+                self.queue.append(it)
+        self._next()
+
     def preview_render(self):
         """타임라인 전체(없으면 렌더 리스트 첫 항목)를 960×540 x264 ultrafast 로 → 기본 플레이어로 열기."""
         p = self.state.project
@@ -407,13 +421,17 @@ class RenderPanel(QWidget):
         jobs.submit(jobs.RENDER_POOL, job)
 
     def _next(self):
-        p = self.state.project
-        if not self.queue:
+        """빈 자리만큼(jobs.RENDER_N) 다음 항목을 시작. 다 끝나면 running = False."""
+        while self.queue and len(self.active) < jobs.RENDER_N:
+            self._start(self.queue.pop(0))
+        if not self.queue and not self.active:
             self.running = False
             self.b_render.setEnabled(True)
-            return
-        it = self.queue.pop(0)
-        path = unique(out_dir(p) / f"{file_name(p, it)}.mp4")
+
+    def _start(self, it):
+        p = self.state.project
+        path = unique(out_dir(p) / f"{file_name(p, it)}.mp4", set(self.active.values()))
+        self.active[it.id] = path
         t0 = time.time()
         self.status[it.id] = "진행"
         self.progress[it.id] = 0.0
@@ -428,18 +446,21 @@ class RenderPanel(QWidget):
             self.itemProgress.emit(iid, v, True)
 
         def done(_r, iid=it.id, item=it):
+            self.active.pop(iid, None)
             self.status[iid] = f"완료 {time.time() - t0:.0f}초 → {path}"
+            ff.log_info(f"렌더 {time.time() - t0:.1f}초 (동시 {jobs.RENDER_N}, 코어 {jobs.CORES}) {path}")
             item.done = str(path)                 # 프로젝트에 저장 → 다시 열어도 완료
             self.state.dirty = True
             self.refresh()
-            self.itemProgress.emit(iid, 1.0, bool(self.queue))
+            self.itemProgress.emit(iid, 1.0, bool(self.queue or self.active))
             self._next()
 
         def err(msg, iid=it.id):
+            self.active.pop(iid, None)
             hint = " (인코더를 x264로)" if "nvenc" in msg.lower() else ""
             self.status[iid] = f"실패{hint}: {msg[-300:]}"
             self.refresh()
-            self.itemProgress.emit(iid, 1.0, bool(self.queue))
+            self.itemProgress.emit(iid, 1.0, bool(self.queue or self.active))
             self._next()
 
         job.signals.progress.connect(prog)

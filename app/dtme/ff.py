@@ -17,6 +17,7 @@ from .project import (KEYABLE, OUT_FPS, ImageSource, Marker, Project, Segment, S
                       orig_volume, plan_transitions, reframe_max)
 
 NO_WINDOW = 0x08000000 if os.name == "nt" else 0   # Windows 콘솔창 숨김
+LOW_PRIO = 0x00004000 if os.name == "nt" else 0    # BELOW_NORMAL_PRIORITY_CLASS: 크롬·에펙을 같이 써도 그쪽이 먼저(v0.16.14)
 
 def denoise_chain(g: dict) -> list[str]:
     """F안: 밝기·색을 따로. 색은 시간축 평균을 강하게 + 색 채널만 미디언(튀는 점 제거).
@@ -92,7 +93,7 @@ def _popen(cmd, **kw):
     import time
     for i in range(12):      # WinError 32(백신이 ffmpeg.exe 를 잠깐 잡음 등) → 0.2초 간격 다시 시도. 화면에 '미리보기 오류'가 자주 뜨던 원인
         try:
-            return subprocess.Popen(cmd, creationflags=NO_WINDOW, **kw)
+            return subprocess.Popen(cmd, creationflags=NO_WINDOW | LOW_PRIO, **kw)
         except OSError as e:
             if getattr(e, "winerror", None) not in (32, 33) or i == 11:
                 raise
@@ -161,6 +162,11 @@ def log_error(where: str, msg: str) -> None:
             f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {where}: {msg}\n")
     except Exception:  # noqa: BLE001
         pass
+
+
+def log_info(msg: str) -> None:
+    """속도 기록 등(cache/dtme.log)."""
+    log_error("정보", msg)
 
 
 def _abs(p) -> str:
