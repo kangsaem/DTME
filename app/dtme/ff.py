@@ -857,24 +857,21 @@ def sharpness_around(src: Source, frame: int, radius: int = 5) -> list[tuple[int
 XFADE = {"dissolve": "fade", "wipeleft": "wipeleft", "wiperight": "wiperight", "wipeup": "wipeup",
          "wipedown": "wipedown", "zoomin": "fade", "zoomout": "fade", "rotzoomin": "fade", "rotzoomout": "fade",
          "fadeblack": "fadeblack", "fadewhite": "fadewhite"}
-ROT_MAX = 0.5236     # 회전 최대 30°
 
 
 def zoom_filter(kind: str, start: float, dur: float, head: bool) -> str:
-    """빠른 줌·회전 줌: perspective(프레임마다 계산, 3차 보간, 크기 고정).
-    u = 0→1 가속(제곱). 배율 s = 1+2u, 각도 = u·30° → 확대가 항상 회전보다 커서 화면 밖(검은 모서리)이 보이지 않음.
+    """빠른 줌(회전 없음): perspective(프레임마다 계산, 3차 보간, 크기 고정).
+    u = 0→1 가속(제곱). 배율 s = 1+2u.
     tail(앞 컷 끝): start~start+dur 동안 확대(회전). head(뒷 컷 시작): 0~dur 동안 확대 상태에서 원래로."""
     fps = float(OUT_FPS)
     if head:
         u = f"pow(1-clip(in/{fps:.5f}/{dur:.5f},0,1),2)"
         en = f"lte(t,{dur + 0.5 / fps:.5f})"
-        sign = -1
     else:
         u = f"pow(clip((in/{fps:.5f}-{start:.5f})/{dur:.5f},0,1),2)"
         en = f"gte(t,{start - 0.5 / fps:.5f})"
-        sign = 1
     sc = f"(1+2*{u})"
-    th = f"({sign}*{u}*{ROT_MAX})" if kind.startswith("rot") else "0"
+    th = "0"
 
     def pt(dx, dy):     # 출력 모서리 ← 원본 좌표: 중심 + R(θ)(모서리-중심)/s
         return (f"W/2+(({dx})*cos({th})-({dy})*sin({th}))/{sc}",
@@ -884,18 +881,131 @@ def zoom_filter(kind: str, start: float, dur: float, head: bool) -> str:
     return f"perspective={opts}:interpolation=cubic:eval=frame:enable='{en}'"
 
 
-def transition_graph(fparts: list, plan: list, lens: list, audio: bool) -> float:
+# 회전 줌(v0.16.11): 앞 컷 0→180° · 뒤 컷 −180→0° 를 이어 돌림(가운데 가장 빠름) + 모션블러.
+ROT_DEG = 180.0
+ROT_MIX = 0.2          # 겹침 구간 가운데에서 섞는 비율(나머지는 한 컷만 보임 → 회전이 흐려지지 않음)
+ROT_BLUR = 16          # 모션블러 서브프레임 수
+ROT_SHUTTER = 0.5      # 셔터 180°(1프레임 시간의 절반)
+ROT_EXTRA = 0.5        # 검은 모서리 안 생기는 확대 위에 더하는 확대(가운데 최대)
+ROT_KINDS = ("rotzoomin", "rotzoomout")
+
+
+def rot_frames(d: float) -> tuple[int, int, int]:
+    """전환 길이(초) → (겹침 프레임 nd, 한쪽만 보이는 프레임 k, 섞는 프레임 x). nd = 2k + x."""
+    nd = max(3, int(round(d * float(OUT_FPS))))
+    k = int(round(nd * (1 - ROT_MIX) / 2))
+    x = max(1, nd - 2 * k)
+    return k * 2 + x, k, x
+
+
+def rot_state(kind: str, v: float) -> tuple[float, float]:
+    """미리보기·점검용: 진행 v(0~1) → (앞 컷 각도°, 배율). 뒤 컷 각도 = 앞 컷 − 180°(방향 부호 포함)."""
+    import math
+    v = max(0.0, min(1.0, v))
+    e = 4 * v ** 3 if v < 0.5 else 1 - (-2 * v + 2) ** 3 / 2
+    th = math.radians(ROT_DEG * e)
+    r = 16 / 9
+    cov = abs(math.cos(th)) + abs(math.sin(th)) * r
+    w = v ** (1.16 if kind == "rotzoomin" else 0.87)
+    s = cov * (1 + ROT_EXTRA * math.sin(math.pi * w))
+    return (1 if kind == "rotzoomin" else -1) * ROT_DEG * e, s
+
+
+def _rot_persp(kind: str, role: str, off: float, nd: int) -> str:
+    """perspective 한 장: in = 창 안 프레임 번호, off = 서브프레임 시간 + 시작 위치(프레임). role a = 앞 컷 / b = 뒤 컷."""
+    v = f"clip((in+{off:.5f})/{nd},0,1)"
+    e = f"if(lt({v},0.5),4*pow({v},3),1-pow(2-2*{v},3)/2)"
+    sign = 1 if kind == "rotzoomin" else -1
+    th = f"({sign}*PI*({e}{'' if role == 'a' else '-1'}))"
+    pw = 1.16 if kind == "rotzoomin" else 0.87
+    sc = (f"((abs(cos({th}))+abs(sin({th}))*max(W/H,H/W))*(1+{ROT_EXTRA}*sin(PI*pow({v},{pw}))))")
+
+    def pt(dx, dy):
+        return (f"W/2+(({dx})*cos({th})-({dy})*sin({th}))/{sc}",
+                f"H/2+(({dx})*sin({th})+({dy})*cos({th}))/{sc}")
+    xy = [pt(dx, dy) for dx, dy in (("-W/2", "-H/2"), ("W/2", "-H/2"), ("-W/2", "H/2"), ("W/2", "H/2"))]
+    opts = ":".join(f"x{i}='{x}':y{i}='{y}'" for i, (x, y) in enumerate(xy))
+    return f"perspective={opts}:interpolation=cubic:eval=frame"
+
+
+def rot_window(fparts: list, inlab: str, outlab: str, kind: str, role: str, f0: int, f1: int, start: int, nd: int,
+               uid: str, blur: int = ROT_BLUR) -> None:
+    """컷의 프레임 f0~f1(제외) 를 회전 줌 + 모션블러로. start = 창 첫 프레임의 진행 위치(프레임)."""
+    pre = f"{inlab}trim=start_frame={f0}:end_frame={f1},setpts=PTS-STARTPTS"
+    n = max(1, int(blur))
+    if n == 1:
+        fparts.append(f"{pre},{_rot_persp(kind, role, start, nd)},setpts=PTS-STARTPTS{outlab}")
+        return
+    subs = [f"[rs{uid}_{j}]" for j in range(n)]
+    fparts.append(f"{pre},split={n}{''.join(subs)}")
+    outs = []
+    for j, lab in enumerate(subs):
+        off = start + (j / (n - 1) - 0.5) * ROT_SHUTTER
+        o = f"[rp{uid}_{j}]"
+        fparts.append(f"{lab}{_rot_persp(kind, role, off, nd)}{o}")
+        outs.append(o)
+    fparts.append(f"{''.join(outs)}mix=inputs={n}{outlab}")
+
+
+_FF_MAJOR = None
+
+
+def ffmpeg_major() -> int:
+    """ffmpeg 주 버전(못 읽으면 0)."""
+    global _FF_MAJOR
+    if _FF_MAJOR is None:
+        try:
+            v = run([paths.ffmpeg(), "-hide_banner", "-version"]).decode(errors="ignore").split()
+            num = v[2] if len(v) > 2 else ""
+            _FF_MAJOR = int(num.split(".")[0]) if num[:1].isdigit() else 99    # master 빌드(N-xxxxx) = 최신
+        except Exception:
+            _FF_MAJOR = 0
+    return _FF_MAJOR
+
+
+FG_INLINE_MAX = 6000      # 이보다 긴 그래프는 파일로(Windows 명령줄 32K 제한 · 회전 줌 모션블러)
+
+
+def filter_complex_args(graph_text: str) -> list[str]:
+    """필터 그래프 인자. 길면 cache/lut 에 파일로 쓰고 ffmpeg 7+ 은 -/filter_complex, 그 전은 -filter_complex_script."""
+    if len(graph_text) <= FG_INLINE_MAX:
+        return ["-filter_complex", graph_text]
+    d = paths.cache_dir() / "lut"
+    d.mkdir(parents=True, exist_ok=True)
+    f = d / f"fg_{hashlib.sha1(graph_text.encode()).hexdigest()[:16]}.txt"
+    if not f.exists():
+        tmp = f.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
+        tmp.write_text(graph_text, encoding="utf-8")
+        replace_retry(str(tmp), str(f))
+    return ["-/filter_complex" if ffmpeg_major() >= 7 else "-filter_complex_script", str(f.resolve())]
+
+
+def transition_graph(fparts: list, plan: list, lens: list, audio: bool, blur: int = ROT_BLUR) -> float:
     """[v0][a0]… 를 화면 전환(xfade/acrossfade)과 이어붙이기(concat)로 연결 → [vo][ao]. 결과 길이(초) 반환."""
     n = len(lens)
+    fps = float(OUT_FPS)
     vl = [f"[v{i}]" for i in range(n)]
     al = [f"[a{i}]" for i in range(n)]
-    for i in range(n):                       # 컷 자체에 들어가는 효과(줌·첫 컷 페이드)
+    eff = list(lens)                          # 회전 줌으로 앞뒤를 잘라 낸 뒤 길이
+    xdur = [0.0] * n                          # 경계 i 의 xfade 길이(초)
+    adur = [0.0] * n                          # 경계 i 의 acrossfade 길이(초)
+    for i in range(n):
+        t = plan[i]
+        if t and i > 0:
+            if t[0] in ROT_KINDS:
+                nd, k, x = rot_frames(t[1])
+                eff[i - 1] -= k / fps
+                eff[i] -= k / fps
+                xdur[i], adur[i] = x / fps, nd / fps
+            else:
+                xdur[i] = adur[i] = t[1]
+    for i in range(n):                       # 컷 자체에 들어가는 효과(줌·회전 줌·첫 컷 페이드)
         f = []
         nxt = plan[i + 1] if i + 1 < n else None
-        if nxt and nxt[0] in ("zoomin", "rotzoomin"):
-            f.append(zoom_filter(nxt[0], lens[i] - nxt[1], nxt[1], head=False))
         cur = plan[i]
-        if cur and i > 0 and cur[0] in ("zoomout", "rotzoomout"):
+        if nxt and nxt[0] == "zoomin":
+            f.append(zoom_filter(nxt[0], lens[i] - nxt[1], nxt[1], head=False))
+        if cur and i > 0 and cur[0] == "zoomout":
             f.append(zoom_filter(cur[0], 0, cur[1], head=True))
         if cur and i == 0:
             f.append(f"fade=t=in:st=0:d={cur[1]:.5f}:color={'white' if cur[0] == 'fadewhite' else 'black'}")
@@ -903,24 +1013,59 @@ def transition_graph(fparts: list, plan: list, lens: list, audio: bool) -> float
                 fparts.append(f"[a0]afade=t=in:st=0:d={cur[1]:.5f}[a0f]")
                 al[0] = "[a0f]"
         f.append("settb=AVTB")
-        fparts.append(f"{vl[i]}{','.join(f)}[w{i}]")
+        head = cur if (cur and i > 0 and cur[0] in ROT_KINDS) else None
+        tail = nxt if (nxt and nxt[0] in ROT_KINDS) else None
+        if not (head or tail):
+            fparts.append(f"{vl[i]}{','.join(f)}[w{i}]")
+            vl[i] = f"[w{i}]"
+            continue
+        lf = int(round(lens[i] * fps))
+        pieces = []                           # (종류, f0, f1, …)
+        b0, b1 = 0, lf
+        if head:
+            nd, k, _x = rot_frames(head[1])
+            pieces.append(("b", k, nd, head[0], k, nd))
+            b0 = nd
+        if tail:
+            nd, k, _x = rot_frames(tail[1])
+            b1 = lf - nd
+            tail_piece = ("a", lf - nd, lf - k, tail[0], 0, nd)
+        if b1 > b0:
+            pieces.append(("body", b0, b1))
+        if tail:
+            pieces.append(tail_piece)
+        m = len(pieces)
+        fparts.append(f"{vl[i]}{','.join(f)},split={m}" + "".join(f"[c{i}_{j}]" for j in range(m)))
+        outs = []
+        for j, pc in enumerate(pieces):
+            o = f"[d{i}_{j}]"
+            if pc[0] == "body":
+                fparts.append(f"[c{i}_{j}]trim=start_frame={pc[1]}:end_frame={pc[2]},setpts=PTS-STARTPTS{o}")
+            else:
+                role, f0, f1, kind, start, nd = pc
+                rot_window(fparts, f"[c{i}_{j}]", o, kind, role, f0, f1, start, nd, f"{i}_{j}", blur)
+            outs.append(o)
+        if m == 1:
+            fparts.append(f"{outs[0]}null,settb=AVTB[w{i}]")
+        else:
+            fparts.append(f"{''.join(outs)}concat=n={m}:v=1:a=0,settb=AVTB[w{i}]")
         vl[i] = f"[w{i}]"
-    acc_v, acc_a, acc = vl[0], al[0], lens[0]
+    acc_v, acc_a, acc = vl[0], al[0], eff[0]
     for i in range(1, n):
         last = i == n - 1
         ov, oa = ("[vo]", "[ao]") if last else (f"[xv{i}]", f"[xa{i}]")
         t = plan[i]
         if t:
-            d = t[1]
+            d = xdur[i]
             fparts.append(f"{acc_v}{vl[i]}xfade=transition={XFADE[t[0]]}:duration={d:.5f}:offset={acc - d:.5f}{ov}")
             if audio:
-                fparts.append(f"{acc_a}{al[i]}acrossfade=d={d:.5f}{oa}")
-            acc += lens[i] - d
+                fparts.append(f"{acc_a}{al[i]}acrossfade=d={adur[i]:.5f}{oa}")
+            acc += eff[i] - d
         else:
             fparts.append(f"{acc_v}{vl[i]}concat=n=2:v=1:a=0{ov}")
             if audio:
                 fparts.append(f"{acc_a}{al[i]}concat=n=2:v=0:a=1{oa}")
-            acc += lens[i]
+            acc += eff[i]
         acc_v, acc_a = ov, oa
     if n == 1:
         fparts.append(f"{acc_v}null[vo]")
@@ -1171,7 +1316,7 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orien
         fparts[:] = [f.replace("[vo]", "[vm]").replace("[ao]", "[am]") for f in fparts]
         post_graph(fparts, cmd, project, extras, total, orientation, audio, len(segs) + len(img_inputs))
         cwd = cwd or str(paths.cache_dir() / "lut")
-    cmd += ["-filter_complex", ";".join(fparts), "-map", "[vo]"]
+    cmd += [*filter_complex_args(";".join(fparts)), "-map", "[vo]"]
     if audio:
         cmd += ["-map", "[ao]", "-c:a", "aac", "-b:a", "192k"]
     br = int(o.bitrate_mbps * {"horizontal1440": 1.5, "horizontal2160": 2.5}.get(orientation, 1.0))   # 설정값 = 1080p 기준

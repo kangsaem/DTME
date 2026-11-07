@@ -7,9 +7,12 @@ from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QPainter, QPixmap, QPolygonF
 from PySide6.QtWidgets import QDialog, QGridLayout, QHBoxLayout, QLabel, QSlider, QVBoxLayout, QWidget
 
+from . import ff
 from .project import FIRST_OK, TRANS_DEFAULT_SEC, TRANS_RANGE, TRANSITIONS
 
 W, H = 120, 68
+ROT_SUBS = 8           # 샘플 그림 모션블러 장수(렌더는 ff.ROT_BLUR)
+ROT_ND = 15            # 샘플 기준 전환 프레임 수(0.5초)
 A, B = "#3f6fa8", "#d9822b"
 
 
@@ -57,6 +60,26 @@ class TransTile(QWidget):
         p.drawPixmap(QRectF(-W / 2, -H / 2, W, H), pix, QRectF(pix.rect()))
         p.restore()
 
+    def _rot_frame(self, v):
+        """회전 줌 한 장: 앞 컷 각도 θ, 뒤 컷 θ∓180°, 가운데 ROT_MIX 만 섞음."""
+        from PySide6.QtGui import QImage
+        v = max(0.0, min(1.0, v))
+        deg, s = ff.rot_state(self.kind, v)
+        back = deg - 180 if self.kind == "rotzoomin" else deg + 180
+        deg, back = -deg, -back          # 렌더(perspective)와 같은 화면 방향(QPainter 는 + = 시계 방향)
+        lo = (1 - ff.ROT_MIX) / 2
+        mix = max(0.0, min(1.0, (v - lo) / ff.ROT_MIX))
+        im = QImage(W, H, QImage.Format_RGB32)
+        im.fill(QColor("black"))
+        p = QPainter(im)
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
+        if mix < 1:
+            self._draw_zoom(p, self.a, s, deg)
+        if mix > 0:
+            self._draw_zoom(p, self.b, s, back, mix)
+        p.end()
+        return im
+
     def paintEvent(self, _):
         from PySide6.QtGui import QColor, QPen
         p = QPainter(self)
@@ -87,15 +110,21 @@ class TransTile(QWidget):
             sr = QRectF(r.x() / W * b.width(), r.y() / H * b.height(), r.width() / W * b.width(),
                         r.height() / H * b.height())
             p.drawPixmap(r, b, sr)
-        elif k in ("zoomin", "rotzoomin"):          # 앞 컷이 확대(회전)되며 뒤 컷으로
+        elif k in ("rotzoomin", "rotzoomout"):      # 180° 회전 + 모션블러(렌더와 같은 계산, 서브프레임 겹치기)
+            base = p.opacity()
+            for j in range(ROT_SUBS):
+                v = q + (j / (ROT_SUBS - 1) - 0.5) * ff.ROT_SHUTTER / ROT_ND
+                p.setOpacity(base / (j + 1))
+                p.drawImage(full, self._rot_frame(v))
+        elif k == "zoomin":                          # 앞 컷이 확대되며 뒤 컷으로
             u = q * q
-            self._draw_zoom(p, a, 1 + 2 * u, (u * 30 if k == "rotzoomin" else 0))
+            self._draw_zoom(p, a, 1 + 2 * u, 0)
             p.setOpacity(q * p.opacity())
             p.drawPixmap(full, b, QRectF(b.rect()))
-        elif k in ("zoomout", "rotzoomout"):        # 뒤 컷이 확대 상태에서 원래로
+        elif k == "zoomout":                         # 뒤 컷이 확대 상태에서 원래로
             u = (1 - q) ** 2
             p.drawPixmap(full, a, QRectF(a.rect()))
-            self._draw_zoom(p, b, 1 + 2 * u, (-u * 30 if k == "rotzoomout" else 0), q)
+            self._draw_zoom(p, b, 1 + 2 * u, 0, q)
         elif k in ("fadeblack", "fadewhite"):
             c = QColor("black" if k == "fadeblack" else "white")
             p.drawPixmap(full, a if q < 0.5 else b, QRectF(a.rect()))
@@ -136,7 +165,7 @@ class TransitionDialog(QDialog):
     """선택한 컷 앞 경계의 전환을 고름. 샘플 클릭 = 바로 적용하고 닫힘."""
     chosen = Signal(str, float)
 
-    def __init__(self, current: dict, first: bool, parent=None):
+    def __init__(self, current: dict, first: bool, parent=None, frames=None):
         super().__init__(parent)
         self.setWindowTitle("컷편집")
         self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
@@ -145,7 +174,7 @@ class TransitionDialog(QDialog):
         grid = QGridLayout()
         grid.setSpacing(6)
         self.buttons = {}
-        pa, pb = sample_pixmaps()
+        pa, pb = frames if frames and frames[0] is not None and frames[1] is not None else sample_pixmaps()
         for i, (kind, name) in enumerate(TRANSITIONS):
             t = TransTile(kind, name, pa, pb)
             t.checked = kind == cur
@@ -181,3 +210,67 @@ class TransitionDialog(QDialog):
     def _pick(self, kind):
         self.chosen.emit(kind, self.dur.value() / 10)
         self.accept()
+
+
+class TransPreview(QWidget):
+    """모니터 위에 덮는 화면 전환 미리보기(작은 렌더 결과 반복 재생, 소리 없음). 클릭·Esc·다른 조작 = 닫힘."""
+    closed = Signal()
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.frames = []
+        self.i = 0
+        self.setAttribute(Qt.WA_OpaquePaintEvent)
+        self.setCursor(Qt.PointingHandCursor)
+        self._timer = QTimer(self)
+        self._timer.setInterval(int(round(1000 / 29.97)))
+        self._timer.timeout.connect(self._tick)
+        self.hide()
+
+    def play(self, frames):
+        self.frames, self.i = frames, 0
+        self.setGeometry(self.parentWidget().rect())
+        self.show()
+        self.raise_()
+        self._timer.start()
+
+    def stop(self):
+        if not self.isVisible():
+            return
+        self._timer.stop()
+        self.frames = []
+        self.hide()
+        self.closed.emit()
+
+    def _tick(self):
+        if not self.frames:
+            return
+        self.i = (self.i + 1) % (len(self.frames) + 15)      # 끝에서 0.5초 멈췄다가 다시
+        self.update()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.fillRect(self.rect(), QColor("black"))
+        if self.frames:
+            im = self.frames[min(self.i, len(self.frames) - 1)]
+            r = QRectF(self.rect())
+            sc = min(r.width() / im.width(), r.height() / im.height())
+            w, h = im.width() * sc, im.height() * sc
+            p.setRenderHint(QPainter.SmoothPixmapTransform)
+            p.drawImage(QRectF(r.center().x() - w / 2, r.center().y() - h / 2, w, h), im)
+            p.fillRect(QRectF(0, r.height() - 3, r.width() * min(self.i, len(self.frames)) / len(self.frames), 3),
+                       QColor("#4a8fe0"))
+        p.end()
+
+    def mousePressEvent(self, _):
+        self.stop()
+
+
+def decode_frames(path: str):
+    """미리보기 mp4 → QImage 목록(rgb24)."""
+    from PySide6.QtGui import QImage
+    info = ff.probe(path)
+    w, h = info["width"], info["height"]
+    raw = ff.run([ff.paths.ffmpeg(), "-v", "error", "-i", ff._abs(path), "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
+    n = len(raw) // (w * h * 3)
+    return [QImage(raw[k * w * h * 3:(k + 1) * w * h * 3], w, h, w * 3, QImage.Format_RGB888).copy() for k in range(n)]

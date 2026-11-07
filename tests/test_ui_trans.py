@@ -30,6 +30,11 @@ def click():
     dlg = next(x for x in app.topLevelWidgets() if isinstance(x, TransitionDialog) and x.isVisible())
     dlg.grab().save(os.path.join(WORK, "shot_trans_dialog.png"))
     print("첫 컷 아님 → 모두 사용 가능:", all(b.isEnabled() for b in dlg.buttons.values()))
+    a = dlg.buttons["rotzoomin"].a
+    print("샘플 = 실제 프레임:", a.width() >= 240 and a.toImage().pixelColor(5, 5).name() != "#3f6fa8")
+    for k in ("rotzoomin", "dissolve"):
+        dlg.buttons[k].t = 0.35 + 0.9 * 0.5; dlg.buttons[k].update()
+    dlg.grab().save(os.path.join(WORK, "shot_trans_dialog_mid.png"))
     dlg.buttons["rotzoomin"].clicked.emit("rotzoomin")
 QTimer.singleShot(300, click); e.edit_transition()
 print("전환:", segs[1].trans, "길이", round(before, 3), "→", round(st.project.segs_seconds(segs), 3))
@@ -45,4 +50,32 @@ w.undo(); wait(0.2); print("실행취소 후 첫 컷:", st.project.segments[0].t
 e.zoom.setValue(120); wait(0.3)
 e.tl_scroll.grab().save(os.path.join(WORK, "shot_trans_timeline.png"))
 e.timeline_to_render(); print("렌더 항목 전환 복사:", st.project.render_items[-1].segs[1].trans)
+# v0.16.11: 나비 클릭 = 선택 + 미리보기(모니터 위 반복), 우클릭·Del = 빼기, 더블클릭 = 창
+from PySide6.QtCore import QPoint, Qt
+from PySide6.QtTest import QTest
+segs = st.project.segments
+segs[1].trans = {"type": "rotzoomin", "dur": 0.5}; st.touch("segments"); wait(0.3)
+tl = e.timeline
+r = dict(tl._trans_rects())[segs[1].id]
+QTest.mouseClick(tl, Qt.LeftButton, Qt.NoModifier, QPoint(int(r.center().x()), int(r.center().y())))
+print("나비 선택:", e.sel_trans == segs[1].id, e._del_target)
+ok = wait(240, lambda: e.trans_prev.isVisible())
+print("미리보기 재생:", ok, len(e._tp_frames), "장")
+assert ok and len(e._tp_frames) > 20
+wait(0.8)
+e.player.mon.grab().save(os.path.join(WORK, "shot_trans_preview.png"))
+tl.grab().save(os.path.join(WORK, "shot_trans_bowtie.png"))
+t0 = time.time(); e.trans_prev.stop(); tl.transSelected.emit(segs[1].id); wait(1, lambda: e.trans_prev.isVisible())
+print("같은 경계 다시 = 바로:", e.trans_prev.isVisible(), round(time.time() - t0, 2), "초")
+e._key("esc"); print("Esc 닫힘:", not e.trans_prev.isVisible())
+e._key("del"); wait(0.2); print("Del 뺌:", segs[1].trans == {})
+assert segs[1].trans == {}
+w.undo(); wait(0.2); segs = st.project.segments; print("실행취소:", segs[1].trans)
+r = dict(tl._trans_rects())[segs[1].id]
+QTest.mouseClick(tl, Qt.RightButton, Qt.NoModifier, QPoint(int(r.center().x()), int(r.center().y())))
+wait(0.2); print("우클릭 뺌:", st.project.segments[1].trans == {})
+assert st.project.segments[1].trans == {}
+fr = e._trans_frames(1)
+print("컷편집 샘플 실제 프레임:", fr is not None)
+assert fr is not None
 print("UI TRANS OK")

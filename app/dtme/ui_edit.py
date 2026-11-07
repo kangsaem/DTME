@@ -391,6 +391,15 @@ class EditTab(QWidget):
         self.timeline.ovEdited.connect(self._on_ov_edited)
         self.timeline.ovRemove.connect(self.remove_ov)
         self.timeline.ovActivated.connect(self.edit_ov)
+        self.timeline.transSelected.connect(self._on_trans_selected)
+        self.timeline.transRemove.connect(self.remove_transition)
+        self.timeline.transActivated.connect(self.edit_transition)
+        from .ui_trans import TransPreview
+        self.trans_prev = TransPreview(self.player.mon)
+        self.sel_trans = ""
+        self._tp_job = None
+        self._tp_key = None
+        self._tp_frames = []
         self.tl_scroll = QScrollArea()
         self.tl_scroll.setWidget(self.timeline)
         self.tl_scroll.setWidgetResizable(False)
@@ -545,9 +554,15 @@ class EditTab(QWidget):
 
     def _key(self, name, shift=False):
         p = self.player
-        if name == "del":                  # 마지막으로 누른 대상: 레이어 / 스틸 소스 / 영상 소스 / 타임라인 컷
+        if self.trans_prev.isVisible():       # 전환 미리보기 중 = 아무 키나 닫기(Esc 는 닫기만)
+            self.trans_prev.stop()
+            if name == "esc":
+                return
+        if name == "del":                  # 마지막으로 누른 대상: 레이어 / 스틸 소스 / 영상 소스 / 타임라인 컷 / 화면 전환
             t = self._del_target
-            if t == "layer" and self.sel_layer:
+            if t == "trans" and self.sel_trans:
+                self.remove_transition(self.sel_trans)
+            elif t == "layer" and self.sel_layer:
                 self.remove_layer(self.sel_layer)
             elif t == "ov" and self.sel_ov[1]:
                 self.remove_ov(*self.sel_ov)
@@ -1093,24 +1108,142 @@ class EditTab(QWidget):
         self.sel_cut = ""
         self.state.touch("segments")
 
-    def edit_transition(self):
+    def edit_transition(self, cid: str = ""):
         from .ui_trans import TransitionDialog
         segs = self.state.project.segments
-        i = next((k for k, g in enumerate(segs) if g.id == self.sel_cut), -1)
+        cid = cid if isinstance(cid, str) and cid else self.sel_cut
+        i = next((k for k, g in enumerate(segs) if g.id == cid), -1)
         if i < 0:
             self._say("컷을 선택", C_WARN)
             return
-        dlg = TransitionDialog(segs[i].trans, first=(i == 0), parent=self)
+        self.trans_prev.stop()
+        dlg = TransitionDialog(segs[i].trans, first=(i == 0), parent=self, frames=self._trans_frames(i))
 
         def apply(kind, dur, seg=segs[i]):
             self.state.checkpoint()
             seg.trans = {} if kind == "none" else {"type": kind, "dur": dur}
+            self.sel_trans = "" if kind == "none" else seg.id
             self.state.touch("segments")
         dlg.chosen.connect(apply)
         dlg.exec()
 
+    def _trans_frames(self, i):
+        """컷편집 창 샘플 = 실제 앞 컷 마지막 프레임 · 뒤 컷 첫 프레임(프록시 = 클립 LUT, 보정 전). 없으면 None."""
+        from .ui_trans import H, W
+        p = self.state.project
+        segs = p.segments
+
+        def grab(seg, frame):
+            s = p.source(seg.src) if seg else None
+            if s is None or not self.state.proxy_ready(s):
+                return None
+            try:
+                im = QImage.fromData(ff.grab_proxy_frame(s.proxy, s.fps, max(0, min(s.frames - 1, frame))), "BMP")
+            except Exception:   # noqa: BLE001
+                return None
+            if im.isNull():
+                return None
+            return QPixmap.fromImage(im.scaled(W * 2, H * 2, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation))
+        b = grab(segs[i], segs[i].fin)
+        if i == 0:
+            a = QPixmap(W * 2, H * 2)
+            a.fill(QColor("black"))
+        else:
+            a = grab(segs[i - 1], segs[i - 1].fout - 1)
+        return (a, b) if a is not None and b is not None else None
+
+    def _on_trans_selected(self, cid):
+        self.sel_trans = cid
+        self.sel_cut = cid
+        self._del_target = "trans"
+        self._refresh_timeline()
+        self.preview_transition(cid)
+
+    def remove_transition(self, cid):
+        seg = next((g for g in self.state.project.segments if g.id == cid), None)
+        if seg is None or not seg.trans:
+            return
+        self.trans_prev.stop()
+        self.state.checkpoint()
+        seg.trans = {}
+        if self.sel_trans == cid:
+            self.sel_trans = ""
+        self.state.touch("segments")
+        self._say("전환 뺌")
+
+    def preview_transition(self, cid):
+        """그 경계 앞뒤만 540p 로 빨리 렌더 → 모니터 위에서 반복 재생(같은 내용이면 다시 렌더 안 함)."""
+        from .project import plan_transitions
+        from . import paths
+        from .ui_trans import decode_frames
+        p = self.state.project
+        segs = [g for g in p.segments if p.source(g.src) and p.source(g.src).frames]
+        i = next((k for k, g in enumerate(segs) if g.id == cid), -1)
+        if i < 0:
+            return
+        lens = [p.seg_out_seconds(g, p.source(g.src).fps) for g in segs]
+        t = plan_transitions(segs, lens)[i]
+        if not t:
+            return
+        d = t[1]
+        margin = max(1.0, d)
+
+        def part(g, tail):
+            s = p.source(g.src)
+            n = int(round((d + margin) * float(s.fps) * g.speed))
+            c = g.copy()
+            if tail:
+                c.fin = max(g.fin, g.fout - n)
+            else:
+                c.fout = min(g.fout, g.fin + n)
+            return c
+        pick = ([part(segs[i - 1], True)] if i > 0 else []) + [part(segs[i], False)]
+        orient = "preview_v" if p.output.orientation == "vertical" else "preview"
+        key = repr([({k: v for k, v in vars(c).items() if k != "id"}, p.grade_for_source(c.src, seg=c)) for c in pick]) + orient
+        if key == self._tp_key and self._tp_frames:
+            self.trans_prev.play(self._tp_frames)
+            return
+        if self._tp_job is not None:
+            self._tp_job.cancel.set()
+        pdir = paths.cache_dir() / "preview"
+        pdir.mkdir(parents=True, exist_ok=True)
+        for old in sorted(pdir.glob("trans_*.mp4"), key=lambda f: f.stat().st_mtime)[:-3]:   # 최근 3개만
+            try:
+                old.unlink()
+            except OSError:
+                pass
+        out = pdir / f"trans_{abs(hash(key)) % 10**10}.mp4"
+
+        def work(prog, cancel):
+            ff.render_video(p, pick, str(out), prog, cancel, orient, False, fast=True)
+            return decode_frames(str(out))
+        job = jobs.Job(work, with_progress=True)
+        self._tp_job = job
+        job.signals.progress.connect(lambda v: self._say(f"전환 미리보기 {int(v * 100)}%"))
+
+        def done(frames, job=job, key=key, cid=cid):
+            if job is not self._tp_job:
+                return
+            self._tp_job = None
+            self._tp_key, self._tp_frames = key, frames
+            self._say("")
+            if self.sel_trans == cid and frames:
+                self.trans_prev.play(frames)
+
+        def err(msg, job=job):
+            if job is self._tp_job:
+                self._tp_job = None
+                if msg != "취소됨":
+                    ff.log_error("전환 미리보기", msg)
+                    self._say("전환 미리보기 실패", C_WARN)
+        job.signals.done.connect(done)
+        job.signals.error.connect(err)
+        jobs.submit(jobs.PREVIEW_POOL, job)
+
     def _on_cut_selected(self, cid):
         self.sel_cut = cid
+        self.sel_trans = ""
+        self.trans_prev.stop()
         self._del_target = "cut"
         self._refresh_timeline()
 
@@ -1914,6 +2047,9 @@ class EditTab(QWidget):
         if self.sel_cut and not any(i[0] == self.sel_cut for i in items):
             self.sel_cut = ""
         self._tl_cuts = cuts
+        if self.sel_trans and not any(i[0] == self.sel_trans and i[5] for i in items):
+            self.sel_trans = ""
+        self.timeline.trans_sel = self.sel_trans
         self.timeline.set_items(items, self.sel_cut)
         if self.sel_ov[1] and not any(d["id"] == self.sel_ov[1] for d in p.titles + p.music):
             self.sel_ov = ("", "")

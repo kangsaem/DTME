@@ -320,6 +320,9 @@ class SeqTimeline(QWidget):
     ovDragStart = Signal(str, str)
     ovEdited = Signal(str, str)
     ovRemove = Signal(str, str)
+    transSelected = Signal(str)       # 나비(화면 전환) 클릭 = 그 컷 id
+    transRemove = Signal(str)         # 나비 우클릭 = 빼기
+    transActivated = Signal(str)      # 나비 더블클릭 = 컷편집 창
 
     RULER = 20
     TL = 18          # 글자·이미지 줄 높이
@@ -333,6 +336,7 @@ class SeqTimeline(QWidget):
         self.pps = 30.0
         self.items = []               # [(id, sec, label, speed, tag, trans(name, d) | None, start)]
         self.sel = ""
+        self.trans_sel = ""           # 선택한 화면 전환(뒤 컷 id)
         self.titles, self.music = [], []
         self.ov_sel = ("", "")
         self.t = 0.0
@@ -427,6 +431,21 @@ class SeqTimeline(QWidget):
             out.append(("music", m, QRectF(self._x(float(m["t0"])), mus.top(), max(4.0, float(m["len"]) * self.pps), mus.height())))
         return out
 
+    def _trans_rects(self):
+        """[(컷 id, 나비 사각형)] — 나비 = 컷 앞 경계, 폭 = 전환 길이, 높이 = 영상 줄 전체."""
+        out = []
+        for it, r in zip(self.items, self._rects()):
+            if len(it) > 5 and it[5]:
+                tw = max(10.0, it[5][1] * self.pps)
+                out.append((it[0], QRectF(r.left(), r.top(), tw, r.height())))
+        return out
+
+    def _trans_at(self, pos):
+        for cid, r in self._trans_rects():
+            if r.adjusted(-3, 0, 3, 0).contains(pos):
+                return cid
+        return ""
+
     def _index_at(self, x):
         for i, r in enumerate(self._rects()):
             if r.left() <= x <= r.right() + 2:
@@ -443,6 +462,10 @@ class SeqTimeline(QWidget):
                 if r.contains(pos):
                     return kind, d, "move"
         return None
+
+    def _trans_tip(self, cid):
+        it = next((x for x in self.items if x[0] == cid), None)
+        return f"{it[5][0]} {it[5][1]:.1f}초" if it and it[5] else ""
 
     def tooltip_at(self, x):
         i = self._index_at(x)
@@ -464,7 +487,6 @@ class SeqTimeline(QWidget):
         f = QFont(self.font())
         for i, (it, r) in enumerate(zip(self.items, rects)):
             sid, sec, label, sp, tag = it[:5]
-            trans = it[5] if len(it) > 5 else None
             dragging = self._press is not None and self._drag_x is not None and self._press[0] == i
             rr = QRectF(r)
             if dragging:
@@ -483,13 +505,11 @@ class SeqTimeline(QWidget):
                 p.drawText(rr.adjusted(4, 2, -4, -2), Qt.AlignHCenter | Qt.AlignVCenter,
                            f"{speed_text(sp)}\n{label}" if rr.width() > 90 else speed_text(sp))
             draw_tag(p, rr, tag)
-            if trans:          # 앞 경계 화면 전환: 나비 모양(폭 = 전환 길이)
-                tw = max(8.0, trans[1] * self.pps)
-                x0, y0, y1 = rr.left() + tw / 2, rr.top() + rr.height() * 0.62, rr.bottom() - 2
-                p.setPen(Qt.NoPen)
-                p.setBrush(QColor(245, 245, 245, 210))
-                p.drawPolygon(QPolygonF([QPointF(x0 - tw / 2, y0), QPointF(x0 + tw / 2, y1),
-                                         QPointF(x0 + tw / 2, y0), QPointF(x0 - tw / 2, y1)]))
+        for cid, r in self._trans_rects():     # 화면 전환 나비: 파랑, 영상 줄 전체 높이(선택 = 흰 테두리)
+            p.setPen(QPen(QColor("white"), 2) if cid == self.trans_sel else Qt.NoPen)
+            p.setBrush(QColor(74, 143, 224, 215))
+            x0, x1, y0, y1 = r.left(), r.right(), r.top() + 2, r.bottom() - 2
+            p.drawPolygon(QPolygonF([QPointF(x0, y0), QPointF(x1, y1), QPointF(x1, y0), QPointF(x0, y1)]))
         if self._press is not None and self._drag_x is not None:
             j = self._drop_index(self._drag_x)
             xs = [r.left() for r in rects] + [rects[-1].right() + 2 if rects else 4]
@@ -560,6 +580,15 @@ class SeqTimeline(QWidget):
     # ---------------------------------------------------------------- 마우스
     def mousePressEvent(self, e):
         pos = e.position()
+        tid = self._trans_at(pos)
+        if tid:
+            if e.button() == Qt.RightButton:
+                self.transRemove.emit(tid)
+                return
+            self.trans_sel = tid
+            self.transSelected.emit(tid)
+            self.update()
+            return
         hit = self._ov_at(pos)
         if hit:
             kind, d, mode = hit
@@ -619,9 +648,10 @@ class SeqTimeline(QWidget):
             return
         if not e.buttons():
             hit = self._ov_at(pos)
-            self.setCursor(Qt.SizeHorCursor if hit and hit[2] in ("l", "r") else
+            tid = self._trans_at(pos)
+            self.setCursor(Qt.PointingHandCursor if tid else Qt.SizeHorCursor if hit and hit[2] in ("l", "r") else
                            Qt.OpenHandCursor if hit else Qt.ArrowCursor)
-            self.setToolTip(self.tooltip_at(pos.x()) if not hit else "")
+            self.setToolTip(self._trans_tip(tid) if tid else self.tooltip_at(pos.x()) if not hit else "")
         if self._press is not None and (e.buttons() & Qt.LeftButton):
             if self._drag_x is not None or abs(pos.x() - self._press[1]) > 6:
                 self._drag_x = pos.x()
@@ -647,6 +677,10 @@ class SeqTimeline(QWidget):
         self.update()
 
     def mouseDoubleClickEvent(self, e):
+        tid = self._trans_at(e.position())
+        if tid:
+            self.transActivated.emit(tid)
+            return
         hit = self._ov_at(e.position())
         if hit:
             self.ovActivated.emit(hit[0], hit[1]["id"])
