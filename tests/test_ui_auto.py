@@ -40,11 +40,21 @@ d.grade = {"r_gain": 1.3}
 
 # ---------------- AUTO 창: 분석 · 인식 · 직접 지정 · 개별 보정
 dlg = e.make_auto_dialog(); dlg.show()
+wait(1.0)
+print("창 열기만 → 작업 없음:", [r.prog for r in dlg.rows], st.work, repr(dlg.state_lab.text()))
+assert all(r.prog == 0 and r.result is None for r in dlg.rows) and not st.work and not dlg.jobs
 print("체크:", [r.checked for r in dlg.rows], "(기본 = 기존 보정 무시·키프레임 자동 → 모두)")
 assert [r.checked for r in dlg.rows] == [True] * 4 and dlg.keep.value() == "drop" and dlg.keys.value() == "auto"
 dlg.keep.btns["keep"].click(); wait(0.1)
 assert [r.checked for r in dlg.rows] == [True, True, True, False]      # C 인 4번째는 제외
+assert dlg.b_each.text() == "보정+편집"
+dlg.start_analysis()
+assert wait(60, lambda: any(0 < r.prog < 1 for r in dlg.rows))
+print("분석 중:", repr(dlg.state_lab.text()), {k: v[:2] for k, v in st.work.items()})
+dlg.grab().save(str(work / "shot_auto_analyzing.png")); e.src_list.grab().save(str(work / "shot_src_analyzing.png"))
 assert wait(120, lambda: not dlg.pending())
+assert not any(w_[0] == "analyze" for w_ in st.work.values()), st.work
+print("분석 끝:", repr(dlg.state_lab.text()))
 for r in dlg.rows[:3]:
     print("  인식:", r.rec, "→", r.result["preset"], "키", len(r.result["gkeys"].get("r_gain", [])), dlg.row_text(r))
 assert dlg.rows[0].result["scene"] == "shallow" and dlg.rows[1].result["scene"] == "deep" and dlg.rows[2].result["gkeys"]
@@ -75,15 +85,19 @@ def init(self, name, folder, parent=None, layout=""):
     self.size.btns["1280"].click(); self.fmt.btns["jpg"].click(); self.att["preset"].setChecked(True)
 ui_auto.SampleDialog.__init__ = init
 e._auto_sample(dlg)
+assert wait(60, lambda: any(w_[0] == "sample" and w_[1] >= 0 for w_ in st.work.values()))
+print("샘플 중:", repr(dlg.state_lab.text()), {k: v for k, v in st.work.items()})
+e.src_list.grab().save(str(work / "shot_src_sample.png"))
 assert wait(240, lambda: sdir.exists() and len(list(sdir.glob("*.jpg"))) >= 18 and not dlg.busy)
+assert not st.work, st.work
 names = sorted(x.name for x in sdir.glob("*.jpg"))
 print("샘플:", len(names), names[:2], "… 클립 값 그대로:", P.is_plain(a))
 assert len(names) == 18 and P.is_plain(a) and names[0].startswith("BOHOL_")
 # [시작] 개별 보정
 def _no_ask(title=""):
-    raise AssertionError("[보정만]은 저장폴더를 묻지 않아야 함")
+    raise AssertionError("[보정+편집]은 저장폴더를 묻지 않아야 함")
 e._ask_folder = _no_ask
-dlg.b_each.click(); wait(1)                           # [보정만]: 폴더 안 물음
+dlg.b_each.click(); wait(1)                           # [보정+편집]: 폴더 안 물음
 e._ask_folder = lambda title="": str(work / "out")
 print("적용:", [(s.auto.get("preset"), s.auto.get("by"), len(s.gkeys.get("r_gain", [])), s.out) for s in (a, b, c)])
 for s_ in (a, b, c):
@@ -100,8 +114,10 @@ p = st.project; a, b, c, d = p.sources
 dlg2 = e.make_auto_dialog(); dlg2.show()
 dlg2.keep.btns["keep"].click(); wait(0.1)              # 기본은 무시 → 손보정(C) 4번째 제외
 dlg2.rows[2].checked = False
-assert wait(60, lambda: not dlg2.pending())
+assert wait(5, lambda: not dlg2.pending()), "이미 분석한 영상 = 바로 결과"
 dlg2.b_start.click()                                   # [보정+렌더]
+assert wait(120, lambda: any(w_[0] == "render" for w_ in st.work.values()))
+e.src_list.grab().save(str(work / "shot_src_render.png"))
 assert wait(300, lambda: not e.render_panel.running and len(list((work / "out").glob("*.mp4"))) >= 2)
 outs = sorted(x.name for x in (work / "out").glob("*.mp4"))
 print("렌더:", outs, "막대 숨김:", not e.auto_bar.isVisible())
@@ -145,6 +161,8 @@ dlg3 = e.make_auto_dialog(); dlg3.show()
 fresh = [r for r in dlg3.rows if st.project.source(r.sid).path.endswith(("fresh.mp4", "fresh2.mp4"))]
 print("바로 연 AUTO:", [(dlg3.row_text(r)[2], r.checked) for r in fresh])
 assert all(r.checked for r in fresh)
+wait(3); assert not any(r.result or r.prog for r in fresh), "버튼 전에는 분석 안 함"
+dlg3.start_analysis()
 assert wait(180, lambda: all(r.result for r in fresh)), [r.error for r in fresh]
 print("로딩 후 분석:", [r.result["preset"] for r in fresh], "실패", [r.error for r in fresh])
 assert not any(r.error for r in fresh)

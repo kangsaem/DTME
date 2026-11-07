@@ -2,7 +2,8 @@
 
 공통 부품(PresetGrid): [모두 자동] / 줄마다 [자동](장면 고정·피사체 자동) + 피사체 4 / 기타(블루워터·야간) / 강도 / 세부 정보.
 AUTO 창: 왼쪽 클립 목록(체크·C·프리셋·인식·◆·출력, 분석 진행 = 줄 배경) · 오른쪽 프리셋·강도·출력·이름·세부 정보 ·
-오른쪽 맨 위 [기존 보정 유지|무시] [키프레임 유지|자동] · 아래 진행 막대 · [취소][샘플][보정만][보정+렌더].
+오른쪽 맨 위 [기존 보정 유지|무시] [키프레임 유지|자동] · 아래 진행 막대 · [취소][샘플][보정+편집][보정+렌더].
+줄 = MOSCO 모양(진회색, 단계 색으로 차오름, 오른쪽 = 지금 하는 일). 창을 열면 아무 작업도 안 함 → 버튼을 누르면 분석 시작.
 """
 from __future__ import annotations
 
@@ -15,7 +16,7 @@ from PySide6.QtWidgets import (QButtonGroup, QComboBox, QDialog, QFileDialog, QF
                                QLineEdit, QListWidget, QListWidgetItem, QMenu, QProgressBar, QPushButton,
                                QSlider, QStyle, QStyledItemDelegate, QVBoxLayout, QWidget)
 
-from . import auto, ff, jobs, ui_style
+from . import auto, ff, jobs, stage as SG, ui_style
 from .ui_render import DragMove
 from .project import (OUTPUTS, Segment, auto_lut, display_name, has_clip_grade, get_setting, grade_at, list_presets, load_preset, set_setting,
                       short_name)
@@ -366,34 +367,40 @@ class AutoDelegate(QStyledItemDelegate):
         return QSize(option.rect.width(), 32)
 
     def paint(self, p: QPainter, option, index):
+        """MOSCO 줄: 진회색(체크 해제 = 더 어둡게·회색 이름), 선택 = 파란 테두리, 진행 = 단계 색으로 차오름 + 오른쪽 글자."""
         row: AutoRow = self.dlg.rows[index.row()]
         src = self.dlg.state.project.source(row.sid)
         r = QRectF(option.rect).adjusted(2, 2, -2, -2)
         sel = bool(option.state & QStyle.State_Selected)
+        stg = SG.stage_of(self.dlg.state, row.sid) if row.checked or self.dlg.state.status.get(row.sid) in SG.ERRORS else None
         p.save()
         p.setRenderHint(QPainter.Antialiasing)
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor(SEL_BLUE if sel else LIST_BG if row.checked else LIST_DIM))
+        p.setBrush(QColor(SG.ROW_BG if row.checked else SG.ROW_OFF))
         p.drawRoundedRect(r, 3, 3)
-        if 0 < row.prog < 1:
+        if stg and stg[0] in SG.STAGE and stg[1] is not None and 0 < stg[1] < 1:
             pr = QRectF(r)
-            pr.setWidth(r.width() * row.prog)
-            p.setBrush(QColor(AUTO_FILL))
+            pr.setWidth(r.width() * stg[1])
+            p.setBrush(QColor(SG.STAGE[stg[0]][0]))
             p.drawRoundedRect(pr, 3, 3)
-        # 체크
-        cb = QRectF(r.left() + 8, r.center().y() - 7, 14, 14)
-        p.setPen(QPen(QColor("#888"), 1))
-        p.setBrush(QColor(EDGE_BLUE) if row.checked else Qt.NoBrush)
+        if sel:
+            p.setPen(QPen(QColor(SG.SEL_EDGE), 2))
+            p.setBrush(Qt.NoBrush)
+            p.drawRoundedRect(r.adjusted(1, 1, -1, -1), 3, 3)
+        # 체크 상자(진한 칸 + 흰 ✓)
+        cb = QRectF(r.left() + 8, r.center().y() - 8, 16, 16)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(SG.CHK_BG))
         p.drawRoundedRect(cb, 2, 2)
         if row.checked:
-            p.setPen(QPen(QColor("#fff"), 2))
-            p.drawLine(cb.left() + 3, cb.center().y(), cb.left() + 6, cb.bottom() - 3)
-            p.drawLine(cb.left() + 6, cb.bottom() - 3, cb.right() - 3, cb.top() + 3)
+            p.setPen(QPen(QColor("#ffffff"), 1.8))
+            p.drawLine(cb.left() + 4, cb.center().y(), cb.left() + 7, cb.bottom() - 4)
+            p.drawLine(cb.left() + 7, cb.bottom() - 4, cb.right() - 4, cb.top() + 4)
         f = QFont(option.font)
         f.setBold(True)
         p.setFont(f)
-        p.setPen(QColor("#fff" if row.checked else "#8a8a8a"))
-        x = cb.right() + 8
+        p.setPen(QColor("#ffffff" if row.checked else SG.OFF_TXT))
+        x = cb.right() + 10
         nm = display_name(src.path) if src else ""
         p.drawText(QRectF(x, r.top(), 78, r.height()), Qt.AlignVCenter | Qt.AlignLeft,
                    p.fontMetrics().elidedText(nm, Qt.ElideRight, 76))          # 길면 … (C 표시와 겹치지 않게)
@@ -406,27 +413,28 @@ class AutoDelegate(QStyledItemDelegate):
         p.setFont(f)
         label, fixed, sub = self.dlg.row_text(row)
         fm = p.fontMetrics()
-        chip_w = 38
-        avail = r.right() - chip_w - 12 - x
-        p.setPen(QColor("#fff" if fixed else SUB))
-        lw = min(fm.horizontalAdvance(label), int(avail))
-        p.drawText(QRectF(x, r.top(), lw + 2, r.height()), Qt.AlignVCenter, fm.elidedText(label, Qt.ElideRight, int(avail)))
+        chip_w = 40
+        chip = QRectF(r.right() - chip_w - 4, r.top() + 3, chip_w, r.height() - 6)
+        right_end = chip.left() - 10
+        p.setPen(QColor(("#ffffff" if fixed else SG.SUB_TXT) if row.checked else SG.OFF_TXT))
+        lw = min(fm.horizontalAdvance(label), int(max(0, right_end - x)))
+        p.drawText(QRectF(x, r.top(), lw + 2, r.height()), Qt.AlignVCenter, fm.elidedText(label, Qt.ElideRight, lw + 1))
         x += lw + 10
-        if sub and x < r.right() - chip_w - 20:
-            f2 = QFont(f)
-            f2.setPointSizeF(max(7.0, f.pointSizeF() - 1))
-            p.setFont(f2)
-            p.setPen(QColor(SUB))
-            p.drawText(QRectF(x, r.top(), r.right() - chip_w - 12 - x, r.height()), Qt.AlignVCenter,
-                       p.fontMetrics().elidedText(sub, Qt.ElideRight, int(r.right() - chip_w - 12 - x)))
-            p.setFont(f)
-        chip = QRectF(r.right() - chip_w - 6, r.center().y() - 9, chip_w, 18)
+        # 오른쪽: 진행 글자(단계 색) 또는 보조 정보(회색)
+        if stg:
+            txt, col = stg[2], (SG.ERR_TXT if stg[0] == "error" else SG.STAGE[stg[0]][1])
+        else:
+            txt, col = (sub if row.checked else ""), SG.SUB_TXT
+        if txt and right_end - x > 20:
+            p.setPen(QColor(col))
+            p.drawText(QRectF(x, r.top(), right_end - x, r.height()), Qt.AlignVCenter | Qt.AlignRight,
+                       fm.elidedText(txt, Qt.ElideRight, int(right_end - x)))
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor("#2a2a2a"))
+        p.setBrush(QColor(SG.CHIP_AUTO))
         p.drawRoundedRect(chip, 2, 2)
-        p.setPen(QColor("#fff"))
+        p.setPen(QColor("#ffffff" if row.checked else SG.OFF_TXT))
         f2 = QFont(f)
-        f2.setPointSizeF(max(7.0, f.pointSizeF() - 1.5))
+        f2.setPointSizeF(max(7.0, f.pointSizeF() - 1))
         p.setFont(f2)
         p.drawText(chip, Qt.AlignCenter, OUT_SHORT.get(row.out, "1080"))
         p.restore()
@@ -445,7 +453,6 @@ class AutoDialog(DragMove, QDialog):
     """AUTO 창. start(이후 'render'|'each') 와 샘플은 EditTab 이 받아 처리(저장폴더·적용·렌더)."""
     startRequested = Signal()
     sampleRequested = Signal()
-    rowProgress = Signal(str, float)        # 메인 소스 목록 줄 배경(분석 진행)
 
     def __init__(self, state, parent=None):
         super().__init__(parent, Qt.Dialog | Qt.FramelessWindowHint)
@@ -554,13 +561,13 @@ class AutoDialog(DragMove, QDialog):
         self.keep.changed.connect(self._keep)
         self.keys = Seg([("keep", "키프레임 유지"), ("auto", "키프레임 자동")], keys)
         self.keys.changed.connect(lambda _k: self.list.viewport().update())
-        self.mode = after if after in ("render", "each") else "render"   # [보정만] = each, [보정+렌더] = render
+        self.mode = after if after in ("render", "each") else "render"   # [보정+편집] = each, [보정+렌더] = render
         self.b_cancel = main_button("취소")
         self.b_cancel.clicked.connect(self.cancel)
         self.b_sample = main_button("샘플", ORANGE_BTN)
-        self.b_sample.clicked.connect(self.sampleRequested.emit)
-        self.b_each = main_button("보정만", LIGHT_BTN)
-        self.b_each.setToolTip("클립에 값을 넣고 개별 보정(반반 보기)")
+        self.b_sample.clicked.connect(self._sample_clicked)
+        self.b_each = main_button("보정+편집", LIGHT_BTN)
+        self.b_each.setToolTip("클립에 값을 넣고 편집 화면에서 개별 보정(반반 보기)")
         self.b_each.clicked.connect(lambda: self._go("each"))
         self.b_start = main_button("보정+렌더", RED_BTN)
         self.b_start.setToolTip("클립에 값을 넣고 바로 렌더")
@@ -584,8 +591,10 @@ class AutoDialog(DragMove, QDialog):
         rbw.setLayout(rb)
         rbw.setFixedWidth(470)
         rb.setContentsMargins(0, 0, 0, 0)
+        self.state_lab = QLabel("")             # MOSCO 처럼 왼쪽 아래 = 지금 진행(단계 색)
         r1 = QHBoxLayout()
         r1.setSpacing(16)
+        r1.addWidget(self.state_lab)
         r1.addStretch(1)
         r1.addWidget(rbw)
         lay = QVBoxLayout(self)
@@ -600,8 +609,17 @@ class AutoDialog(DragMove, QDialog):
         self._name_preview()
         if self.list.count():
             self.list.setCurrentRow(0)
-        state.sourceStatus.connect(self._src_status)      # 영상을 막 넣었으면 로딩이 끝나는 대로 분석
-        QTimer.singleShot(0, self.analyze_all)
+        self.armed = False                  # 창을 열면 아무 작업도 안 함 → [샘플][보정+편집][보정+렌더] 누르면 분석 시작
+        for r in self.rows:                 # 이번 실행 중에 이미 분석한 영상(같은 LUT)은 바로 결과(계산만, 0초)
+            s = p.source(r.sid)
+            if r.checked and s is not None and s.frames and cached_samples(s, self.row_lut(r)):
+                self._compute(r)
+                if r.result:
+                    r.prog = 1.0
+        state.sourceStatus.connect(self._src_status)
+        state.workChanged.connect(lambda _sid: self.list.viewport().update())
+        self.finished.connect(lambda _r: state.clear_work("analyze", {r.sid for r in self.rows}))
+        self._progress()
 
     def _slider(self, v):
         sl = QSlider(Qt.Horizontal)
@@ -654,8 +672,9 @@ class AutoDialog(DragMove, QDialog):
         if any(r.sid == sid for r in self.rows):
             self.list.viewport().update()
             s = self.state.project.source(sid)
-            if s is not None and s.frames:              # 정보만 읽으면 바로(프록시는 재생용이라 기다리지 않음)
+            if self.armed and s is not None and s.frames:   # 버튼을 누른 뒤면 정보만 읽히는 대로 분석(프록시는 기다리지 않음)
                 self.analyze_all()
+            self._progress()
 
     def loading(self, r) -> str:
         """로딩 중이면 표시 글자(프록시 n%), 아니면 ''."""
@@ -694,9 +713,6 @@ class AutoDialog(DragMove, QDialog):
         if s is not None and s.frames:
             nolut = self.row_lut(row) == ""
             sub.append(" · ".join(x for x in (mode, "LUT 없음" if nolut else "") if x))
-        ld = self.loading(row)
-        if ld and row.result is None:
-            sub.append(ld)
         if row.error:
             sub.append("분석 실패")
         if fixed and row.rec and row.result and row.rec != row.result["preset"]:
@@ -792,18 +808,42 @@ class AutoDialog(DragMove, QDialog):
         r.result["grade"]["stab"] = self.stab_s.value()
         r.rec = auto.recommend(smp, base)["preset"]
 
+    def start_analysis(self):
+        """분석 시작(버튼을 누른 것과 같음 — 보정·렌더는 안 함)."""
+        self.armed = True
+        self.analyze_all()
+
+    def _sample_clicked(self):
+        self.armed = True
+        self.sampleRequested.emit()
+
+    def _mark_waiting(self):
+        """버튼을 누른 뒤 아직 결과 없는 체크된 줄 = 분석 대기(진행 중이면 그대로), 체크 뺀 줄 = 지움."""
+        for r in self.rows:
+            w = self.state.work.get(r.sid)
+            if r.checked and r.result is None and not r.error:
+                if not (w and w[0] == "analyze" and w[1] >= 0):
+                    self.state.set_work(r.sid, "analyze", -1)
+            elif w and w[0] == "analyze":
+                self.state.set_work(r.sid, None)
+
     def analyze_all(self):
+        if not self.armed:
+            self._progress()
+            return
         p = self.state.project
+        self._mark_waiting()
         for i, r in enumerate(self.rows):
             s = p.source(r.sid)
             if not r.checked or s is None or not s.frames or r.result is not None or r.prog > 0 or r.error:
                 continue
             lut = self.row_lut(r)
             r.prog = 0.01
+            self.state.set_work(r.sid, "analyze", 0.01)
 
             def done(_smp, r=r):
                 r.prog = 1.0
-                self.rowProgress.emit(r.sid, 1.0)
+                self.state.set_work(r.sid, None)
                 self._compute(r)
                 self.list.viewport().update()
                 self._show_detail()
@@ -813,16 +853,17 @@ class AutoDialog(DragMove, QDialog):
                 ff.log_error("AUTO 분석", msg)
                 if msg != "취소됨" and not getattr(r, "retried", False):
                     r.retried, r.prog = True, 0.0
+                    self.state.set_work(r.sid, "analyze", -1)
                     QTimer.singleShot(800, self.analyze_all)
                     return
                 r.error, r.prog = msg, 1.0
+                self.state.set_work(r.sid, None)
                 self.list.viewport().update()
                 self._progress()
 
             def prog(v, r=r):
                 r.prog = max(0.01, min(0.99, v))
-                self.rowProgress.emit(r.sid, r.prog)
-                self.list.viewport().update()
+                self.state.set_work(r.sid, "analyze", r.prog)
                 self._progress()
             j = grab_job(s, lut, p.output.gpu_decode, done, err, prog)
             if j:
@@ -834,11 +875,41 @@ class AutoDialog(DragMove, QDialog):
         return [r for r in self.rows if r.checked and r.result is None and not r.error
                 and self.state.status.get(r.sid) not in ("읽기 오류", "원본 없음", "프록시 오류")]
 
+    def status_text(self):
+        """왼쪽 아래 글자 + 막대 (글자, 단계, 진행 0~1). 예: '프록시 1/4 (2번 62%) · 분석 1/4 (2번 45%)'."""
+        rows = [(i, r) for i, r in enumerate(self.rows, start=1) if r.checked]
+        n = len(rows)
+        if not n:
+            return "", "proxy", 0.0
+        parts, kind, val = [], "proxy", 0.0
+        st = self.state.status
+        bad = [r for _i, r in rows if st.get(r.sid) in SG.ERRORS]
+        pdone = sum(1 for _i, r in rows if st.get(r.sid) in ("준비",) or st.get(r.sid) in SG.ERRORS)
+        if pdone < n:
+            cur = next(((i, self.state.proxy_pct.get(r.sid, 0.0)) for i, r in rows
+                        if st.get(r.sid, "").startswith("프록시 ") and st.get(r.sid) != "프록시 대기"), None)
+            parts.append(f"프록시 {pdone}/{n}" + (f" ({cur[0]}번 {int(cur[1] * 100)}%)" if cur else ""))
+            val = sum(1.0 if st.get(r.sid) == "준비" else self.state.proxy_pct.get(r.sid, 0.0) for _i, r in rows) / n
+        if self.armed:
+            adone = sum(1 for _i, r in rows if r.result is not None or r.error)
+            cur = next(((i, r.prog) for i, r in rows if 0 < r.prog < 1), None)
+            if adone < n or cur:
+                parts.append(f"분석 {adone}/{n}" + (f" ({cur[0]}번 {int(cur[1] * 100)}%)" if cur else ""))
+            kind, val = "analyze", sum(min(1.0, r.prog) for _i, r in rows) / n
+            if adone >= n and not parts:
+                parts.append(f"분석 {n}/{n}")
+        if bad:
+            parts.append(f"읽기 실패 {len(bad)}")
+        return " · ".join(parts), kind, val
+
     def _progress(self):
-        rows = [r for r in self.rows if r.checked]
         if not self.busy:
-            self.set_bar_color(EDGE_BLUE)
-            self.bar.setValue(int(100 * sum(min(1.0, r.prog) for r in rows) / max(1, len(rows))))
+            txt, kind, val = self.status_text()
+            col = SG.STAGE[kind][1]
+            self.set_bar_color(col)
+            self.bar.setValue(int(100 * val))
+            self.state_lab.setText(txt)
+            self.state_lab.setStyleSheet(f"color:{col};")
         if self.waiting and not self.pending():
             w, self.waiting = self.waiting, None
             (self.startRequested if w == "start" else self.sampleRequested).emit()
@@ -853,7 +924,13 @@ class AutoDialog(DragMove, QDialog):
 
     def _go(self, mode):
         self.mode = mode
+        self.armed = True
         self.startRequested.emit()
+
+    def show_state(self, text, kind):
+        """밖(EditTab)에서 샘플·렌더 진행 글자를 왼쪽 아래에(단계 색)."""
+        self.state_lab.setText(text)
+        self.state_lab.setStyleSheet(f"color:{SG.STAGE[kind][1]};")
 
     def settings(self):
         return {"strength": self.strength.value(), "keep": self.keep.value(), "keys": self.keys.value(),
@@ -877,6 +954,8 @@ class AutoDialog(DragMove, QDialog):
             j.cancel.set()
             jobs.AUTO_POOL.tryTake(j)
         self.waiting = None
+        self.state.clear_work("analyze", {r.sid for r in self.rows})
+        self.state.clear_work("sample", {r.sid for r in self.rows})
         try:
             set_setting("auto", self.settings())
         except Exception:  # noqa: BLE001

@@ -1,4 +1,4 @@
-"""v0.16.9 시작 창: AUTO → (파일) → AUTO 창만 → [취소]=프로그램 종료 / [보정만]=메인 창. 사용: test_launcher.py 영상.mp4"""
+"""v0.16.9 시작 창: AUTO → (파일) → AUTO 창만 → [취소]=프로그램 종료 / [보정+편집]=메인 창. 사용: test_launcher.py 영상.mp4"""
 import os, sys, time
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen"); os.environ["DTME_NO_AUDIO"] = "1"
@@ -20,9 +20,7 @@ def act(what):
     def f():
         d = w.edit._auto_dlg
         log.append((what, L.isVisible(), w.isVisible(), d.isVisible()))
-        t = time.time()
-        while d.pending() and time.time() - t < 240:
-            app.processEvents(); time.sleep(0.05)
+        assert not d.jobs and not w.state.work, "AUTO 창 열기만 = 작업 없음"
         (d.cancel if what == "cancel" else (lambda: d._go("each")))()
     return f
 
@@ -32,7 +30,7 @@ assert log[0] == ("cancel", False, False, True), log      # AUTO 창만 보임
 assert quits and not w.isVisible(), "취소 → 프로그램 종료"
 QTimer.singleShot(500, act("each"))
 L.run_auto([vid])
-assert w.isVisible() and not L.isVisible(), "보정만 → 메인 창"
+assert w.isVisible() and not L.isVisible(), "보정+편집 → 메인 창"
 assert len(w.state.project.sources) == 1, "새 작업(소스 1개)"
 print("launcher OK")
 os._exit(0)

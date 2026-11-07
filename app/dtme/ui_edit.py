@@ -8,7 +8,7 @@ from collections import OrderedDict
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QImage, QImageReader, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QFont, QImage, QImageReader, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (QAbstractSpinBox, QApplication, QButtonGroup, QCheckBox, QDialog, QFileDialog, QFrame,
                                QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
                                QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSlider,
@@ -68,34 +68,27 @@ class SourceDelegate(QStyledItemDelegate):
         return QSize(option.rect.width(), 30)
 
     def paint(self, p: QPainter, option, index):
-        from .ui_auto import AUTO_FILL, LIST_BG, LIST_DIM, SUB, YELLOW, short_preset
+        """MOSCO 줄: 진회색, 선택 = 파란 테두리, 진행 = 단계 색으로 차오름 + 오른쪽 글자(단계 색), 오른쪽 칩 = 프리셋.
+        읽기 실패 = 밝은 회색 줄 + 빨간 '읽기 실패'(누르면 다시 읽기, 툴팁 = 오류 문구)."""
+        from . import stage as SG
+        from .ui_auto import YELLOW, short_preset
         sid = index.data(Qt.UserRole)
-        st = self.tab.state.status.get(sid, "")
-        pct = self.tab.state.proxy_pct.get(sid, 0.0)
-        ready = st == "준비"
+        st = SG.stage_of(self.tab.state, sid)
+        err = st is not None and st[0] == "error"
         src = self.tab.state.project.source(sid)
         r = QRectF(option.rect).adjusted(2, 2, -2, -2)
         p.save()
         p.setRenderHint(QPainter.Antialiasing)
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor(LIST_BG) if ready else QColor(LIST_DIM))
+        p.setBrush(QColor(SG.ERR_BG if err else SG.ROW_BG))
         p.drawRoundedRect(r, 3, 3)
-        if not ready and pct > 0:
+        if st and not err and st[1] is not None and 0 < st[1] < 1:
             pr = QRectF(r)
-            pr.setWidth(r.width() * pct)
-            p.setBrush(QColor("#555555"))
+            pr.setWidth(r.width() * st[1])
+            p.setBrush(QColor(SG.STAGE[st[0]][0]))
             p.drawRoundedRect(pr, 3, 3)
-        ap = self.tab.auto_prog.get(sid)          # AUTO 분석(파랑 기운) / 렌더(빨강 기운) 진행
-        if ap and 0 < ap[0] < 1:
-            pr = QRectF(r)
-            pr.setWidth(r.width() * ap[0])
-            p.setBrush(QColor(AUTO_FILL if ap[1] == "auto" else "#8a5a54"))
-            p.drawRoundedRect(pr, 3, 3)
-        if st in ("읽기 오류", "원본 없음", "프록시 오류"):
-            p.setBrush(QColor("#7a2a22"))
-            p.drawRoundedRect(r, 3, 3)
         if option.state & QStyle.State_Selected:
-            p.setPen(QPen(QColor("#4a8fe0"), 2))
+            p.setPen(QPen(QColor(SG.SEL_EDGE), 2))
             p.setBrush(Qt.NoBrush)
             p.drawRoundedRect(r.adjusted(1, 1, -1, -1), 3, 3)
         f = p.font()
@@ -104,40 +97,63 @@ class SourceDelegate(QStyledItemDelegate):
         fm = p.fontMetrics()
         name = index.data(Qt.DisplayRole)
         nw = fm.horizontalAdvance(name)
-        p.setPen(QColor("#f2f2f2") if ready else QColor("#dddddd"))
+        p.setPen(QColor(SG.ERR_NAME if err else "#f2f2f2"))
         p.drawText(r.adjusted(10, 0, -6, 0), Qt.AlignVCenter | Qt.AlignLeft, name)
-        # 오른쪽: C · ◆n · 프리셋(직접 = 흰색, 자동 = 흐린 흰색). 좁으면 프리셋만 …
         if src is not None:
             f.setBold(False)
             p.setFont(f)
             fm = p.fontMetrics()
-            x = r.right() - 6
+            x = r.right() - 5
+            left = r.left() + 10 + nw + 10
             rec = src.auto or {}
             label = short_preset(rec)
-            left = r.left() + 10 + nw + 8
+            if label:                                   # 칩 = 프리셋(직접 = 흰 글자, 자동 = 흐린 흰색)
+                f2 = QFont(f)
+                f2.setPointSizeF(max(7.0, f.pointSizeF() - 1))
+                p.setFont(f2)
+                fm2 = p.fontMetrics()
+                t = fm2.elidedText(label, Qt.ElideRight, 90)
+                cw = fm2.horizontalAdvance(t) + 14
+                if x - cw > left:
+                    chip = QRectF(x - cw, r.top() + 4, cw, r.height() - 8)
+                    p.setPen(Qt.NoPen)
+                    p.setBrush(QColor(SG.CHIP_SRC))
+                    p.drawRoundedRect(chip, 2, 2)
+                    p.setPen(QColor("#ffffff" if rec.get("by") == "user" else "#e4e4e4"))
+                    p.drawText(chip, Qt.AlignCenter, t)
+                    x -= cw + 8
+                p.setFont(f)
+            if st:                                      # 지금 하는 일(단계 색)
+                txt = fm.elidedText(st[2], Qt.ElideRight, int(max(0, x - left)))
+                w = fm.horizontalAdvance(txt)
+                if txt and x - w > left:
+                    p.setPen(QColor(SG.ERR_TXT if err else SG.STAGE[st[0]][1]))
+                    p.drawText(QRectF(x - w, r.top(), w + 1, r.height()), Qt.AlignVCenter, txt)
+                    x -= w + 8
             parts = []
             if has_clip_grade(src):
-                parts.append(("C", YELLOW))
+                parts.append("C")
             nk = len({k["f"] for ks in src.gkeys.values() for k in ks}) if src.gkeys else 0
             if nk:
-                parts.append((f"◆{nk}", YELLOW))
-            fixed_w = sum(fm.horizontalAdvance(t) + 5 for t, _c in parts)
-            if label:
-                avail = int(x - left - fixed_w)
-                if avail > 16:
-                    t = fm.elidedText(label, Qt.ElideRight, avail)
-                    w = fm.horizontalAdvance(t)
-                    p.setPen(QColor("#ffffff" if rec.get("by") == "user" else SUB))
-                    p.drawText(QRectF(x - w, r.top(), w + 1, r.height()), Qt.AlignVCenter, t)
-                    x -= w + 5
-            for t, c in reversed(parts):
+                parts.append(f"◆{nk}")
+            for t in reversed(parts):
                 w = fm.horizontalAdvance(t)
                 if x - w < left:
                     break
-                p.setPen(QColor(c))
+                p.setPen(QColor(YELLOW))
                 p.drawText(QRectF(x - w, r.top(), w + 1, r.height()), Qt.AlignVCenter, t)
                 x -= w + 5
         p.restore()
+
+    def helpEvent(self, event, view, option, index):
+        """읽기 실패 줄 툴팁 = 오류 문구(누르면 다시 읽기)."""
+        from PySide6.QtWidgets import QToolTip
+        sid = index.data(Qt.UserRole)
+        msg = self.tab.state.errors.get(sid, "")
+        if self.tab.state.status.get(sid) in ("읽기 오류", "원본 없음", "프록시 오류") and event.type() == QEvent.ToolTip:
+            QToolTip.showText(event.globalPos(), f"누르면 다시 읽기\n{msg[-300:]}" if msg else "누르면 다시 읽기", view)
+            return True
+        return super().helpEvent(event, view, option, index)
 
 
 class ImageDelegate(QStyledItemDelegate):
@@ -195,7 +211,6 @@ class EditTab(QWidget):
         self._tl_img_cache = {}
         self._music_player = None
         self.pgen = 0
-        self.auto_prog: dict[str, tuple] = {}      # sid → (진행 0~1, "auto"|"render")
         self._auto_items: set = set()               # AUTO 가 넣은 렌더 항목
 
         # ================= 소스
@@ -206,6 +221,7 @@ class EditTab(QWidget):
         self.src_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.src_list.setStyleSheet("QListWidget{background:#1a1a1a; border:none;}")
         self.src_list.currentItemChanged.connect(self._on_src_selected)
+        self.src_list.itemClicked.connect(lambda it: self.state.prioritize(it.data(Qt.UserRole)))   # 읽기 실패 줄 = 다시 읽기
         self.src_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.src_list.customContextMenuRequested.connect(lambda _pos: self.add_files())
         self.src_list.itemPressed.connect(lambda _it: self._set_target("src"))
@@ -477,6 +493,7 @@ class EditTab(QWidget):
 
         state.changed.connect(self._on_state)
         state.sourceStatus.connect(self._on_source_status)
+        state.workChanged.connect(lambda _sid: self.src_list.viewport().update())
         state.importProgress.connect(self._on_import_progress)
         QApplication.instance().installEventFilter(self)
         self._on_import_progress()
@@ -1863,7 +1880,6 @@ class EditTab(QWidget):
         dlg = AutoDialog(self.state, self)
         dlg.startRequested.connect(lambda: self._auto_start(dlg))
         dlg.sampleRequested.connect(lambda: self._auto_sample(dlg))
-        dlg.rowProgress.connect(lambda sid, v: (self.auto_prog.__setitem__(sid, (v, "auto")), self.src_list.viewport().update()))
         geo = self.window().geometry()
         dlg.move(geo.center().x() - dlg.width() // 2, geo.center().y() - dlg.height() // 2)
         self._auto_dlg = dlg
@@ -1888,7 +1904,7 @@ class EditTab(QWidget):
 
     def _auto_start(self, dlg):
         """[시작] 저장폴더 → (분석 덜 끝났으면 기다림) → 클립에 적용 → 바로 렌더 또는 개별 보정."""
-        if dlg.mode == "render" and not dlg.busy and not getattr(dlg, "_folder", ""):   # [보정만]은 파일을 안 만들어 폴더 안 물음
+        if dlg.mode == "render" and not dlg.busy and not getattr(dlg, "_folder", ""):   # [보정+편집]은 파일을 안 만들어 폴더 안 물음
             d = self._ask_folder()
             if not d:
                 return
@@ -1940,7 +1956,7 @@ class EditTab(QWidget):
             self._auto_items = {it.id for it in items}
             self.state.touch("render")
             dlg.accept()
-            self._set_auto_bar(0.0, "#c0392b")
+            self._set_auto_bar(0.0, "#d9604f")
             self.render_panel.render()
         else:
             dlg.accept()
@@ -1981,7 +1997,7 @@ class EditTab(QWidget):
         if not todo:
             dlg.set_busy(False)
             return
-        dlg.set_busy(True, "#d9822b")
+        dlg.set_busy(True, "#d9a646")
         dlg.bar.setValue(0)
         gpu = p.output.gpu_decode
         size, fmt, layout = int(cfg.get("size", 1920)), cfg.get("fmt", "png8"), cfg.get("layout", "side")
@@ -1995,16 +2011,41 @@ class EditTab(QWidget):
             return len(todo)
         job = jobs.Job(work, with_progress=True)
         dlg.jobs.append(job)
-        job.signals.progress.connect(lambda v: dlg.bar.setValue(int(v * 100)))
+        per = {}                                    # sid → [인덱스…] (소스 줄 = 샘플 k/6)
+        for i, t in enumerate(todo):
+            per.setdefault(t[0].id, []).append(i)
+        for sid in per:
+            self.state.set_work(sid, "sample", -1)
+        order = list(per)
+
+        def on_prog(v):
+            k = int(round(v * len(todo)))
+            dlg.bar.setValue(int(v * 100))
+            for sid, idx in per.items():
+                got = sum(1 for i in idx if i < k)
+                if got >= len(idx):
+                    self.state.set_work(sid, None)
+                elif got > 0 or (idx[0] <= k):
+                    self.state.set_work(sid, "sample", got / len(idx), f"샘플 {got}/{len(idx)}")
+            cur = next((n for n, sid in enumerate(order, start=1) if self.state.work.get(sid, ("",))[0] == "sample"
+                        and self.state.work[sid][1] >= 0), 0)
+            done_n = sum(1 for sid in order if sid not in self.state.work)
+            dlg.show_state(f"샘플 {done_n}/{len(order)}" + (f" ({cur}번)" if cur else ""), "sample")
+        job.signals.progress.connect(on_prog)
+        on_prog(0.0)
 
         def done(n):
+            self.state.clear_work("sample", set(per))
             dlg.set_busy(False)
-            dlg.set_bar_color("#d9822b")
+            dlg.set_bar_color("#d9a646")
             dlg.bar.setValue(100)
+            dlg.show_state(f"샘플 {len(order)}/{len(order)} · {n}장 저장", "sample")
             self._say(f"샘플 {n}장 저장 ✓  {folder}", C_OK)
 
         def err(m):
+            self.state.clear_work("sample", set(per))
             dlg.set_busy(False)
+            dlg._progress()
             self._say(f"샘플 실패: {m[-160:]}", C_WARN)
         job.signals.done.connect(done)
         job.signals.error.connect(err)
@@ -2014,14 +2055,21 @@ class EditTab(QWidget):
         """AUTO 렌더 진행 → 맨 위 빨간 막대 + 소스 줄 배경."""
         p = self.state.project
         it = next((x for x in p.render_items if x.id == iid), None)
-        if it is not None and it.segs:
-            self.auto_prog[it.segs[0].src] = (v, "render") if v < 1 else (1.0, "render")
+        if it is not None and it.segs:              # 렌더 진행 → 소스 줄(빨강)
+            sids = {g.src for g in it.segs}
+            for sid in sids:
+                if running and v < 1:
+                    self.state.set_work(sid, "render", v)
+                else:
+                    w = self.state.work.get(sid)
+                    if w and w[0] == "render":
+                        self.state.set_work(sid, None)
         if self._auto_items:
             ids = [x for x in p.render_items if x.id in self._auto_items]
             done = sum(self.render_panel.progress.get(x.id, 0.0) if not self.render_panel.status.get(x.id, "").startswith(("완료", "실패")) else 1.0
                        for x in ids)
             tot = done / max(1, len(ids))
-            self._set_auto_bar(tot if running else 1.0, "#c0392b")
+            self._set_auto_bar(tot if running else 1.0, "#d9604f")
             self.autoRenderProgress.emit(tot if running else 1.0, running)
             if not running:
                 self._auto_items = set()

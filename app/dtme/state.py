@@ -15,6 +15,7 @@ class AppState(QObject):
     sourceStatus = Signal(str)     # source id — 분석/프록시 상태 변경
     importProgress = Signal()      # 전체 진행률 변경
     message = Signal(str)
+    workChanged = Signal(str)      # sid — 분석·샘플·렌더 진행(state.work) 변경
 
     def __init__(self):
         super().__init__()
@@ -23,10 +24,25 @@ class AppState(QObject):
         self.img_status: dict[str, str] = {}  # 이미지 id → "" (정상) | "읽기 오류" | "원본 없음"
         self.proxy_pct: dict[str, float] = {}
         self.errors: dict[str, str] = {}      # sid → 마지막 오류 내용
+        self.work: dict[str, tuple] = {}      # sid → (단계 "analyze"|"sample"|"render", 진행 0~1 | -1 = 대기, 글자 | "")
         self._proxy_jobs: dict[str, jobs.Job] = {}
         self._undo: list[dict] = []
         self._ck_tag, self._ck_t = "", 0.0
         self.dirty = False
+
+    def set_work(self, sid: str, kind: str | None, v: float = -1.0, text: str = ""):
+        """소스 줄 진행 표시. kind=None 이면 지움(그 단계만 지우려면 only=)."""
+        if kind is None:
+            if self.work.pop(sid, None) is None:
+                return
+        else:
+            self.work[sid] = (kind, v, text)
+        self.workChanged.emit(sid)
+
+    def clear_work(self, kind: str, sids=None):
+        for sid in [k for k, w in self.work.items() if w[0] == kind and (sids is None or k in sids)]:
+            self.work.pop(sid, None)
+            self.workChanged.emit(sid)
 
     # ------------------------------------------------------------ 실행취소
     def checkpoint(self, tag: str = ""):

@@ -84,7 +84,7 @@ QTimer.singleShot(0, lambda: None)
 dlg.show(); wait(1)
 ky = dlg.keep.mapTo(dlg, dlg.keep.rect().topLeft()).y(); gy_ = dlg.grid.mapTo(dlg, dlg.grid.rect().topLeft()).y()
 print("기존 보정 y", ky, "< 프리셋 격자 y", gy_); assert ky < gy_
-dlg.lens_s.setValue(40); dlg.stab_s.setValue(25); wait(30, lambda: all(r.result for r in dlg.rows if r.checked))
+dlg.start_analysis(); dlg.lens_s.setValue(40); dlg.stab_s.setValue(25); wait(30, lambda: all(r.result for r in dlg.rows if r.checked))
 r = dlg.rows[0]
 print("AUTO 결과 렌즈/흔들림:", r.result["grade"]["lens"], r.result["grade"]["stab"]); assert r.result["grade"]["lens"] == 40 and r.result["grade"]["stab"] == 25
 dlg.grab().save(os.path.join(WORK, "shot_auto.png"))

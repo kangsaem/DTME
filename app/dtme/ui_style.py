@@ -20,7 +20,7 @@ BASE = "#383838"        # 일반 버튼 바탕
 TONES = {
     "red": ("#c0392b", "#ffffff", True),       # 렌더 · AUTO · 렌더리스트로 · 보정+렌더
     "orange": ("#d9822b", "#ffffff", True),    # 샘플
-    "light": ("#c9c9c9", "#111111", True),     # 보정만
+    "light": ("#c9c9c9", "#111111", True),     # 보정+편집
     "blue": (SEL_BLUE, "#ffffff", True),       # 확인
     "navy": ("#2f3b4d", "#e6e6e6", False),     # ▼ 타임라인으로
     "cut": ("#3a3a26", "#e6e6e6", False),      # [ 컷인 · 컷아웃 ]

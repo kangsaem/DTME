@@ -1,5 +1,5 @@
 """시작 창(v0.16.8): 큰 [AUTO] + 작은 [MANUAL]. AUTO = 파일·폴더 선택(또는 끌어 놓기) → AUTO 창만 띄워 분석.
-[보정만] → 메인 편집 화면, [샘플] → AUTO 창 그대로, [보정+렌더] → 이 창에 진행 막대 → 끝나면 프로그램 종료,
+[보정+편집] → 메인 편집 화면, [샘플] → AUTO 창 그대로, [보정+렌더] → 이 창에 진행 막대 → 끝나면 프로그램 종료,
 [취소] → 프로그램 종료(v0.16.9, 사용자 2026-11-07)."""
 from __future__ import annotations
 
@@ -148,7 +148,7 @@ class Launcher(QWidget):
         dlg.move(c.x() - dlg.width() // 2, c.y() - dlg.height() // 2)
         self.hide()
         r = dlg.exec()
-        if r == QDialog.Accepted and dlg.mode == "each":       # [보정만] → 메인 편집 화면
+        if r == QDialog.Accepted and dlg.mode == "each":       # [보정+편집] → 메인 편집 화면
             mw.show()
             mw.raise_()
             self.close()

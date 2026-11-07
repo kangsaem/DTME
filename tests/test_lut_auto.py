@@ -51,7 +51,7 @@ gp._set("lut", ""); wait(1); assert wait(60, lambda: n.proxy == old)
 # AUTO 창 LUT 줄
 dlg = e.make_auto_dialog(); dlg.show()
 for r in dlg.rows: r.checked = True
-dlg.analyze_all()
+dlg.start_analysis()
 assert wait(120, lambda: not dlg.pending())
 subs = [dlg.row_text(r)[2] for r in dlg.rows]
 print("AUTO 자동:", [dlg.row_lut(r) for r in dlg.rows], subs)
