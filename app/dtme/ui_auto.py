@@ -279,23 +279,16 @@ class PresetDialog(DragMove, QDialog):
         v.addWidget(Grip())                       # 맨 위 손잡이 줄 = 잡고 끌어 옮김(빈 바탕도 됨)
         self.grid = PresetGrid()
         self.grid.set_current(current)
-        gl = QHBoxLayout()                        # 격자 왼쪽 끝 = 강도 [약] x
-        gl.addSpacing(81)
-        gl.addWidget(self.grid, 1)
-        v.addLayout(gl)
+        v.addWidget(self.grid)                    # 왼쪽 여백 = 오른쪽(16), 강도 글자 없음(사용자 2026-11-07)
         v.addWidget(self._line())
         self.strength = Seg([("weak", "약"), ("mid", "중"), ("strong", "강")], strength)
         self.strength.changed.connect(lambda _k: self._hover(self._last_hover))
-        v.addLayout(labeled("강도", self.strength))
+        v.addWidget(self.strength)
         self.detail = DetailBox()
-        dl = QHBoxLayout()
-        dl.addSpacing(81)
-        dl.addWidget(self.detail, 1)
-        v.addLayout(dl)
+        v.addWidget(self.detail)
         v.addWidget(self._line())
         ul = QHBoxLayout()
         ul.setSpacing(5)
-        ul.addSpacing(81)
         self.user_box = ul
         self.user_btns = {}
         for name in ["기본값"] + list_presets():
@@ -314,7 +307,7 @@ class PresetDialog(DragMove, QDialog):
             ul.addWidget(b)
         ul.addStretch(1)
         v.addLayout(ul)
-        self.setFixedWidth(540)
+        self.setFixedWidth(459)                  # 내용 폭 그대로(예전 540 - 왼쪽 81)
         self._last_hover = ""
         self.grid.chosen.connect(self._pick)
         self.grid.hovered.connect(self._hover)
