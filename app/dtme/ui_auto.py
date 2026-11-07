@@ -241,6 +241,26 @@ def labeled(text, w, lw=76):
 
 
 # ------------------------------------------------------------------ 보정 탭 프리셋 창
+class Grip(QWidget):
+    """테두리 없는 창 맨 위 손잡이(점 6개). 누름은 창으로 넘어가 DragMove 가 옮김."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(14)
+        self.setCursor(Qt.SizeAllCursor)
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor("#6a6a6a"))
+        cx, cy = self.width() / 2, self.height() / 2
+        for i in range(-2, 3):
+            for j in (-2, 2):
+                p.drawEllipse(QRectF(cx + i * 7 - 1.5, cy + j - 1.5, 3, 3))
+        p.end()
+
+
 class PresetDialog(DragMove, QDialog):
     """떠 있는 프리셋 창(v0.16.8): 고르면 바로 적용하고 열린 채 그대로. 끌어서 옮김, [프리셋] 다시 누르기·Esc 로 닫힘.
     picked('auto'|'scene:x'|키|'user:이름'|'base', 강도)."""
@@ -254,8 +274,9 @@ class PresetDialog(DragMove, QDialog):
         self.setObjectName("PresetDialog")
         self.setStyleSheet("#PresetDialog{background:#262626; border:1px solid #555; border-radius:6px;}")
         v = QVBoxLayout(self)
-        v.setContentsMargins(16, 16, 16, 16)
+        v.setContentsMargins(16, 4, 16, 16)
         v.setSpacing(12)
+        v.addWidget(Grip())                       # 맨 위 손잡이 줄 = 잡고 끌어 옮김(빈 바탕도 됨)
         self.grid = PresetGrid()
         self.grid.set_current(current)
         gl = QHBoxLayout()                        # 격자 왼쪽 끝 = 강도 [약] x

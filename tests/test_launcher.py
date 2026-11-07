@@ -1,4 +1,4 @@
-"""v0.16.8 시작 창: AUTO → (파일) → AUTO 창만 → [취소]=시작 창 / [보정만]=메인 창. 사용: test_launcher.py 영상.mp4"""
+"""v0.16.9 시작 창: AUTO → (파일) → AUTO 창만 → [취소]=프로그램 종료 / [보정만]=메인 창. 사용: test_launcher.py 영상.mp4"""
 import os, sys, time
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen"); os.environ["DTME_NO_AUDIO"] = "1"
@@ -13,6 +13,8 @@ vid = sys.argv[1]
 assert collect_videos([os.path.dirname(os.path.abspath(vid))]), "폴더 → 영상"
 w = MainWindow(); L = Launcher(w); L.show()
 log = []
+quits = []
+L._quit = lambda: (quits.append(1), L.hide())
 
 def act(what):
     def f():
@@ -27,7 +29,7 @@ def act(what):
 QTimer.singleShot(500, act("cancel"))
 L.run_auto([vid])
 assert log[0] == ("cancel", False, False, True), log      # AUTO 창만 보임
-assert L.isVisible() and not w.isVisible(), "취소 → 시작 창"
+assert quits and not w.isVisible(), "취소 → 프로그램 종료"
 QTimer.singleShot(500, act("each"))
 L.run_auto([vid])
 assert w.isVisible() and not L.isVisible(), "보정만 → 메인 창"

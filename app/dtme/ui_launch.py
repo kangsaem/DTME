@@ -1,5 +1,6 @@
 """시작 창(v0.16.8): 큰 [AUTO] + 작은 [MANUAL]. AUTO = 파일·폴더 선택(또는 끌어 놓기) → AUTO 창만 띄워 분석.
-[보정만] → 메인 편집 화면, [샘플] → AUTO 창 그대로, [보정+렌더] → 렌더 후 이 창으로, [취소] → 이 창으로."""
+[보정만] → 메인 편집 화면, [샘플] → AUTO 창 그대로, [보정+렌더] → 이 창에 진행 막대 → 끝나면 프로그램 종료,
+[취소] → 프로그램 종료(v0.16.9, 사용자 2026-11-07)."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -152,13 +153,15 @@ class Launcher(QWidget):
             mw.raise_()
             self.close()
             return
-        self.show()
-        if r == QDialog.Accepted and dlg.mode == "render" and mw.edit.render_panel.running:
-            self.rendering = True
-            self.b_auto.setEnabled(False)
-            self.bar.setValue(0)
-            self.bar.setVisible(True)
-            self._say("렌더 중…")
+        if not (r == QDialog.Accepted and dlg.mode == "render" and mw.edit.render_panel.running):
+            self._quit()                            # [취소]·Esc(또는 렌더할 것 없음) = 프로그램 종료
+            return
+        self.show()                                 # [보정+렌더] = 이 창에 진행 막대
+        self.rendering = True
+        self.b_auto.setEnabled(False)
+        self.bar.setValue(0)
+        self.bar.setVisible(True)
+        self._say("렌더 중…")
 
     def _render_progress(self, v, running):
         if not self.rendering:
@@ -173,6 +176,13 @@ class Launcher(QWidget):
             bad = sum(1 for t in st.values() if t.startswith("실패"))
             self._say(f"완료 {ok}개" + (f" · 실패 {bad}개" if bad else ""), "#7fd18b" if not bad else "#f2c94c")
             self.b_folder.setVisible(ok > 0)
+            if not self.mw.isVisible() and not bad:   # [보정+렌더] 끝 = 프로그램 종료(실패가 있으면 남겨 둠)
+                self._quit()
+
+    def _quit(self):
+        from PySide6.QtWidgets import QApplication
+        self.hide()
+        QApplication.quit()
 
     def _say(self, t, color="#9a9a9a"):
         self.msg.setStyleSheet(f"color:{color};")
