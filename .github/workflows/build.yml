@@ -38,41 +38,53 @@ jobs:
             --exclude-module tkinter `
             app/main.py
 
-      - name: FFmpeg zip 캐시(다운로드 서버 504 대비, v0.16.22)
-        uses: actions/cache@v4
+      - name: FFmpeg 캐시 불러오기
+        uses: actions/cache/restore@v4
         with:
           path: ffmpeg.zip
-          key: ffmpeg-zip-${{ github.run_id }}
+          key: ffmpeg-zip-none
           restore-keys: ffmpeg-zip-
 
+      # 정상 = 새로 받아 캐시 바꿈 / 장애(504 등) = 캐시로 바로 (v0.16.22, 사용자 확정)
       - name: Add FFmpeg (BtbN GPL build, NVENC/CUDA 포함)
+        id: ffdl
         shell: pwsh
         run: |
-          $cached = Test-Path ffmpeg.zip
-          if ($cached) { Copy-Item ffmpeg.zip ffmpeg_cached.zip }
           $url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
+          $cached = Test-Path ffmpeg.zip
+          $oldHash = if ($cached) { (Get-FileHash ffmpeg.zip).Hash } else { "" }
           $ok = $false
-          for ($i = 1; $i -le 3 -and -not $ok; $i++) {          # 다운로드 서버 504 등 → 재시도(v0.16.20)
-            try { Invoke-WebRequest $url -OutFile ffmpeg.zip; $ok = $true }
-            catch { Write-Host "ffmpeg latest 다운로드 실패 $i/3: $_"; Start-Sleep -Seconds (15 * $i) }
+          $tries = if ($cached) { 2 } else { 3 }                 # 캐시 있으면 짧게 시도하고 넘어감
+          for ($i = 1; $i -le $tries -and -not $ok; $i++) {
+            try { Invoke-WebRequest $url -OutFile ffmpeg_new.zip -TimeoutSec 300; $ok = $true }
+            catch { Write-Host "ffmpeg latest 다운로드 실패 ${i}/${tries}: $_"; if ($i -lt $tries) { Start-Sleep -Seconds 10 } }
           }
-          if (-not $ok) {                                        # latest 가 계속 안 되면 날짜 붙은 최근 릴리스(autobuild-…)
+          if (-not $ok -and -not $cached) {                      # 캐시도 없을 때만: 날짜 붙은 릴리스 → gyan.dev
             $h = @{ Authorization = "Bearer ${{ github.token }}" }
-            $rels = Invoke-RestMethod "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases?per_page=6" -Headers $h
-            foreach ($r in $rels) {
-              if ($r.tag_name -eq "latest") { continue }
-              $a = $r.assets | Where-Object { $_.name -match '^ffmpeg-N-.*-win64-gpl\.zip$' } | Select-Object -First 1
-              if (-not $a) { continue }
-              try { Write-Host "대신 $($r.tag_name) $($a.name)"; Invoke-WebRequest $a.browser_download_url -OutFile ffmpeg.zip; $ok = $true; break }
-              catch { Write-Host "실패 $($r.tag_name): $_" }
-            }
-            if (-not $ok) {                                      # GitHub 릴리스 전체 장애 → gyan.dev 빌드(NVENC 포함) → 캐시
-              try { Write-Host "대신 gyan.dev"; Invoke-WebRequest "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-full.zip" -OutFile ffmpeg.zip; $ok = $true }
+            try {
+              $rels = Invoke-RestMethod "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases?per_page=6" -Headers $h
+              foreach ($r in $rels) {
+                if ($r.tag_name -eq "latest") { continue }
+                $a = $r.assets | Where-Object { $_.name -match '^ffmpeg-N-.*-win64-gpl\.zip$' } | Select-Object -First 1
+                if (-not $a) { continue }
+                try { Write-Host "대신 $($r.tag_name)"; Invoke-WebRequest $a.browser_download_url -OutFile ffmpeg_new.zip -TimeoutSec 300; $ok = $true; break }
+                catch { Write-Host "실패 $($r.tag_name): $_" }
+              }
+            } catch { Write-Host "릴리스 목록 실패: $_" }
+            if (-not $ok) {
+              try { Write-Host "대신 gyan.dev"; Invoke-WebRequest "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-full.zip" -OutFile ffmpeg_new.zip -TimeoutSec 300; $ok = $true }
               catch { Write-Host "gyan.dev 실패: $_" }
             }
-            if (-not $ok -and $cached) { Write-Host "대신 캐시"; Copy-Item ffmpeg_cached.zip ffmpeg.zip -Force; $ok = $true }
-            if (-not $ok) { throw "ffmpeg 다운로드 실패" }
           }
+          if ($ok) {
+            Move-Item ffmpeg_new.zip ffmpeg.zip -Force
+            $fresh = ((Get-FileHash ffmpeg.zip).Hash -ne $oldHash)
+            Write-Host "ffmpeg 새로 받음 (캐시와 다름: $fresh)"
+            "fresh=$($fresh.ToString().ToLower())" >> $env:GITHUB_OUTPUT
+          } elseif ($cached) {
+            Write-Host "ffmpeg 다운로드 장애 → 캐시 사용"
+            "fresh=false" >> $env:GITHUB_OUTPUT
+          } else { throw "ffmpeg 다운로드 실패(캐시도 없음)" }
           Expand-Archive ffmpeg.zip -DestinationPath ffmpeg_x
           $bin = Get-ChildItem ffmpeg_x -Recurse -Filter ffmpeg.exe | Select-Object -First 1
           New-Item -ItemType Directory -Force dist/DTME/bin | Out-Null
@@ -85,6 +97,13 @@ jobs:
           Copy-Item fonts/* dist/DTME/fonts/
           Copy-Item README.md dist/DTME/사용법.md
           & dist/DTME/bin/ffmpeg.exe -hide_banner -version | Select-Object -First 1
+
+      - name: FFmpeg 캐시 바꾸기(새로 받았을 때만)
+        if: steps.ffdl.outputs.fresh == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ffmpeg.zip
+          key: ffmpeg-zip-${{ github.run_id }}
 
       - name: Smoke test (engine)
         shell: pwsh
