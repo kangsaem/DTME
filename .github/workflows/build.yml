@@ -42,7 +42,10 @@ jobs:
         shell: pwsh
         run: |
           $url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
-          Invoke-WebRequest $url -OutFile ffmpeg.zip
+          for ($i = 1; $i -le 5; $i++) {          # 다운로드 서버 504 등 일시 오류 → 재시도(v0.16.20)
+            try { Invoke-WebRequest $url -OutFile ffmpeg.zip; break }
+            catch { if ($i -eq 5) { throw }; Write-Host "ffmpeg 다운로드 실패 $i/5: $_"; Start-Sleep -Seconds (20 * $i) }
+          }
           Expand-Archive ffmpeg.zip -DestinationPath ffmpeg_x
           $bin = Get-ChildItem ffmpeg_x -Recurse -Filter ffmpeg.exe | Select-Object -First 1
           New-Item -ItemType Directory -Force dist/DTME/bin | Out-Null
