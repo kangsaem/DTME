@@ -25,7 +25,7 @@ with open(paths.lut_dir() / lut_name, "w") as f:
 FF = paths.ffmpeg()
 
 
-def mk(out, vf_extra="", size="1280x720", rate="60000/1001", dur=3.0, codec=("libx265", "yuv420p10le"), audio=True):
+def mk(out, vf_extra="", size="1280x720", rate="60000/1001", dur=3.0, codec=("libx265", "yuv420p10le"), audio=True, cwd=None):
     src = f"testsrc2=size={size}:rate={rate},eq=contrast=0.4:saturation=0.45{vf_extra}"
     cmd = [FF, "-v", "error", "-y", "-f", "lavfi", "-i", src]
     if audio:
@@ -34,7 +34,7 @@ def mk(out, vf_extra="", size="1280x720", rate="60000/1001", dur=3.0, codec=("li
     if codec[0] == "libx265":
         cmd += ["-x265-params", "log-level=error"]
     cmd += (["-c:a", "aac", "-shortest"] if audio else []) + ["-f", "mp4", str(out)]
-    subprocess.run(cmd, check=True)
+    subprocess.run(cmd, check=True, cwd=cwd)
 
 
 def source(p):
@@ -66,8 +66,10 @@ assert "프리뷰(LRF" in log.splitlines()[-1], log.splitlines()[-1]
 
 # 2) 프리뷰가 이미 709(대비 큼) → 색 'raw'
 b = work / "DJI_20261025100500_0150_D.MP4"
+_ref = ff.lut_ref(lut_name)
 mk(b)
-mk(work / "DJI_20261025100500_0150_D.LRF", vf_extra=f",scale=640:360,format=gbrp16le,lut3d=file={paths.lut_dir() / lut_name}", size="640x360", rate="30000/1001", codec=H264)
+mk(work / "DJI_20261025100500_0150_D.LRF", vf_extra=f",scale=640:360,format=gbrp16le,lut3d=file={_ref[1]}", size="640x360", rate="30000/1001", codec=H264,
+   cwd=_ref[0])   # Windows 경로(D:\\) 는 필터 안에서 깨짐 → 앱처럼 LUT 폴더에서 상대 이름
 r = ff.check_preview(source(b), lut_name)
 print("DJI 709:", r)
 assert r["ok"] and r["color"] == "raw", r
