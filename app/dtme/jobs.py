@@ -80,7 +80,7 @@ def _cores() -> int:
 
 CORES = _cores()
 RENDER_N = max(1, min(3, CORES // 16))     # 동시 렌더: 코어 16개당 1개(1~3, NVENC 인코더 수 한계로 최대 3)
-AUTO_N = max(2, min(8, CORES // 4))        # 동시 분석(샘플 추출): 코어 4개당 1개(2~8)
+AUTO_N = max(2, min(4, CORES // 8))        # 동시 분석(샘플 추출): 코어 8개당 1개(2~4) — v0.16.18: 8 → 4 (SD카드·HDD 동시 읽기 막힘 방지)
 
 ANALYZE_POOL = make_pool(4)   # ffprobe
 PROXY_POOL = make_pool(2)     # 동시에 2개(사용자 PC 32코어·RTX 4090 기준, 2026-11-06)

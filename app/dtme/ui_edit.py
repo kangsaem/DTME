@@ -213,6 +213,7 @@ class EditTab(QWidget):
         self.pgen = 0
         self._auto_items: set = set()               # AUTO 가 넣은 렌더 항목
         self._auto_feeding = False                  # [보정+렌더] 분석이 덜 끝나 렌더 항목이 더 들어올 예정
+        self._allow_hidden = False                  # 숨어 있어도 모니터 미리 준비([보정+편집] 누른 뒤)
 
         # ================= 소스
         self.src_list = QListWidget()
@@ -758,7 +759,7 @@ class EditTab(QWidget):
 
     def _load_current(self):
         s = self._cur()
-        if not self.window().isVisible():       # 시작 창 AUTO 중(메인 창 숨김) = 모니터 작업 안 함 → 보일 때 불러옴
+        if not self.window().isVisible() and not getattr(self, "_allow_hidden", False):   # 시작 창 AUTO 중(메인 창 숨김) = 모니터 작업 안 함 → 보일 때 불러옴
             self._load_pending = True
             return
         self._sync_loading()
@@ -822,7 +823,7 @@ class EditTab(QWidget):
     def request_preview(self):
         s = self._cur()
         p = self.player
-        if not s or not s.frames or p.is_busy() or not self.window().isVisible():   # 숨김 = 보정 화면·원본 구간 캐시 안 만듦
+        if not s or not s.frames or p.is_busy() or (not self.window().isVisible() and not getattr(self, "_allow_hidden", False)):   # 숨김 = 안 만듦([보정+편집] 누른 뒤는 미리)
             return
         if not self.chk_preview.isChecked() and p.has_media:
             p.overlay_frame = None
@@ -1921,6 +1922,9 @@ class EditTab(QWidget):
             return
         if self.state.defer_proxy:                 # 시작 창 [보정+편집]: 분석과 함께 프록시 시작(기다리지 않음 → 편집 화면에서 계속)
             self.state.resume_proxies()
+        if not self.window().isVisible() and not self._allow_hidden:   # 편집 화면 첫 장면 미리(원본 구간 캐시·보정 화면)
+            self._allow_hidden = True
+            self._load_current()
         if dlg.wait_then("start"):
             dlg.set_busy(True)
             return

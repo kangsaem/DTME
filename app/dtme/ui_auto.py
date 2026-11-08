@@ -3,7 +3,7 @@
 공통 부품(PresetGrid): [모두 자동] / 줄마다 [자동](장면 고정·피사체 자동) + 피사체 4 / 기타(블루워터·야간) / 강도 / 세부 정보.
 AUTO 창: 왼쪽 클립 목록(체크·C·프리셋·인식·◆·출력, 분석 진행 = 줄 배경) · 오른쪽 프리셋·강도·출력·이름·세부 정보 ·
 오른쪽 맨 위 [기존 보정 유지|무시] [키프레임 유지|자동] · 아래 진행 막대 · [취소][샘플][보정+편집][보정+렌더].
-줄 = MOSCO 모양(진회색, 단계 색으로 차오름, 오른쪽 = 지금 하는 일). 창을 열면 아무 작업도 안 함 → 버튼을 누르면 분석 시작.
+줄 = MOSCO 모양(진회색, 단계 색으로 차오름, 오른쪽 = 지금 하는 일). 창을 열면 분석만 뒤에서 조용히 미리(표시 없음) → 버튼을 누르면 진행 표시·값 넣기.
 """
 from __future__ import annotations
 
@@ -610,7 +610,7 @@ class AutoDialog(DragMove, QDialog):
         if self.list.count():
             self.list.setCurrentRow(0)
         self.proxy_wait = False             # 시작 창 [보정+편집]: 프록시까지 끝나면 닫힘
-        self.armed = False                  # 창을 열면 아무 작업도 안 함 → [샘플][보정+편집][보정+렌더] 누르면 분석 시작
+        self.armed = False                  # 버튼 전 = 분석만 뒤에서 조용히 미리(v0.16.18), 값 넣기·렌더·표시는 버튼 뒤
         for r in self.rows:                 # 이번 실행 중에 이미 분석한 영상(같은 LUT)은 바로 결과(계산만, 0초)
             s = p.source(r.sid)
             if r.checked and s is not None and s.frames and cached_samples(s, self.row_lut(r)):
@@ -621,6 +621,7 @@ class AutoDialog(DragMove, QDialog):
         state.workChanged.connect(lambda _sid: self.list.viewport().update())
         self.finished.connect(lambda _r: state.clear_work("analyze", {r.sid for r in self.rows}))
         self._progress()
+        QTimer.singleShot(0, self.analyze_all)
 
     def _slider(self, v):
         sl = QSlider(Qt.Horizontal)
@@ -673,7 +674,7 @@ class AutoDialog(DragMove, QDialog):
         if any(r.sid == sid for r in self.rows):
             self.list.viewport().update()
             s = self.state.project.source(sid)
-            if self.armed and s is not None and s.frames:   # 버튼을 누른 뒤면 정보만 읽히는 대로 분석(프록시는 기다리지 않음)
+            if s is not None and s.frames:              # 정보만 읽히는 대로 분석(버튼 전 = 조용히 미리, 프록시는 기다리지 않음)
                 self.analyze_all()
             self._progress()
 
@@ -823,24 +824,26 @@ class AutoDialog(DragMove, QDialog):
         for r in self.rows:
             w = self.state.work.get(r.sid)
             if r.checked and r.result is None and not r.error:
-                if not (w and w[0] == "analyze" and w[1] >= 0):
+                if 0 < r.prog < 1:                       # 버튼 전부터 조용히 돌던 것 = 지금 진행률로 바로 표시
+                    self.state.set_work(r.sid, "analyze", r.prog)
+                elif not (w and w[0] == "analyze" and w[1] >= 0):
                     self.state.set_work(r.sid, "analyze", -1)
             elif w and w[0] == "analyze":
                 self.state.set_work(r.sid, None)
 
     def analyze_all(self):
-        if not self.armed:
-            self._progress()
-            return
+        """체크된 줄 분석. 버튼 전(armed 아님) = 뒤에서 조용히 미리(진행 표시 없음, ffmpeg 낮은 우선순위) → 버튼 누르면 이미 끝나 있거나 이어서 표시."""
         p = self.state.project
-        self._mark_waiting()
+        if self.armed:
+            self._mark_waiting()
         for i, r in enumerate(self.rows):
             s = p.source(r.sid)
             if not r.checked or s is None or not s.frames or r.result is not None or r.prog > 0 or r.error:
                 continue
             lut = self.row_lut(r)
             r.prog = 0.01
-            self.state.set_work(r.sid, "analyze", 0.01)
+            if self.armed:
+                self.state.set_work(r.sid, "analyze", 0.01)
 
             def done(_smp, r=r):
                 r.prog = 1.0
@@ -856,7 +859,8 @@ class AutoDialog(DragMove, QDialog):
                 ff.log_error("AUTO 분석", msg)
                 if msg != "취소됨" and not getattr(r, "retried", False):
                     r.retried, r.prog = True, 0.0
-                    self.state.set_work(r.sid, "analyze", -1)
+                    if self.armed:
+                        self.state.set_work(r.sid, "analyze", -1)
                     QTimer.singleShot(800, self.analyze_all)
                     return
                 r.error, r.prog = msg, 1.0
@@ -866,8 +870,9 @@ class AutoDialog(DragMove, QDialog):
 
             def prog(v, r=r):
                 r.prog = max(0.01, min(0.99, v))
-                self.state.set_work(r.sid, "analyze", r.prog)
-                self._progress()
+                if self.armed:                          # 버튼 전 = 조용히(줄·왼쪽 아래 표시 없음)
+                    self.state.set_work(r.sid, "analyze", r.prog)
+                    self._progress()
             j = grab_job(s, lut, p.output.gpu_decode, done, err, prog)
             if j:
                 self.jobs.append(j)

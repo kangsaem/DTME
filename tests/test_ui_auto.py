@@ -41,15 +41,16 @@ d.grade = {"r_gain": 1.3}
 # ---------------- AUTO 창: 분석 · 인식 · 직접 지정 · 개별 보정
 dlg = e.make_auto_dialog(); dlg.show()
 wait(1.0)
-print("창 열기만 → 작업 없음:", [r.prog for r in dlg.rows], st.work, repr(dlg.state_lab.text()))
-assert all(r.prog == 0 and r.result is None for r in dlg.rows) and not st.work and not dlg.jobs
+print("창 열기만 → 조용히 미리 분석:", [round(r.prog, 2) for r in dlg.rows], st.work, repr(dlg.state_lab.text()))
+assert not st.work and "분석" not in dlg.state_lab.text(), "버튼 전 = 진행 표시 없음"
+assert any(r.prog > 0 for r in dlg.rows if r.checked), "버튼 전에도 뒤에서 분석 시작"
 print("체크:", [r.checked for r in dlg.rows], "(기본 = 기존 보정 무시·키프레임 자동 → 모두)")
 assert [r.checked for r in dlg.rows] == [True] * 4 and dlg.keep.value() == "drop" and dlg.keys.value() == "auto"
 dlg.keep.btns["keep"].click(); wait(0.1)
 assert [r.checked for r in dlg.rows] == [True, True, True, False]      # C 인 4번째는 제외
 assert dlg.b_each.text() == "보정+편집"
 dlg.start_analysis()
-assert wait(60, lambda: any(0 < r.prog < 1 for r in dlg.rows))
+wait(60, lambda: any(0 < r.prog < 1 for r in dlg.rows) or not dlg.pending())
 print("분석 중:", repr(dlg.state_lab.text()), {k: v[:2] for k, v in st.work.items()})
 dlg.grab().save(str(work / "shot_auto_analyzing.png")); e.src_list.grab().save(str(work / "shot_src_analyzing.png"))
 assert wait(120, lambda: not dlg.pending())
@@ -161,7 +162,7 @@ dlg3 = e.make_auto_dialog(); dlg3.show()
 fresh = [r for r in dlg3.rows if st.project.source(r.sid).path.endswith(("fresh.mp4", "fresh2.mp4"))]
 print("바로 연 AUTO:", [(dlg3.row_text(r)[2], r.checked) for r in fresh])
 assert all(r.checked for r in fresh)
-wait(3); assert not any(r.result or r.prog for r in fresh), "버튼 전에는 분석 안 함"
+wait(3); assert not st.work and "분석" not in dlg3.state_lab.text(), "버튼 전 = 표시 없음(뒤에서 미리)"
 dlg3.start_analysis()
 assert wait(180, lambda: all(r.result for r in fresh)), [r.error for r in fresh]
 print("로딩 후 분석:", [r.result["preset"] for r in fresh], "실패", [r.error for r in fresh])
