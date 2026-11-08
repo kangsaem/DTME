@@ -1919,9 +1919,8 @@ class EditTab(QWidget):
         if dlg.mode == "render":
             self._auto_render_step(dlg)
             return
-        if self.state.defer_proxy:                 # 시작 창 [보정+편집]: 분석과 함께 프록시 시작 → AUTO 창에서 끝까지 기다렸다 편집 화면
+        if self.state.defer_proxy:                 # 시작 창 [보정+편집]: 분석과 함께 프록시 시작(기다리지 않음 → 편집 화면에서 계속)
             self.state.resume_proxies()
-            dlg.proxy_wait = True
         if dlg.wait_then("start"):
             dlg.set_busy(True)
             return
@@ -1935,11 +1934,6 @@ class EditTab(QWidget):
         if rows:
             self._select_source(rows[0].sid)
         self._say(f"AUTO 완료: {len(rows)}개 클립", C_OK)
-        if getattr(dlg, "proxy_wait", False) and dlg.proxy_pending():
-            dlg.waiting = "proxy"                    # 창은 그대로(버튼 잠금), 프록시 끝나면 dlg 가 닫음
-            dlg.set_busy(True)
-            dlg._progress()
-            return
         dlg.accept()
 
     def _auto_begin(self, dlg):

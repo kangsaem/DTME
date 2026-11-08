@@ -36,44 +36,22 @@ print("AUTO 창 상태:", log[1][1], "프록시 작업", len(log[1][2]))
 assert log[1][1] == ["읽음"] and not log[1][2], "시작 창 AUTO = 프록시 미룸"
 assert quits and not w.isVisible(), "취소 → 프로그램 종료"
 QTimer.singleShot(500, act("each"))
-labels = []
-def poll():
-    d = w.edit._auto_dlg
-    if d is not None and d.isVisible():
-        labels.append((d.state_lab.text(), d.waiting, w.isVisible()))
-        if d.waiting == "proxy" and not hasattr(poll, "shot"):
-            poll.shot = 1; d.grab().save(os.path.join(os.path.dirname(vid), "shot_auto_proxy_wait.png"))
-pt = QTimer(); pt.timeout.connect(poll); pt.start(30)
 L.run_auto([vid])
-pt.stop()
 assert w.isVisible() and not L.isVisible(), "보정+편집 → 메인 창"
 sid = w.state.project.sources[0].id
-seen = [t for t, wt, _mv in labels if "프록시" in t]
-print("AUTO 창 글자:", seen[:1], seen[-1:], "프록시 기다림:", any(wt == "proxy" for _t, wt, _m in labels))
-print("편집 화면 넘어갈 때 프록시:", w.state.status.get(sid))
-assert w.state.status.get(sid) == "준비", "프록시까지 끝내고 편집 화면"
-assert seen and any(wt == "proxy" for _t, wt, _m in labels) and not any(mv for _t, _w, mv in labels)
+st0 = w.state.status.get(sid)
+print("편집 화면 넘어갈 때 프록시:", st0, "(기다리지 않음)")
+assert st0 != "읽음" and not w.state.defer_proxy, "버튼 때 프록시 시작"
+t = time.time()
+while w.state.status.get(sid) != "준비" and time.time() - t < 240:
+    app.processEvents(); time.sleep(0.05)
+assert w.state.status.get(sid) == "준비"
+import subprocess, json
+info = json.loads(subprocess.run([__import__("dtme.paths", fromlist=["x"]).ffprobe(), "-v", "error", "-select_streams", "v:0",
+                                  "-show_entries", "stream=width", "-of", "json", w.state.project.sources[0].proxy],
+                                 capture_output=True).stdout)
+print("프록시 폭:", info["streams"][0]["width"]); assert info["streams"][0]["width"] == 640
 assert len(w.state.project.sources) == 1, "새 작업(소스 1개)"
 print("launcher OK")
 
-# 프록시 기다리는 중 [취소] = 기다리지 않고 편집 화면(값 유지, 프록시는 계속)
-import shutil
-vid2 = vid.replace(".mp4", "_c.mp4"); shutil.copy(vid, vid2)
-w.hide()
-def cancel_in_wait():
-    d = w.edit._auto_dlg
-    if d is None or not d.isVisible():
-        QTimer.singleShot(30, cancel_in_wait); return
-    if d.waiting == "proxy":
-        d.cancel(); return
-    if not d.armed:
-        d._go("each")
-    QTimer.singleShot(30, cancel_in_wait)
-QTimer.singleShot(300, cancel_in_wait)
-L2 = Launcher(w); L2._quit = lambda: (quits.append(2), L2.hide())
-L2.run_auto([vid2])
-sid2 = w.state.project.sources[0].id
-print("취소 → 편집 화면:", w.isVisible(), "프록시:", w.state.status.get(sid2), "보정값:", bool(w.state.project.sources[0].auto))
-assert w.isVisible() and w.state.status.get(sid2) != "준비" and w.state.project.sources[0].auto
-print("launcher cancel-wait OK")
 os._exit(0)

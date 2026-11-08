@@ -642,8 +642,11 @@ def _proxy_pix(path: str) -> str:
         return ""
 
 
+PROXY_W = 640      # 프록시 폭(v0.16.16: 960 → 640, 만드는 시간·메모리 캐시 줄임. 예전 960 프록시는 그대로 재사용)
+
+
 def make_proxy(src: Source, lut: str, gpu: bool, on_progress=None, cancel=None) -> str:
-    """960 폭, 모든 프레임 키프레임(H.264) → 프레임 단위 탐색이 빠름. LUT 를 미리 입혀 보기 좋게.
+    """PROXY_W 폭, 모든 프레임 키프레임(H.264) → 프레임 단위 탐색이 빠름. LUT 를 미리 입혀 보기 좋게.
     GPU 켜짐: ① 디코딩·축소 모두 GPU(scale_cuda, 4K 프레임을 CPU 로 안 내림) → 실패하면 ② GPU 디코딩 + CPU 축소 → ③ CPU.
     걸린 시간은 cache/dtme.log 에 남김(사용자 PC 속도 확인용)."""
     import time
@@ -653,7 +656,7 @@ def make_proxy(src: Source, lut: str, gpu: bool, on_progress=None, cancel=None) 
     tmp = out.with_suffix(".part.mp4")
     ref = lut_ref(lut) if lut else None
     color = ["format=gbrp16le", f"lut3d=file={ref[1]}"] if ref else []
-    pw = 960
+    pw = PROXY_W
     ph = max(2, int(round(pw * (src.height or 2160) / (src.width or 3840) / 2)) * 2)
     tail = []
     if src.has_audio:
