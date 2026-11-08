@@ -34,6 +34,13 @@
 
 ---
 
+### 1-3. 추가 조사(2026-11-08, 실물 파일 없음)
+- Pocket 3 LRF 에는 타임코드 트랙(`tmcd`)과 `DJI meta` 데이터 트랙이 따로 있음 → 원본과 시각 맞추기에 쓸 수 있음.
+- DJI R&D 직원(포럼): LRF 는 녹화와 동시에 만들어지는 저해상도 파일, Mimo 'Trim Download' 용.
+- DJI 360 카메라(Osmo 360)용 공개 프로그램들(OpenOSV·rOsmo360·Spatial Film)이 **재생은 LRF, 멈추면·렌더는 원본**으로 이미 쓰고 있음 — DTME 계획과 같은 구조. OpenOSV: '같은 순간'의 LRF 를 재생에 사용.
+- rOsmo360: DJI 는 D-Log M 영상에도 색 태그를 보통 BT.709 로 붙인다 → **태그로는 LRF 가 Log 인지 알 수 없음** → 화면 비교로 판정해야 함.
+- 결론: **실물 파일이 없어도 만들 수 있게** 설계한다. 1단계에서 영상마다 자동 판정(길이·비율·색 비교) → 맞으면 LRF 사용, 아니면 원본. 사용자의 첫 실사용이 곧 시험이고, 판정 결과·속도는 `cache/dtme.log` 에 남긴다.
+
 ## 2. DTME 작업별 대체 가능성
 
 | 작업 | 지금 입력 | 프리뷰로 바꾸면 | 판단 |
@@ -49,7 +56,7 @@
 
 ## 3. 단계별 계획
 
-### 0단계 — 점검 도구 (DTME 동작은 그대로)
+### 0단계 — 점검 도구 (DTME 동작은 그대로) — **사용자 파일이 없으므로 보류.** 같은 검사를 1단계 자동 판정에 넣고 로그로 대신함
 - `tools/preview_check.py <카드 또는 폴더>`(또는 exe에 넣은 점검 명령)로 아래를 `preview_report.txt`에 기록한다.
   - **짝 찾기**: 1-1 규칙으로 원본 ↔ 프리뷰
   - **ffprobe 비교**: 해상도, fps, 프레임 수, 길이, 코덱, 비트레이트, 오디오, 시작 시각
@@ -119,7 +126,7 @@
 ---
 
 ## 4. 추천 순서
-0 → 1 → 2 → (측정) → 3 → 4 → 5 → 6 → 7
+1(자동 판정 + 로그) → 2(LRF 프록시, 실패 시 원본) → (PC 실사용 로그 확인) → 3 → 4 → 5 → 6 → 7. 0단계는 파일이 생기면
 - 0~2단계만으로 **프록시 시간**이 가장 크게 줄어든다(추정). 3단계는 비교 시험 결과에 따라.
 - 0단계 결과 전에는 2~4단계 구현 방식을 확정하지 않는다.
 
@@ -148,6 +155,8 @@
 - DJI Osmo Action 5 Pro 사용자 매뉴얼 v1.0(Color Recovery = 라이브뷰 미리보기)
 - GoPro 커뮤니티 ".LRV files needed for higher fps"(HERO8 고프레임 모드 LRV 없음), goproforums HERO13 Quik 미리보기 글(LRV·THM 안 생김 보고)
 - GitHub HackPartners/gopro-utils(GPMF: 자이로 ≈400Hz, 가속 ≈200Hz, GPS ≈18Hz)
+- DJI 포럼 "LRF Files - Why?"(DJI R&D 직원 답변)
+- GitHub Kemerd/OpenOSV 0.4.2 릴리스(재생 = LRF, 렌더 = 원본), dogsled69wallet/rOsmo360(D-Log M 도 BT.709 태그), spatial.film Resolve 가이드(Proxy = LRF)
 - Gyroflow 문서: Insta360 Ace·Ace Pro·GO 시리즈, GoPro HERO5+ — .lrv/.LRV 프록시 안의 자이로 데이터 지원
 - GoPro Labs "Proxy File Support": HERO10~13·MISSION 에서 LRV 대신 `Proxies/GX…_Proxy.MP4`(Premiere) 또는 `Proxy/GX….MP4`(DaVinci) 로 만들게 할 수 있음(그러면 LRV 없음)
 - Insta360 매뉴얼: Ace Pro 2 I-Log(H.264 고정, 8K·100fps 이상 불가), 회색 화면 = I-Log
