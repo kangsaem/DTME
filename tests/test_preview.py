@@ -96,6 +96,30 @@ r = ff.check_preview(source(d), lut_name)
 print("다른 장면:", r)
 assert not r["ok"] and "색" in r["why"], r
 
+# 4-1) 시점: 프리뷰 k = 원본 2k+1 (DJI 실물에서 영상마다 0/1) → shift 1, 프록시 홀수 프레임 = 원본
+g = work / "DJI_20261025104000_0154_D.MP4"
+mk(g, vf_extra=",scroll=h=0.003", dur=4.0)          # 화면이 옆으로 흐름(움직임)
+subprocess.run([FF, "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=60000/1001,eq=contrast=0.4:saturation=0.45,scroll=h=0.003",
+                "-t", "4.0", "-vf", "select='mod(n\\,2)',setpts=N*1001/30000/TB", "-r", "30000/1001", "-c:v", "libx264",
+                "-pix_fmt", "yuv420p", "-f", "mp4", str(work / "DJI_20261025104000_0154_D.LRF")], check=True)
+sg = source(g)
+r = ff.check_preview(sg, "")
+print("시점 +1:", {k: r[k] for k in ("ok", "why", "shift", "diff")})
+assert r["ok"] and r["shift"] == 1, r
+assert ff.check_preview(sa, "")["shift"] == 0
+out = ff.make_proxy(sg, "", False)
+import numpy as np
+def frs(p):
+    b = subprocess.run([FF, "-v", "error", "-i", p, "-map", "0:v:0", "-vf", "scale=96:54,format=rgb24", "-f", "rawvideo", "-"],
+                       capture_output=True, check=True).stdout
+    return np.frombuffer(b, np.uint8).reshape(-1, 54, 96, 3).astype(np.float32)
+O, X = frs(str(g)), frs(out)
+same = np.mean([abs(X[j] - O[j]).mean() for j in range(41, 81, 2)])        # 홀수 = 같은 화면
+prev = np.mean([abs(X[j] - O[j - 1]).mean() for j in range(40, 80, 2)])    # 짝수 = 바로 앞 화면
+nxt = np.mean([abs(X[j] - O[j + 1]).mean() for j in range(40, 80, 2)])     # (미래 화면이면 이쪽이 작음 = 틀림)
+print(f"프록시↔원본 홀수 같은 화면 {same:.1f} · 짝수↔앞 {prev:.1f} · 짝수↔뒤 {nxt:.1f}")
+assert same < 0.8 * nxt and prev < 0.8 * nxt, (same, prev, nxt)
+
 # 5) 없음 · GoPro · Insta360 이름 규칙
 e = work / "DJI_20261025103000_0153_D.MP4"
 mk(e, audio=False, dur=1.0)

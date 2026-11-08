@@ -696,7 +696,8 @@ def check_preview(src: Source, lut: str, pv: str | None = None) -> dict:
     """프리뷰 판정. 반환 {"path", "ok", "why", "color": "raw"|"lut"|"", "fps", "dur", "diff"}.
     ok 조건: 디코딩 됨 · 길이 차 ≤ 프리뷰 1프레임(+원본 1프레임) · 가로세로 비 차 ≤ 2% · 색 = 가운데 프레임(원본 + 요청 LUT)과
     프리뷰 그대로 / 프리뷰 + LUT 중 가까운 쪽의 차(화소 차 중앙값, 0~255) ≤ PREVIEW_DIFF 이고 다른 쪽의 60% 이하."""
-    r = {"path": pv or find_preview(src.path), "ok": False, "why": "", "color": "", "fps": 0.0, "dur": 0.0, "diff": -1.0}
+    r = {"path": pv or find_preview(src.path), "ok": False, "why": "", "color": "", "fps": 0.0, "dur": 0.0, "diff": -1.0,
+         "shift": 0}
     if not r["path"]:
         r["why"] = "없음"
         return r
@@ -734,6 +735,7 @@ def check_preview(src: Source, lut: str, pv: str | None = None) -> dict:
         c = _tiny(r["path"], t, ref)
         if c is not None:
             diffs["lut"] = dif(a, c)
+    r["shift"] = _align(src, r["path"], r["fps"])
     best = min(diffs, key=diffs.get)
     r["diff"] = round(diffs[best], 1)
     other = max(diffs.values()) if len(diffs) > 1 else None
@@ -750,14 +752,55 @@ def check_preview(src: Source, lut: str, pv: str | None = None) -> dict:
 PREVIEW_DIFF = 10.0
 
 
+def _align(src: Source, pv_path: str, pv_fps: float) -> int:
+    """프리뷰 k번째(시각 k/pv_fps)가 원본 몇 번째와 같은 화면인지 = ratio·k + shift 의 shift(0..ratio-1).
+    영상 중간 → 1/4 → 3/4 지점에서 프리뷰 15장씩(키프레임 시크 + 실제 pts 로 짝 맞춤) 비교해 확실한 표가 6개 이상 나오면 결정.
+    실물 DJI(2026-11-08): 영상마다 0 또는 1. 끝까지 판단 안 되면(움직임 없음) 0 — 그런 화면은 어긋나도 티가 안 남."""
+    import re
+    import numpy as np
+    ratio = max(1, int(round(float(src.fps) / max(1.0, pv_fps))))
+    if ratio == 1:
+        return 0
+    fs = float(src.fps)
+    dur = src.frames / fs
+
+    def grab(p, t0, n):
+        cmd = [paths.ffmpeg(), "-hide_banner", "-copyts", "-ss", f"{t0:.3f}", "-i", _abs(p), "-map", "0:v:0", "-frames:v", str(n),
+               "-vf", "showinfo,scale=96:54:flags=area,format=rgb24", "-fps_mode", "passthrough", "-f", "rawvideo", "-"]
+        pr = _popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        out, err = pr.communicate()
+        ts = [float(x) for x in re.findall(rb"pts_time:\s*([-0-9.]+)", err)]
+        fr = np.frombuffer(out, np.uint8).reshape(-1, 54, 96, 3).astype(np.float32)
+        return {int(round(t * (fs if p == src.path else pv_fps))): fr[i] for i, t in enumerate(ts[:len(fr)])}
+
+    votes = [0] * ratio
+    for frac in (0.5, 0.25, 0.75):
+        t0 = max(0.0, dur * frac - 0.25)
+        try:
+            L, O = grab(pv_path, t0, 15), grab(src.path, t0, 15 * ratio + 4)
+        except Exception:  # noqa: BLE001
+            continue
+        for k, lf in L.items():
+            d = [float(abs(lf - O[j]).mean()) if j in O else None for j in range(ratio * k, ratio * k + ratio)]
+            if None in d:
+                continue
+            srt = sorted(d)
+            if srt[0] < 0.77 * srt[1]:                       # 확실히 가까운 것만 셈
+                votes[d.index(srt[0])] += 1
+        if max(votes) >= 6 and max(votes) >= 3 * (sum(votes) - max(votes)):
+            return votes.index(max(votes))
+    return votes.index(max(votes)) if max(votes) >= 6 else 0
+
+
 def _proxy_from_preview(src: Source, lut: str, pv: dict, tmp: Path, pw: int, ph: int, on_progress, cancel) -> None:
     """프리뷰 → 프록시. fps = 원본 fps(30p → 60p 는 프레임 복제), 끝은 복제로 채운 뒤 원본 프레임 수에서 자름
     → 프록시 프레임 수 = 원본 프레임 수(다른 코드 그대로). 색 = 판정이 'lut' 면 LUT, 'raw' 면 그대로."""
     ref = lut_ref(lut) if (lut and pv["color"] == "lut") else None
     color = ["format=gbrp16le", f"lut3d=file={ref[1]}"] if ref else []
-    # DJI LRF(실물 확인 2026-11-08, Osmo Action 4): LRF k번째 = 원본 2k+1번째 → 원본 1프레임만큼 늦춰 놓고 fps 를 0초부터 채움
-    # → 원본 홀수 프레임 = 같은 화면, 짝수 = 바로 앞 화면(미래 화면을 먼저 보이지 않음). 그 밖 카메라는 확인 전이라 그대로
-    shift = f"+{src.fps_den}/({src.fps_num}*TB)" if Path(pv["path"]).suffix.lower() == ".lrf" else ""
+    # 시점 맞춤(v0.16.21): 프리뷰 k번째 = 원본 2k+shift번째(_align 이 영상마다 잼, DJI 실물 = 0 또는 1)
+    # → shift 프레임만큼 늦춰 놓고 fps 를 0초부터 채움: 짝이 있는 프레임 = 같은 화면, 나머지 = 바로 앞 화면
+    k = int(pv.get("shift") or 0)
+    shift = f"+{k * src.fps_den}/({src.fps_num}*TB)" if k else ""
     vf = [f"setpts=PTS-STARTPTS{shift}", f"fps={src.fps_num}/{src.fps_den}:start_time=0", "tpad=stop_mode=clone:stop=8",
           f"trim=end_frame={src.frames}", f"scale={pw}:{ph}:flags=bilinear", *color, TO_YUV709]
     tail = ["-map", "0:a:0?", "-c:a", "aac", "-b:a", "128k"] if src.has_audio else ["-an"]
@@ -814,7 +857,7 @@ def make_proxy(src: Source, lut: str, gpu: bool, on_progress=None, cancel=None) 
                 if abs(n - src.frames) > 1:
                     raise FFError(f"프레임 수 다름 {n}/{src.frames}")
                 log_error("프록시", f"{Path(src.path).name} 프리뷰({Path(pv['path']).suffix[1:].upper()}, {pv['fps']:.2f}fps, "
-                                   f"색 {pv['color']}, 차 {pv['diff']}) 판정 {t1 - t0:.1f}초 + 만들기 {time.monotonic() - t1:.1f}초 "
+                                   f"색 {pv['color']}, 차 {pv['diff']}, 시점 +{pv.get('shift', 0)}) 판정 {t1 - t0:.1f}초 + 만들기 {time.monotonic() - t1:.1f}초 "
                                    f"(영상 {dur:.0f}초)")
                 replace_retry(tmp, out)
                 return str(out)
