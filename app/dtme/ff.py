@@ -755,7 +755,10 @@ def _proxy_from_preview(src: Source, lut: str, pv: dict, tmp: Path, pw: int, ph:
     → 프록시 프레임 수 = 원본 프레임 수(다른 코드 그대로). 색 = 판정이 'lut' 면 LUT, 'raw' 면 그대로."""
     ref = lut_ref(lut) if (lut and pv["color"] == "lut") else None
     color = ["format=gbrp16le", f"lut3d=file={ref[1]}"] if ref else []
-    vf = ["setpts=PTS-STARTPTS", f"fps={src.fps_num}/{src.fps_den}", "tpad=stop_mode=clone:stop=8",
+    # DJI LRF(실물 확인 2026-11-08, Osmo Action 4): LRF k번째 = 원본 2k+1번째 → 원본 1프레임만큼 늦춰 놓고 fps 를 0초부터 채움
+    # → 원본 홀수 프레임 = 같은 화면, 짝수 = 바로 앞 화면(미래 화면을 먼저 보이지 않음). 그 밖 카메라는 확인 전이라 그대로
+    shift = f"+{src.fps_den}/({src.fps_num}*TB)" if Path(pv["path"]).suffix.lower() == ".lrf" else ""
+    vf = [f"setpts=PTS-STARTPTS{shift}", f"fps={src.fps_num}/{src.fps_den}:start_time=0", "tpad=stop_mode=clone:stop=8",
           f"trim=end_frame={src.frames}", f"scale={pw}:{ph}:flags=bilinear", *color, TO_YUV709]
     tail = ["-map", "0:a:0?", "-c:a", "aac", "-b:a", "128k"] if src.has_audio else ["-an"]
     cmd = [paths.ffmpeg(), "-y", "-i", _abs(pv["path"]), "-map", "0:v:0", "-vf", ",".join(vf), *tail,
