@@ -609,6 +609,7 @@ class AutoDialog(DragMove, QDialog):
         self._name_preview()
         if self.list.count():
             self.list.setCurrentRow(0)
+        self.proxy_wait = False             # 시작 창 [보정+편집]: 프록시까지 끝나면 닫힘
         self.armed = False                  # 창을 열면 아무 작업도 안 함 → [샘플][보정+편집][보정+렌더] 누르면 분석 시작
         for r in self.rows:                 # 이번 실행 중에 이미 분석한 영상(같은 LUT)은 바로 결과(계산만, 0초)
             s = p.source(r.sid)
@@ -886,34 +887,49 @@ class AutoDialog(DragMove, QDialog):
         parts, kind, val = [], "proxy", 0.0
         st = self.state.status
         bad = [r for _i, r in rows if st.get(r.sid) in SG.ERRORS]
+        adone = sum(1 for _i, r in rows if r.result is not None or r.error)
+        if self.armed:
+            cur = next(((i, r.prog) for i, r in rows if 0 < r.prog < 1), None)
+            if adone < n or cur:
+                parts.append(f"분석 {adone}/{n}" + (f" ({cur[0]}번 {int(cur[1] * 100)}%)" if cur else ""))
+                kind, val = "analyze", sum(min(1.0, r.prog) for _i, r in rows) / n
         pend = [(i, r) for i, r in rows if st.get(r.sid, "") in ("분석 대기", "프록시 대기")
                 or (st.get(r.sid, "").startswith("프록시 ") and st.get(r.sid) not in SG.ERRORS)]
         if pend:                                    # 프록시를 만드는 중일 때만(미룸 = "읽음" 은 표시 안 함)
             cur = next(((i, self.state.proxy_pct.get(r.sid, 0.0)) for i, r in pend
                         if st.get(r.sid, "") not in ("분석 대기", "프록시 대기")), None)
             parts.append(f"프록시 {n - len(pend)}/{n}" + (f" ({cur[0]}번 {int(cur[1] * 100)}%)" if cur else ""))
-            val = (n - len(pend) + sum(self.state.proxy_pct.get(r.sid, 0.0) for _i, r in pend)) / n
-        if self.armed:
-            adone = sum(1 for _i, r in rows if r.result is not None or r.error)
-            cur = next(((i, r.prog) for i, r in rows if 0 < r.prog < 1), None)
-            if adone < n or cur:
-                parts.append(f"분석 {adone}/{n}" + (f" ({cur[0]}번 {int(cur[1] * 100)}%)" if cur else ""))
-            kind, val = "analyze", sum(min(1.0, r.prog) for _i, r in rows) / n
-            if adone >= n and not parts:
-                parts.append(f"분석 {n}/{n}")
+            if kind != "analyze":
+                kind = "proxy"
+                val = (n - len(pend) + sum(self.state.proxy_pct.get(r.sid, 0.0) for _i, r in pend)) / n
+            if self.waiting == "proxy":
+                parts.append("끝나면 편집")
+        elif self.armed and adone >= n and not parts:
+            parts.append(f"분석 {n}/{n}")
+            kind, val = "analyze", 1.0
         if bad:
             parts.append(f"읽기 실패 {len(bad)}")
         return " · ".join(parts), kind, val
 
+    def proxy_pending(self):
+        """프록시가 아직 안 끝난 줄(읽기 오류 제외) — 시작 창 [보정+편집] 은 이게 비면 편집 화면으로."""
+        st = self.state.status
+        return [r for r in self.rows if st.get(r.sid) not in ("준비", "읽음") and st.get(r.sid) not in SG.ERRORS]
+
     def _progress(self):
-        if not self.busy:
+        if self.waiting == "proxy":
+            if not self.proxy_pending():
+                self.waiting = None
+                self.accept()                        # 프록시까지 끝 → 편집 화면
+                return
+        if not self.busy or self.waiting:            # 기다리는 중(분석·프록시)에도 왼쪽 아래·막대 갱신
             txt, kind, val = self.status_text()
             col = SG.STAGE[kind][1]
             self.set_bar_color(col)
             self.bar.setValue(int(100 * val))
             self.state_lab.setText(txt)
             self.state_lab.setStyleSheet(f"color:{col};")
-        if self.waiting and not self.pending():
+        if self.waiting in ("start", "sample") and not self.pending():
             w, self.waiting = self.waiting, None
             (self.startRequested if w == "start" else self.sampleRequested).emit()
 
@@ -953,6 +969,10 @@ class AutoDialog(DragMove, QDialog):
             self.set_bar_color(color)
 
     def cancel(self):
+        if self.waiting == "proxy":                  # 프록시 기다리는 중 [취소] = 기다리지 않고 편집 화면으로(값 유지, 프록시는 계속)
+            self.waiting = None
+            self.accept()
+            return
         for j in self.jobs:
             j.cancel.set()
             jobs.AUTO_POOL.tryTake(j)
