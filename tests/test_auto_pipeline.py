@@ -11,6 +11,7 @@ app = QApplication(sys.argv)
 import main as M; M.dark(app)
 from dtme import ff, jobs
 jobs.RENDER_N = 2; jobs.RENDER_POOL.setMaxThreadCount(2)          # 동시 렌더 2 로 점검
+jobs.tune = lambda paths: (jobs.AUTO_N, jobs.RENDER_N)                  # v0.16.19 원본 저장장치 자동 조정 끔(이 점검은 2 고정)
 calls = {"prefetch_range": 0, "render_preview": 0}
 for n in calls:
     o = getattr(ff, n)

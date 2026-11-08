@@ -15,7 +15,7 @@ MOSCO 원본은 이 문서를 만들 때 건드리지 않았습니다(사용자 
 |---|---|
 | 그림자 | **버튼 아래 그림자 없음**(QGraphicsDropShadowEffect · box-shadow 바깥쪽 전부 삭제) |
 | 입체감 | **모든 버튼 안에**: 위 → 아래 밝음 → 어두움 그라데이션, 위 테두리 밝게 · 아래 테두리 어둡게 · 옆 테두리 중간 |
-| 모서리 | 둥근 3px (이어 붙은 버튼도 각각 3px — 직각 없음) |
+| 모서리 | **사각(라운딩 없음)** — v0.16.19 사용자: 라운디드 스퀘어 아닌 사각, 입체감 명암은 그대로 (전: 둥근 3px) |
 | 켜짐(토글·선택) | 바탕 `#2f4f78` 에 같은 입체감, 테두리 `#4a8fe0`(위만 +30 밝게), 글자 흰색. **노란 켜짐 없음**(◆ 키 표시는 '켜짐'이 아니라 키 표시라 노랑 유지) |
 | 마우스 올림 | 조금 밝게 |
 | 눌림 | 그라데이션·위아래 테두리 뒤집음(안으로 들어간 느낌) |
@@ -89,7 +89,7 @@ rows = {f"{b.text()}@{b.mapTo(w, b.rect().topLeft()).toTuple()}": (b.width(), b.
 같은 값의 CSS(바탕 `--bg` 만 바꿔 씀). 바깥 그림자 없음, 안쪽 입체감은 그라데이션 + 위·아래 테두리.
 
 ```css
-.btn{--bg:#383838; --fg:#e6e6e6; color:var(--fg); border-radius:3px; border:1px solid color-mix(in srgb,var(--bg),#000 22%);
+.btn{--bg:#383838; --fg:#e6e6e6; color:var(--fg); border-radius:0; border:1px solid color-mix(in srgb,var(--bg),#000 22%);
   border-top-color:color-mix(in srgb,var(--bg),#fff 14%); border-bottom-color:color-mix(in srgb,var(--bg),#000 30%);
   background:linear-gradient(to bottom, color-mix(in srgb,var(--bg),#fff 9%) 0%, color-mix(in srgb,var(--bg),#fff 3%) 48%,
     var(--bg) 52%, color-mix(in srgb,var(--bg),#000 12%) 100%); box-shadow:none;}

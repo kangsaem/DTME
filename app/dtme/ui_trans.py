@@ -5,10 +5,11 @@ import time
 
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QPainter, QPixmap, QPolygonF
-from PySide6.QtWidgets import QDialog, QGridLayout, QHBoxLayout, QLabel, QSlider, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QLabel, QSlider, QWidget
 
 from . import ff
 from .project import FIRST_OK, TRANS_DEFAULT_SEC, TRANS_RANGE, TRANSITIONS
+from .ui_render import Popup
 
 W, H = 120, 68
 ROT_SUBS = 8           # 샘플 그림 모션블러 장수(렌더는 ff.ROT_BLUR)
@@ -161,14 +162,12 @@ def sample_pixmaps():
     return mk(A, da), mk(B, db)
 
 
-class TransitionDialog(QDialog):
-    """선택한 컷 앞 경계의 전환을 고름. 샘플 클릭 = 바로 적용하고 닫힘."""
+class TransitionDialog(Popup):
+    """선택한 컷 앞 경계의 전환을 고름. 샘플 클릭 = 바로 적용하고 닫힘. 제목줄 없는 창 + [취소]만(v0.16.19)."""
     chosen = Signal(str, float)
 
     def __init__(self, current: dict, first: bool, parent=None, frames=None):
         super().__init__(parent)
-        self.setWindowTitle("컷편집")
-        self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
         cur = (current or {}).get("type", "none") or "none"
         dur = float((current or {}).get("dur", TRANS_DEFAULT_SEC))
         grid = QGridLayout()
@@ -193,9 +192,10 @@ class TransitionDialog(QDialog):
         row = QHBoxLayout()
         row.addWidget(self.dur, 1)
         row.addWidget(self.dur_lbl)
-        lay = QVBoxLayout(self)
+        lay = self.body
         lay.addLayout(grid)
         lay.addLayout(row)
+        self.add_buttons(ok=None)
         self._t0 = time.monotonic()
         self._timer = QTimer(self)
         self._timer.setInterval(33)

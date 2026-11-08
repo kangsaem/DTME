@@ -1150,6 +1150,7 @@ class EditTab(QWidget):
             self.sel_trans = "" if kind == "none" else seg.id
             self.state.touch("segments")
         dlg.chosen.connect(apply)
+        dlg.center_on(self)
         dlg.exec()
 
     def _trans_frames(self, i):
@@ -1722,21 +1723,57 @@ class EditTab(QWidget):
         self.sel_ov = ("", "")
         self.state.touch("titles")
 
-    def edit_ov(self, kind, oid):
+    def edit_ov(self, kind, oid, new: bool = False):
+        """글자·음악 설정 = 떠 있는 창(v0.16.19). 열린 채로 타임라인·모니터 조작 가능.
+        [확인] = 등록하고 닫기(빈 글자면 없앰) / [취소]·Esc = 열기 전으로(새 글자면 없앰). 다른 창을 열면 앞 창은 [확인]."""
         from .ui_titles import MusicDialog, TextDialog
         d = self._ov(kind, oid)
         if d is None:
             return
-        self.state.checkpoint()
+        old = getattr(self, "_dlg", None)
+        if old is not None and old.isVisible():
+            old.accept()
         if kind == "title" and d.get("kind") == "text":
+            if self.state.project.segments:          # 글자는 '타임라인' 보기에서만 보임
+                self.set_mode("timeline")
+            if not new:                             # 새 글자는 add_text 에서 이미 실행취소 지점
+                self.state.checkpoint()
             dlg = TextDialog(d, self)
         elif kind == "music":
+            self.state.checkpoint()
             dlg = MusicDialog(self.state.project.mix, self)
         else:
             return
         dlg.changed.connect(lambda: (setattr(self.state, "dirty", True), self.state.changed.emit("titles")))
+        p = self.state.project
+
+        def drop():
+            if kind == "title" and any(x is d for x in p.titles):
+                p.titles = [x for x in p.titles if x is not d]
+                if self.sel_ov == ("title", oid):
+                    self.sel_ov = ("", "")
+                self.state.touch("titles")
+
+        def ok():
+            if kind == "title" and not (d.get("text") or "").strip():
+                drop()
+            else:
+                self.state.touch("titles")
+
+        def cancel():
+            if new:
+                drop()
+            else:
+                self.state.touch("titles")
+        dlg.accepted_.connect(ok)
+        dlg.rejected_.connect(cancel)
         self._dlg = dlg
-        dlg.exec()
+        dlg.center_on(self)
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+        if kind == "title":
+            dlg.text.setFocus()
 
     def add_text(self):
         p = self.state.project
@@ -1747,10 +1784,7 @@ class EditTab(QWidget):
         self.sel_ov = ("title", d["id"])
         self._del_target = "ov"
         self.state.touch("titles")
-        self.edit_ov("title", d["id"])
-        if not (d.get("text") or "").strip():          # 아무것도 안 쓰고 닫으면 없앰
-            p.titles = [x for x in p.titles if x is not d]
-            self.state.touch("titles")
+        self.edit_ov("title", d["id"], new=True)
 
     def _img_menu(self, pos):
         from PySide6.QtWidgets import QMenu

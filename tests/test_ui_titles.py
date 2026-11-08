@@ -9,7 +9,6 @@ from PySide6.QtWidgets import QApplication, QDialog
 import main as M
 from dtme import paths, ff
 from dtme.ui_main import MainWindow
-from dtme.ui_titles import TextDialog
 T4K, WORK = sys.argv[1:3]; os.makedirs(WORK, exist_ok=True)
 mus = os.path.join(WORK, "m.m4a"); subprocess.run([paths.ffmpeg(), "-v", "error", "-y", "-f", "lavfi", "-i", "sine=f=800:d=5", "-c:a", "aac", mus], check=True)
 png = os.path.join(WORK, "logo.png"); a = np.zeros((80, 160, 4), np.uint8); a[:] = (240, 200, 40, 255)
@@ -28,16 +27,27 @@ print("목록: 영상", e.src_list.count(), "이미지", e.img_list.count(), "�
 s = st.project.sources[0]
 for a_, b_ in ((0, 50), (50, 110)):
     s.sel_in, s.sel_out = a_, b_; e.send_to_timeline()
-# 글자: 창에서 입력하고 닫음
-def fake_exec(self):
-    self.text.setPlainText("BOHOL · 2026.10.25\n발리카삭 18m"); self.bg.button(2).click(); return 0
-TextDialog.exec = fake_exec
+# 글자: 떠 있는 창(v0.16.19) — 입력하고 [확인]
 e.tl_time = 0.2; e.add_text(); wait(0.2)
+dlg = e._dlg
+assert dlg.isVisible() and not dlg.isModal() and dlg.windowFlags() & Qt.FramelessWindowHint, "떠 있는 창·제목줄 없음"
+assert e.mode == "timeline", "[글자] → 타임라인 보기"
+dlg.text.setPlainText("BOHOL · 2026.10.25\n발리카삭 18m"); dlg.bg.button(2).click()
+dlg.b_ok.click(); wait(0.1)
+assert not dlg.isVisible()
 t = st.project.titles[0]; print("글자:", repr(t["text"]), t["t0"], t["t1"], t["bg"])
 assert t["text"].startswith("BOHOL") and t["bg"] == "band"
-# 빈 글자는 사라짐
-TextDialog.exec = lambda self: 0
-e.add_text(); wait(0.1); print("빈 글자 추가 후 개수:", len(st.project.titles)); assert len(st.project.titles) == 1
+# 빈 글자 [확인] → 사라짐 / 새 글자 [취소] → 사라짐
+e.add_text(); wait(0.1); e._dlg.b_ok.click(); wait(0.1)
+print("빈 글자 확인 후 개수:", len(st.project.titles)); assert len(st.project.titles) == 1
+e.add_text(); wait(0.1); e._dlg.text.setPlainText("지울 글자"); assert len(st.project.titles) == 2
+e._dlg.b_cancel.click(); wait(0.1); assert len(st.project.titles) == 1, "새 글자 취소 = 없앰"
+# 있던 글자 고치다 Esc → 되돌림
+e.edit_ov("title", t["id"]); wait(0.1); e._dlg.text.setPlainText("바뀜"); e._dlg.bg.button(0).click()
+assert t["text"] == "바뀜"
+from PySide6.QtTest import QTest as _T
+_T.keyClick(e._dlg, Qt.Key_Escape); wait(0.1)
+assert t["text"].startswith("BOHOL") and t["bg"] == "band" and len(st.project.titles) == 1, t
 # 이미지 → 타임라인
 e.tl_time = 0.5; e.add_title_image(st.project.images[0].id); print("이미지 타이틀:", st.project.titles[-1]["kind"], st.project.titles[-1]["t0"])
 # 음악 클릭

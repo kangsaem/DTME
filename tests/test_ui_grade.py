@@ -34,7 +34,7 @@ assert abs(st.project.grade_for_source(st.project.sources[0].id)["r_gain"] - 1.3
 a, b = st.project.sources
 # 프리셋 저장 → 두 클립 선택 → 적용
 gp.sliders["sat"].setValue(140); gp.sliders["wnr"].setValue(30); wait(0.5)
-QInputDialog.getText = staticmethod(lambda *x, **k: ("잭피쉬 20m", True))
+from dtme import ui_style as _us; _us.get_text = lambda *x, **k: ("잭피쉬 20m", True)
 gp._save_preset(); print("프리셋 목록:", P.list_presets()); assert "잭피쉬 20m" in P.list_presets()
 e._select_source(b.id); wait(1.0)
 gp._clear_all(); wait(0.2)

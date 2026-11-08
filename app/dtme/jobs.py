@@ -88,3 +88,30 @@ PREVIEW_POOL = make_pool(4)
 GRAB_POOL = make_pool(2)      # 프록시 프레임 즉시 표시
 RENDER_POOL = make_pool(RENDER_N)
 AUTO_POOL = make_pool(AUTO_N)  # AUTO·추천: 샘플 추출
+DRIVE = "unknown"              # 원본 저장장치(가장 느린 것) — tune()
+
+
+def tune(paths) -> tuple[int, int]:
+    """원본 저장장치 종류로 동시 분석·렌더 수를 다시 정함(v0.16.19). 설정 auto_jobs/render_jobs(0 = 자동)가 있으면 그 값.
+    풀 크기는 실행 중에도 바꿀 수 있음(돌던 작업은 그대로, 다음 작업부터)."""
+    global AUTO_N, RENDER_N, DRIVE
+    from . import drives
+    from .project import get_setting
+    DRIVE = drives.slowest(list(paths))
+    a, r = drives.counts(DRIVE, CORES)
+    try:
+        a = int(get_setting("auto_jobs", 0) or 0) or a
+        r = int(get_setting("render_jobs", 0) or 0) or r
+    except (TypeError, ValueError):
+        pass
+    a, r = max(1, min(16, a)), max(1, min(3, r))
+    if (a, r) != (AUTO_N, RENDER_N):
+        try:
+            from . import ff
+            ff.log_info(f"동시 분석 {a} · 렌더 {r} (원본 {DRIVE}, 코어 {CORES})")
+        except Exception:  # noqa: BLE001
+            pass
+    AUTO_N, RENDER_N = a, r
+    AUTO_POOL.setMaxThreadCount(a)
+    RENDER_POOL.setMaxThreadCount(r)
+    return a, r

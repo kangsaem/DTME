@@ -1,12 +1,14 @@
-"""글자 설정 창 · 음악 설정 창. 바꾸는 즉시 적용(창을 열 때 실행취소 지점 1번)."""
+"""글자 설정 창 · 음악 설정 창. 바꾸는 즉시 화면에 반영(창을 열 때 실행취소 지점 1번).
+v0.16.19: 제목줄 없는 떠 있는 창(Popup) + [취소][확인]. 확인 = 등록하고 닫기, 취소·Esc = 열기 전으로 되돌림(새 글자는 없앰)."""
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
-from PySide6.QtWidgets import (QButtonGroup, QColorDialog, QComboBox, QDialog, QFileDialog, QGridLayout, QHBoxLayout,
-                               QLabel, QPlainTextEdit, QPushButton, QSlider, QVBoxLayout)
+from PySide6.QtWidgets import (QButtonGroup, QColorDialog, QComboBox, QFileDialog, QGridLayout, QHBoxLayout,
+                               QLabel, QPlainTextEdit, QPushButton, QSlider)
 
 from . import fonts
+from .ui_render import Popup
 
 SWATCHES = ["#ffffff", "#ffe28a", "#9fd8ff", "#111111"]
 
@@ -19,16 +21,34 @@ def _slider(lo, hi, v):
     return s
 
 
-class TextDialog(QDialog):
+class _Undoable(Popup):
+    """연 때 값 사본 → 취소·Esc 면 그 값으로 되돌림(같은 dict 객체를 고쳐 화면 쪽 참조 그대로)."""
     changed = Signal()
 
+    def __init__(self, data: dict, parent=None):
+        super().__init__(parent, floating=True)
+        import copy
+        self._data, self._snap = data, copy.deepcopy(data)
+
+    def reject(self):
+        self._data.clear()
+        self._data.update(self._snap)
+        self.changed.emit()
+        super().reject()
+
+    def keyPressEvent(self, e):
+        if e.key() in (Qt.Key_Return, Qt.Key_Enter) and not self.focusWidget().__class__.__name__ == "QPlainTextEdit":
+            self.accept()
+            return
+        super().keyPressEvent(e)              # Esc = 취소
+
+
+class TextDialog(_Undoable):
     def __init__(self, title: dict, parent=None):
-        super().__init__(parent)
+        super().__init__(title, parent)
         self.t = title
-        self.setWindowTitle("글자")
-        self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
         self.setMinimumWidth(340)
-        lay = QVBoxLayout(self)
+        lay = self.body
         self.text = QPlainTextEdit(title.get("text", ""))
         self.text.setFixedHeight(64)
         self.text.textChanged.connect(lambda: self._set("text", self.text.toPlainText()))
@@ -101,6 +121,7 @@ class TextDialog(QDialog):
         g.setColumnStretch(1, 1)
         lay.addLayout(g)
         self._paint_swatches()
+        self.add_buttons()
 
     def _fill_fonts(self):
         self.font.clear()
@@ -137,17 +158,15 @@ class TextDialog(QDialog):
         self.changed.emit()
 
 
-class MusicDialog(QDialog):
+class MusicDialog(_Undoable):
     """음악 볼륨 · 원본 볼륨(자동 = 음악 없으면 100, 있으면 0) · 페이드인/아웃. 전체 길이에 1개씩."""
-    changed = Signal()
 
     def __init__(self, mix: dict, parent=None):
-        super().__init__(parent)
+        super().__init__(mix, parent)
         self.mix = mix
-        self.setWindowTitle("음악")
-        self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
         self.setMinimumWidth(340)
-        g = QGridLayout(self)
+        g = QGridLayout()
+        self.body.addLayout(g)
         rows = [("음악 볼륨", "music", 0, 200, 100, "%"), ("원본 볼륨", "orig", 0, 200, 100, "%"),
                 ("페이드인", "fin", 0, 50, 10, "초"), ("페이드아웃", "fout", 0, 80, 10, "초")]
         self.labels = {}
@@ -171,6 +190,7 @@ class MusicDialog(QDialog):
         self.auto.toggled.connect(self._auto)
         g.addWidget(self.auto, len(rows), 1, 1, 2, Qt.AlignRight)
         g.setColumnStretch(1, 1)
+        self.add_buttons()
 
     def _label(self, k):
         lab, sc, unit = self.labels[k]

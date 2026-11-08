@@ -93,6 +93,7 @@ class AppState(QObject):
                 self._queue_proxy(s)
             else:
                 self._queue_analyze(s)
+        self.retune()
         self.changed.emit("project")
         self.importProgress.emit()
 
@@ -138,9 +139,17 @@ class AppState(QObject):
             self._queue_analyze(src)
             added += 1
         if added:
+            self.retune()
             self.touch("sources")
             self.importProgress.emit()
         return added
+
+    def retune(self):
+        """원본 저장장치에 맞춰 동시 분석·렌더 수(jobs.tune)."""
+        try:
+            jobs.tune([s.path for s in self.project.sources if Path(s.path).exists()])
+        except Exception as e:  # noqa: BLE001
+            ff.log_error("동시 작업 수", str(e))
 
     def _set_status(self, sid, text):
         self.status[sid] = text

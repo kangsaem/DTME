@@ -4,7 +4,7 @@
 (앱 전체 스타일시트를 쓰면 Fusion 의 '글자 버튼 최소 폭 80px'이 사라지고, min-width 를 넣으면 고정 크기 버튼까지 커져서 버림)
 색 있는 버튼은 tone(b, "red") 처럼 이름으로. 왼쪽 정렬이 필요한 버튼 2종(묶음 머리 · 프리셋)만 같은 모양의 스타일시트(bevel()).
 
-입체감 = 위 → 아래 밝음 → 어두움 그라데이션 + 위 테두리 밝게 · 아래 테두리 어둡게. 눌림 = 그라데이션 뒤집음.
+모서리 = 사각(라운딩 없음, v0.16.19 사용자). 입체감 = 위 → 아래 밝음 → 어두움 그라데이션 + 위 테두리 밝게 · 아래 테두리 어둡게. 눌림 = 그라데이션 뒤집음.
 켜짐 = 파랑(#2f4f78 · 테두리 #4a8fe0). 꺼짐(비활성) = 어둡게.
 """
 from __future__ import annotations
@@ -86,7 +86,7 @@ def _sel(sel: str, pseudo: str) -> str:
     return ", ".join(x.strip() + pseudo for x in sel.split(","))
 
 
-def bevel(bg: str = BASE, fg: str = "#e6e6e6", bold: bool = False, radius: int = 3, extra: str = "",
+def bevel(bg: str = BASE, fg: str = "#e6e6e6", bold: bool = False, radius: int = 0, extra: str = "",
           sel: str = "QPushButton", edge: str | None = None, alpha: int = 255, states: bool = True) -> str:
     """BevelStyle 과 같은 모양의 스타일시트. sel = 선택자(쉼표로 여럿), edge = 테두리 한 색(켜짐 #4a8fe0), alpha = 반투명."""
     lt = _light(bg)
@@ -124,14 +124,14 @@ def _col(c: str, alpha: int) -> QColor:
     return q
 
 
-def paint_bevel(p: QPainter, r: QRectF, bg: str, state: str, alpha: int = 255, radius: float = 3.0, edge: str | None = None):
+def paint_bevel(p: QPainter, r: QRectF, bg: str, state: str, alpha: int = 255, radius: float = 0.0, edge: str | None = None):
     if state == "disabled":
         bg = dim(bg)
     top, bottom = _steps(bg, state)
     g = QLinearGradient(r.topLeft(), r.bottomLeft())
     for pos, c in _stops(bg, top, bottom):
         g.setColorAt(pos, _col(c, alpha))
-    p.setRenderHint(QPainter.Antialiasing)
+    p.setRenderHint(QPainter.Antialiasing, radius > 0)     # 사각(v0.16.19) = 안티앨리어싱 없이 선명한 모서리
     rr = r.adjusted(0.5, 0.5, -0.5, -0.5)
     p.setPen(QPen(_col(edge, 255) if edge else _col(shade(bg, -28), alpha), 1))
     p.setBrush(g)
@@ -263,3 +263,39 @@ def ask(parent, text: str, ok: str = "삭제", red: bool = True) -> bool:
 def notice(parent, text: str):
     """알림·오류 [확인] 하나."""
     confirm(parent, text, [("ok", "확인", 80, None)])
+
+
+def get_text(parent, text: str = "", placeholder: str = "이름") -> tuple[str, bool]:
+    """이름 입력 창(QInputDialog 대신, 제목줄·제목 없음, v0.16.19). Enter = 확인, Esc = 취소. 반환 (글자, 확인?)."""
+    from PySide6.QtWidgets import QDialog, QHBoxLayout, QLineEdit, QPushButton, QVBoxLayout
+    dlg = QDialog(parent, Qt.Dialog | Qt.FramelessWindowHint)
+    dlg.setModal(True)
+    dlg.setObjectName("Confirm")
+    dlg.setStyleSheet("#Confirm{background:#262626; border:1px solid #555; border-radius:6px;}")
+    lay = QVBoxLayout(dlg)
+    lay.setContentsMargins(20, 18, 20, 16)
+    lay.setSpacing(14)
+    ed = QLineEdit(text)
+    ed.setPlaceholderText(placeholder)
+    ed.setMinimumWidth(260)
+    ed.selectAll()
+    lay.addWidget(ed)
+    row = QHBoxLayout()
+    row.setSpacing(8)
+    row.addStretch(1)
+    for label, fn, t in (("취소", dlg.reject, None), ("확인", dlg.accept, "blue")):
+        b = QPushButton(label)
+        b.setFixedSize(72 if t is None else 80, 30)
+        b.setFocusPolicy(Qt.NoFocus)
+        if t:
+            tone(b, t)
+        b.clicked.connect(fn)
+        row.addWidget(b)
+    lay.addLayout(row)
+    ed.returnPressed.connect(dlg.accept)
+    if parent is not None and parent.isVisible():
+        dlg.adjustSize()
+        c = parent.window().geometry().center()
+        dlg.move(c.x() - dlg.width() // 2, c.y() - dlg.height() // 2)
+    ok = dlg.exec() == QDialog.Accepted
+    return ed.text(), ok

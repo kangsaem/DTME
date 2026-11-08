@@ -6,7 +6,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QAction, QColor
-from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout, QLabel,
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout,
                                QListWidget,
                                QListWidgetItem, QStyle, QStyledItemDelegate,
                                QHBoxLayout, QLineEdit, QPushButton, QSpinBox, QVBoxLayout, QWidget)
@@ -44,6 +44,56 @@ class DragMove:
     def mouseReleaseEvent(self, e):
         self._drag_off = None
         super().mouseReleaseEvent(e)
+
+
+class Popup(DragMove, QDialog):
+    """모든 팝업 공통(v0.16.19, 사용자 확정): 제목줄·제목 글자 없음 = MOSCO 확인 창 모양
+    (진회색 #262626 · 테두리 #555 · 둥근 6 · 빈 바탕 끌어 이동 · 오른쪽 아래 버튼). floating = 떠 있는 창(Tool, 열린 채로 다른 조작 가능)."""
+    accepted_ = Signal()
+    rejected_ = Signal()
+
+    def __init__(self, parent=None, floating: bool = False):
+        flags = (Qt.Tool if floating else Qt.Dialog) | Qt.FramelessWindowHint
+        super().__init__(parent, flags)
+        self.setModal(not floating)
+        self.setObjectName("Popup")
+        self.setStyleSheet("#Popup{background:#262626; border:1px solid #555; border-radius:6px;}")
+        self.body = QVBoxLayout(self)
+        self.body.setContentsMargins(16, 14, 16, 14)
+        self.body.setSpacing(10)
+
+    def add_buttons(self, ok: str | None = "확인", cancel: str = "취소"):
+        """오른쪽 아래 [취소][확인(파랑)] — ok=None 이면 [취소]만."""
+        br = QHBoxLayout()
+        br.addStretch(1)
+        self.b_cancel = QPushButton(cancel)
+        fix_size(self.b_cancel, main=True)
+        self.b_cancel.setFocusPolicy(Qt.NoFocus)
+        self.b_cancel.clicked.connect(self.reject)
+        br.addWidget(self.b_cancel)
+        self.b_ok = None
+        if ok:
+            self.b_ok = QPushButton(ok)
+            fix_size(self.b_ok, main=True)
+            self.b_ok.setFocusPolicy(Qt.NoFocus)
+            ui_style.tone(self.b_ok, "blue")
+            self.b_ok.clicked.connect(self.accept)
+            br.addWidget(self.b_ok)
+        self.body.addLayout(br)
+
+    def center_on(self, w):
+        self.adjustSize()
+        if w is not None and w.window().isVisible():
+            c = w.window().geometry().center()
+            self.move(c.x() - self.width() // 2, c.y() - self.height() // 2)
+
+    def accept(self):
+        super().accept()
+        self.accepted_.emit()
+
+    def reject(self):
+        super().reject()
+        self.rejected_.emit()
 
 
 def fix_size(b, main=False):
@@ -496,6 +546,13 @@ class RenderSettings(QWidget):
         self.still.addItem("PNG 16bit", 16)
         self.still.setToolTip("스틸(S) 저장 형식")
         f.addRow("스틸", self.still)
+        self.jobs_a, self.jobs_r = QComboBox(), QComboBox()          # 0 = 자동(원본 저장장치 종류로, jobs.tune)
+        for cb, n in ((self.jobs_a, 8), (self.jobs_r, 3)):
+            cb.addItem("자동", 0)
+            for i in range(1, n + 1):
+                cb.addItem(str(i), i)
+        f.addRow("동시 분석", self.jobs_a)
+        f.addRow("동시 렌더", self.jobs_r)
         frow = QHBoxLayout()
         self.folder = QLineEdit()
         self.folder.setPlaceholderText("렌더할 때 물어봄")
@@ -517,6 +574,14 @@ class RenderSettings(QWidget):
         self.bitrate.setValue(o.bitrate_mbps)
         self.gpu.setChecked(o.gpu_decode)
         self.still.setCurrentIndex(1 if str(get_setting("still_bits", 8)) == "16" else 0)
+        from . import jobs as J
+        for cb, key, cur in ((self.jobs_a, "auto_jobs", J.AUTO_N), (self.jobs_r, "render_jobs", J.RENDER_N)):
+            try:
+                v = int(get_setting(key, 0) or 0)
+            except (TypeError, ValueError):
+                v = 0
+            cb.setCurrentIndex(max(0, cb.findData(v)))
+            cb.setItemText(0, f"자동 ({cur})" if not v else "자동")
         self.folder.setText(o.folder)
 
     def apply(self):
@@ -533,6 +598,9 @@ class RenderSettings(QWidget):
             set_setting("render_defaults", {"prefix": o.prefix, "encoder": o.encoder, "bitrate_mbps": o.bitrate_mbps,
                                             "gpu_decode": o.gpu_decode})
             set_setting("still_bits", self.still.currentData())
+            set_setting("auto_jobs", self.jobs_a.currentData())
+            set_setting("render_jobs", self.jobs_r.currentData())
+            self.state.retune()
         except Exception:  # noqa: BLE001
             pass
 
@@ -551,8 +619,6 @@ class RenderSettingsDialog(DragMove, QDialog):
         self.setObjectName("RenderSet")
         self.setStyleSheet("#RenderSet{background:#262626; border:1px solid #555; border-radius:6px;}")
         self.settings = RenderSettings(state)
-        title = QLabel("렌더 설정")
-        title.setStyleSheet("font-weight:700; color:#e0e0e0;")
         self.b_cancel = QPushButton("취소")
         self.b_ok = QPushButton("확인")
         for b in (self.b_cancel, self.b_ok):
@@ -568,7 +634,6 @@ class RenderSettingsDialog(DragMove, QDialog):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(16, 12, 16, 14)
         lay.setSpacing(10)
-        lay.addWidget(title)
         lay.addWidget(self.settings)
         lay.addLayout(br)
         self.setMinimumWidth(400)

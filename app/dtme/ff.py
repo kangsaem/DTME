@@ -645,6 +645,133 @@ def _proxy_pix(path: str) -> str:
 PROXY_W = 640      # 프록시 폭(v0.16.16: 960 → 640, 만드는 시간·메모리 캐시 줄임. 예전 960 프록시는 그대로 재사용)
 
 
+# ------------------------------------------------------------------ 카메라 프리뷰 파일(LRF·LRV) — v0.16.19 (design/PREVIEW_FILES.md 1·2단계)
+# 있으면 영상마다 자동 판정(길이·비율·디코딩·색) → 맞으면 프리뷰로 프록시(빠름), 없거나 안 맞으면 지금처럼 원본. 결과는 cache/dtme.log.
+PREVIEW_USE = True
+
+
+def find_preview(path: str) -> str | None:
+    """원본과 짝인 프리뷰 파일(같은 폴더, 대소문자 무시). DJI = 같은 이름 .LRF / GoPro GX·GH01xxxx → GL01xxxx.LRV /
+    Insta360 VID_…_00_n.mp4 → LRV_…_01_n.lrv (PRO_VID → PRO_LRV)."""
+    import re
+    p = Path(path)
+    stem = p.stem
+    cands = [stem + ".lrf", stem + ".lrv"]
+    m = re.match(r"^G[XH](\d{2})(\d{4})$", stem, re.I)
+    if m:
+        cands.append(f"gl{m.group(1)}{m.group(2)}.lrv")
+    m = re.match(r"^(PRO_)?VID_(.+)_0(\d)_(\d+)$", stem, re.I)
+    if m:
+        cands += [f"{m.group(1) or ''}LRV_{m.group(2)}_{k}_{m.group(4)}.lrv" for k in ("01", "11", "00")]
+    want = [c.lower() for c in cands]
+    try:
+        names = {f.name.lower(): f for f in p.parent.iterdir() if f.is_file() and f.suffix.lower() in (".lrf", ".lrv")}
+    except OSError:
+        return None
+    for w in want:
+        if w in names:
+            return str(names[w])
+    return None
+
+
+def _tiny(path: str, t: float, lut_ref_: tuple | None, w: int = 64, h: int = 36, gpu: bool = False):
+    """t 초 프레임을 w×h rgb24 로(LUT 는 축소 뒤 — 비교는 양쪽 같은 순서). 실패 = None."""
+    import numpy as np
+    vf = [f"scale={w}:{h}:flags=area"]
+    if lut_ref_:
+        vf += ["format=gbrp16le", f"lut3d=file={lut_ref_[1]}"]
+    vf.append("format=rgb24")
+    cmd = [paths.ffmpeg(), "-v", "error", *_hw(gpu), "-ss", f"{max(0.0, t):.3f}", "-i", _abs(path), "-frames:v", "1",
+           "-an", "-vf", ",".join(vf), "-f", "rawvideo", "-"]
+    try:
+        out = run(cmd, cwd=lut_ref_[0] if lut_ref_ else None)
+    except FFError:
+        return None
+    if len(out) < w * h * 3:
+        return None
+    return np.frombuffer(out[:w * h * 3], dtype=np.uint8).reshape(h, w, 3).astype(np.float32)
+
+
+def check_preview(src: Source, lut: str, pv: str | None = None) -> dict:
+    """프리뷰 판정. 반환 {"path", "ok", "why", "color": "raw"|"lut"|"", "fps", "dur", "diff"}.
+    ok 조건: 디코딩 됨 · 길이 차 ≤ 프리뷰 1프레임(+원본 1프레임) · 가로세로 비 차 ≤ 2% · 색 = 가운데 프레임(원본 + 요청 LUT)과
+    프리뷰 그대로 / 프리뷰 + LUT 중 가까운 쪽의 차(화소 차 중앙값, 0~255) ≤ PREVIEW_DIFF 이고 다른 쪽의 60% 이하."""
+    r = {"path": pv or find_preview(src.path), "ok": False, "why": "", "color": "", "fps": 0.0, "dur": 0.0, "diff": -1.0}
+    if not r["path"]:
+        r["why"] = "없음"
+        return r
+    try:
+        out = run([paths.ffprobe(), "-v", "error", "-print_format", "json", "-show_streams", "-show_format", _abs(r["path"])])
+        d = json.loads(out)
+        v = next(x for x in d["streams"] if x.get("codec_type") == "video" and not x.get("disposition", {}).get("attached_pic"))
+        n, dd = (int(x) for x in (v.get("avg_frame_rate") or v.get("r_frame_rate") or "30/1").split("/"))
+        r["fps"] = n / dd if dd else 30.0
+        r["dur"] = float(v.get("duration") or d["format"].get("duration") or 0)
+        pw, ph = int(v["width"]), int(v["height"])
+    except Exception as e:  # noqa: BLE001
+        r["why"] = f"읽기 실패 {str(e)[-80:]}"
+        return r
+    sdur = src.frames / float(src.fps)
+    tol = 1.0 / max(1.0, r["fps"]) + 1.0 / float(src.fps) + 0.002
+    if abs(r["dur"] - sdur) > tol:
+        r["why"] = f"길이 다름 {r['dur']:.3f}/{sdur:.3f}초"
+        return r
+    if src.width and src.height and abs(pw / ph - src.width / src.height) > 0.02 * (src.width / src.height):
+        r["why"] = f"비율 다름 {pw}x{ph}"
+        return r
+    ref = lut_ref(lut) if lut else None
+    t = sdur * 0.5
+    a = _tiny(src.path, t, ref)
+    b = _tiny(r["path"], t, None)
+    if a is None or b is None:
+        r["why"] = "디코딩 실패" if b is None else "원본 프레임 실패"
+        return r
+    def dif(x, y):          # 화소별 평균 차의 중앙값 → 움직이는 작은 부분·압축 차이는 덜 탐(색 차이는 화면 전체라 그대로 잡힘)
+        import numpy as np
+        return float(np.median(abs(x - y).mean(axis=2)))
+    diffs = {"raw": dif(a, b)}
+    if ref:
+        c = _tiny(r["path"], t, ref)
+        if c is not None:
+            diffs["lut"] = dif(a, c)
+    best = min(diffs, key=diffs.get)
+    r["diff"] = round(diffs[best], 1)
+    other = max(diffs.values()) if len(diffs) > 1 else None
+    if diffs[best] > PREVIEW_DIFF:
+        r["why"] = f"색 다름 {diffs}"
+        return r
+    if other is not None and diffs[best] > 0.6 * other:
+        r["why"] = f"색 판정 애매 {diffs}"
+        return r
+    r["ok"], r["color"] = True, best
+    return r
+
+
+PREVIEW_DIFF = 10.0
+
+
+def _proxy_from_preview(src: Source, lut: str, pv: dict, tmp: Path, pw: int, ph: int, on_progress, cancel) -> None:
+    """프리뷰 → 프록시. fps = 원본 fps(30p → 60p 는 프레임 복제), 끝은 복제로 채운 뒤 원본 프레임 수에서 자름
+    → 프록시 프레임 수 = 원본 프레임 수(다른 코드 그대로). 색 = 판정이 'lut' 면 LUT, 'raw' 면 그대로."""
+    ref = lut_ref(lut) if (lut and pv["color"] == "lut") else None
+    color = ["format=gbrp16le", f"lut3d=file={ref[1]}"] if ref else []
+    vf = ["setpts=PTS-STARTPTS", f"fps={src.fps_num}/{src.fps_den}", "tpad=stop_mode=clone:stop=8",
+          f"trim=end_frame={src.frames}", f"scale={pw}:{ph}:flags=bilinear", *color, TO_YUV709]
+    tail = ["-map", "0:a:0?", "-c:a", "aac", "-b:a", "128k"] if src.has_audio else ["-an"]
+    cmd = [paths.ffmpeg(), "-y", "-i", _abs(pv["path"]), "-map", "0:v:0", "-vf", ",".join(vf), *tail,
+           "-fps_mode", "passthrough", "-c:v", "libx264", "-preset", "ultrafast", "-tune", "fastdecode",
+           "-g", "1", "-crf", "23", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
+           "-color_range", "tv", "-movflags", "+faststart", _abs(tmp)]
+    run_progress(cmd, src.frames / float(src.fps), on_progress, cancel, cwd=ref[0] if ref else None)
+
+
+def frame_count(path: str) -> int:
+    """실제 프레임 수(패킷 세기, 프록시 확인용)."""
+    out = run([paths.ffprobe(), "-v", "error", "-select_streams", "v:0", "-count_packets", "-show_entries",
+               "stream=nb_read_packets", "-of", "csv=p=0", _abs(path)])
+    return int(out.decode().strip() or 0)
+
+
 def make_proxy(src: Source, lut: str, gpu: bool, on_progress=None, cancel=None) -> str:
     """PROXY_W 폭, 모든 프레임 키프레임(H.264) → 프레임 단위 탐색이 빠름. LUT 를 미리 입혀 보기 좋게.
     GPU 켜짐: ① 디코딩·축소 모두 GPU(scale_cuda, 4K 프레임을 CPU 로 안 내림) → 실패하면 ② GPU 디코딩 + CPU 축소 → ③ CPU.
@@ -672,6 +799,30 @@ def make_proxy(src: Source, lut: str, gpu: bool, on_progress=None, cancel=None) 
         tries.append(("GPU 디코딩", ["-hwaccel", "cuda"], [f"scale={pw}:{ph}:flags=bilinear"]))
     tries.append(("CPU", [], [f"scale={pw}:{ph}:flags=bilinear"]))
     dur = src.frames / float(src.fps)
+    if PREVIEW_USE:                                   # 카메라 프리뷰(LRF 등)가 맞으면 그걸로(실패하면 아래 원본 방식)
+        pv = None
+        t0 = time.monotonic()
+        try:
+            pv = check_preview(src, lut or "")
+            if pv["ok"]:
+                t1 = time.monotonic()
+                _proxy_from_preview(src, lut or "", pv, tmp, pw, ph, on_progress, cancel)
+                n = frame_count(str(tmp))
+                if abs(n - src.frames) > 1:
+                    raise FFError(f"프레임 수 다름 {n}/{src.frames}")
+                log_error("프록시", f"{Path(src.path).name} 프리뷰({Path(pv['path']).suffix[1:].upper()}, {pv['fps']:.2f}fps, "
+                                   f"색 {pv['color']}, 차 {pv['diff']}) 판정 {t1 - t0:.1f}초 + 만들기 {time.monotonic() - t1:.1f}초 "
+                                   f"(영상 {dur:.0f}초)")
+                replace_retry(tmp, out)
+                return str(out)
+            if pv["why"] != "없음":
+                log_error("프리뷰 안 씀 → 원본", f"{Path(src.path).name}: {pv['why']}")
+        except Cancelled:
+            raise
+        except Exception as e:  # noqa: BLE001
+            if cancel is not None and cancel.is_set():
+                raise
+            log_error("프리뷰 실패 → 원본", f"{Path(src.path).name}: {str(e)[-300:]}")
     last = None
     for i, (name, hw, pre) in enumerate(tries):
         cmd = [paths.ffmpeg(), "-y", *hw, "-i", _abs(src.path), "-map", "0:v:0", "-vf", ",".join(pre + color + [TO_YUV709]), *tail]

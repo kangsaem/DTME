@@ -8,7 +8,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QEvent, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QPixmap
-from PySide6.QtWidgets import (QButtonGroup, QComboBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QInputDialog,
+from PySide6.QtWidgets import (QButtonGroup, QComboBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
                                QLabel, QLineEdit, QListWidget, QListWidgetItem, QMenu, QPushButton,
                                QScrollArea, QSizePolicy, QSlider, QVBoxLayout, QWidget)
 
@@ -723,7 +723,7 @@ class GradePanel(QWidget):
         from .ui_auto import preset_name
         src = self._src()
         cur = preset_name(src.auto) if src and (src.auto or {}).get("preset", "").startswith("user:") else ""
-        name, ok = QInputDialog.getText(self, "프리셋 저장", "이름", text=cur)
+        name, ok = ui_style.get_text(self, cur)
         name = name.strip()
         if not ok or not name:
             return
@@ -751,7 +751,7 @@ class GradePanel(QWidget):
         if dlg is not None:
             dlg.reject()
         if act is a_ren:
-            new, ok = QInputDialog.getText(self, "이름 바꾸기", "이름", text=name)
+            new, ok = ui_style.get_text(self, name)
             if ok and new.strip() and new.strip() != name:
                 rename_preset(name, new.strip())
                 for s in self.state.project.sources:
