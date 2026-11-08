@@ -668,7 +668,7 @@ class GradePanel(QWidget):
         self._emit_change()
 
     def recommend(self, sids, key="auto", strength="mid"):
-        """[추천] 클립마다 샘플 추출(2초마다, 최대 20장) → 장면 판단 → 값·키프레임 → 클립 값(C), 반반 보기. 실행취소 1번."""
+        """[추천] 클립마다 샘플 추출(2초마다, 최대 12장) → 장면 판단 → 값·키프레임 → 클립 값(C), 반반 보기. 실행취소 1번."""
         from . import auto
         from .ui_auto import choice_args, grab_job
         p = self.state.project

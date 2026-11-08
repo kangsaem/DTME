@@ -127,7 +127,7 @@ def builtin_grade(key: str, base: dict | None = None, strength: str = "mid") -> 
 # ------------------------------------------------------------------ 샘플 추출
 SAMPLE_W = 320
 SAMPLE_EVERY_SEC = 2.0
-SAMPLE_MAX = 20
+SAMPLE_MAX = 12          # v0.16.17: 20 → 12 (분석 시간 ≈60%, 사용자 확정)
 
 
 def sample_frames(src: Source, every: float = SAMPLE_EVERY_SEC, n_max: int = SAMPLE_MAX,
