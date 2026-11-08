@@ -15,7 +15,8 @@
 |---|---|---|---|---|
 | DJI Osmo Action 3·4·5 Pro·6, Action 2, Pocket 2·3 | `.LRF` | 확장자만 다름: `DJI_..._D.MP4` ↔ `DJI_..._D.LRF` | MP4 컨테이너, H.264 High, 1280×720(4:3 영상은 960×720 보고), 29.97fps, 영상 ≈6.5–8Mbps, AAC 스테레오, MJPEG 썸네일 내장, bt709 태그(Pocket 3 ffprobe 예시) | DJI 지원 문서: Mimo "Trim Download"·재생·미리보기용. LRF를 지우면 카메라에서 그 영상을 재생할 수 없음 |
 | GoPro HERO5~13, MAX | `.LRV` + `.THM` | 앞글자: `GX01xxxx.MP4`/`GH01xxxx.MP4` ↔ `GL01xxxx.LRV`, `.THM` = 같은 이름 | 240p~480p 보고(모델마다 다름), HERO11 이후는 LRV도 HEVC, ≈4Mbps, GPS·IMU 데이터 포함. THM = 160×120 JPEG | 앱·카메라 화면 미리보기. HERO12·13 매뉴얼: 카메라에서는 숨김 |
-| Insta360 Ace·Ace Pro·Ace Pro 2 | `.lrv` | `VID_….mp4` ↔ `LRV_….lrv` (`PRO_VID` ↔ `PRO_LRV`) | 사양 공개 자료 못 찾음 | Insta360 공식: 빠른 둘러보기, **AI 인식·장면 분석**, 프록시 |
+| Insta360 Ace·Ace Pro·Ace Pro 2 | `.lrv` | 날짜·시각·번호가 같고 앞 글자와 `_00`/`_01`만 다름: `VID_20240801_154541_00_012.mp4` ↔ `LRV_20240801_154541_01_012.lrv` (`PRO_VID` ↔ `PRO_LRV`) | 해상도·fps 공개 자료 못 찾음 | 공식 매뉴얼: Video·FreeFrame·Loop Recording 모드에서 MP4(본 파일) + LRV(미리보기) 2개 생성. LRV를 지우면 카메라 앨범에서 미리보기 안 됨. Studio 문서: 빠른 둘러보기, **AI 인식·장면 분석**, 프록시 |
+| Insta360 GO 3·GO 3S·GO Ultra | `.lrv` | 위와 같은 규칙(추정) | — | 공식 매뉴얼: Video·FreeFrame·Loop 모드 = MP4 + 미리보기·재생용 LRV(실시간 생성), 사진 모드는 LRV 없음 |
 | Insta360 X 시리즈(360) | `.lrv` | `VID_…_00_….insv` ↔ `LRV_…_01/11_….lrv` | — | 같음. 360이라 DTME 대상 아님 |
 
 ### 1-2. 확인되지 않은 것 (DTME에 중요)
@@ -135,5 +136,5 @@
 - cosci.de: DJI LRF 960×720(4:3)
 - havecamerawilltravel.com: GoPro LRV·THM, HERO13 비트레이트
 - gopro/labs GitHub Discussion #1171: HERO13 LRV = HEVC, GPS·IMU 포함
-- Insta360 온라인 매뉴얼: X 시리즈 파일 형식, Studio 가져오기 오류(LRV = 미리보기·AI 인식·장면 분석)
+- Insta360 온라인 매뉴얼: X 시리즈 파일 형식, Studio 가져오기 오류(LRV = 미리보기·AI 인식·장면 분석), Ace 시리즈 파일 분실(VID_…_00_ ↔ LRV_…_01_), GO 시리즈 파일 형식(MP4 + LRV)
 - Kdenlive 매뉴얼: 카메라 프록시 프로필(GoPro GL/GX, Insta360 Ace Pro LRV/VID)
