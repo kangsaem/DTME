@@ -13,8 +13,8 @@
 
 | 제조사·모델 | 프리뷰 | 원본과 짝 짓기 | 보고된 사양 | 공식 용도 |
 |---|---|---|---|---|
-| DJI Osmo Action 3·4·5 Pro·6, Action 2, Pocket 2·3 | `.LRF` | 확장자만 다름: `DJI_..._D.MP4` ↔ `DJI_..._D.LRF` | MP4 컨테이너, H.264 High, 1280×720(4:3 영상은 960×720 보고), 29.97fps, 영상 ≈6.5–8Mbps, AAC 스테레오, MJPEG 썸네일 내장, bt709 태그(Pocket 3 ffprobe 예시) | DJI 지원 문서: Mimo "Trim Download"·재생·미리보기용. LRF를 지우면 카메라에서 그 영상을 재생할 수 없음 |
-| GoPro HERO5~13, MAX | `.LRV` + `.THM` (Labs 설정 시 `Proxies/…_Proxy.MP4` 또는 `Proxy/….MP4`) | 앞글자: `GX01xxxx.MP4`/`GH01xxxx.MP4` ↔ `GL01xxxx.LRV`, `.THM` = 같은 이름 | 240p~480p 보고(모델마다 다름), HERO11 이후는 LRV도 HEVC, ≈4Mbps, GPS·IMU 데이터 포함. THM = 160×120 JPEG | 앱·카메라 화면 미리보기. HERO12·13 매뉴얼: 카메라에서는 숨김 |
+| DJI Osmo Action 3·4·5 Pro·6, Action 2, Pocket 2·3 | `.LRF` | 확장자만 다름: `DJI_..._D.MP4` ↔ `DJI_..._D.LRF` | MP4 컨테이너, H.264 High, 1280×720(4:3 영상은 960×720 보고), 29.97fps, 영상 ≈6.5–8Mbps, AAC 스테레오, MJPEG 썸네일 내장, bt709 태그(Pocket 3 ffprobe 예시). **타임코드 메타가 원본과 같음**(Pocket 3 예시 `timecode 08:13:27;02`, Premiere 사용자 = 'Media start' 로 짝 맞춤). DJI 포럼 답변: LRF 는 일반적으로 30fps 로 낮아짐. 드론 Air 3 = LRF 가 원본보다 1프레임 짧은 경우가 절반(정리 스크립트 있음), Mini 4 Pro = 1280×720 ≈19Mbps 실측 보고 | DJI 지원 문서: Mimo "Trim Download"·재생·미리보기용. LRF를 지우면 카메라에서 그 영상을 재생할 수 없음 |
+| GoPro HERO5~13, MAX | `.LRV` + `.THM` (Labs 설정 시 `Proxies/…_Proxy.MP4` 또는 `Proxy/….MP4`) | 앞글자: `GX01xxxx.MP4`/`GH01xxxx.MP4` ↔ `GL01xxxx.LRV`, `.THM` = 같은 이름 | 240p~480p 보고(모델마다 다름), HERO11 이후는 LRV도 HEVC, ≈4Mbps, GPS·IMU 데이터 포함(본 MP4 의 GPMF = 자이로 ≈400Hz·가속 ≈200Hz·GPS ≈18Hz). THM = 160×120 JPEG. **고프레임 일부 모드는 LRV 를 안 만든다**는 보고(HERO8 포럼), HERO13 고해상도 모드에서 LRV·THM 이 안 생겼다는 사용자 글도 있음(미확인) | 앱·카메라 화면 미리보기. HERO12·13 매뉴얼: 카메라에서는 숨김 |
 | Insta360 Ace·Ace Pro·Ace Pro 2 | `.lrv` | 날짜·시각·번호가 같고 앞 글자와 `_00`/`_01`만 다름: `VID_20240801_154541_00_012.mp4` ↔ `LRV_20240801_154541_01_012.lrv` (`PRO_VID` ↔ `PRO_LRV`) | Ace Pro 4K60 → LRV 30fps(사용자 보고, Resolve 프록시 연결 안 됨). 해상도는 공개 자료 없음. 같은 회사 X4(360) LRV 실측 = H.264 High 1664×832, 29.97fps, 영상 ≈8.6Mbps, yuvj420p(PC 범위) BT.709, AAC 48kHz → Ace 계열도 H.264 30p·수 Mbps일 가능성(추정). Gyroflow 가 LRV 안의 자이로 데이터를 읽음 | 공식 매뉴얼: Video·FreeFrame·Loop Recording 모드에서 MP4(본 파일) + LRV(미리보기) 2개 생성. LRV를 지우면 카메라 앨범에서 미리보기 안 됨. Studio 문서: 빠른 둘러보기, **AI 인식·장면 분석**, 프록시 |
 | Insta360 GO 3·GO 3S·GO Ultra | `.lrv` | 위와 같은 규칙(추정) | — | 공식 매뉴얼: Video·FreeFrame·Loop 모드 = MP4 + 미리보기·재생용 LRV(실시간 생성), 사진 모드는 LRV 없음 |
 | Insta360 X 시리즈(360) | `.lrv` | `VID_…_00_….insv` ↔ `LRV_…_01/11_….lrv` | — | 같음. 360이라 DTME 대상 아님 |
@@ -22,12 +22,12 @@
 ### 1-2. 확인되지 않은 것 (DTME에 중요)
 
 0. **프레임 수 공통 경향**: DJI·Insta360 모두 60p 원본 → 프리뷰 30p 보고가 있음. 2단계 '프레임 복제로 맞춤'이 기본이 되어야 함
-1. **D-Log M으로 찍었을 때 LRF 색**(Insta360 Ace Pro 2 I-Log 도 같은 문제. I-Log 는 H.264 고정·100fps 이상 불가): Log(흐린 화면)인지 Rec.709(보통 화면)인지 모름.
+1. **D-Log M으로 찍었을 때 LRF 색** — DJI 매뉴얼: Color Recovery 는 '라이브뷰' 미리보기용. Action 5 Pro 해설: Color Recovery 를 켜도 갤러리(=LRF 재생)는 흐리게 보임 → **Log 일 가능성이 더 큼**(추정)(Insta360 Ace Pro 2 I-Log 도 같은 문제. I-Log 는 H.264 고정·100fps 이상 불가): Log(흐린 화면)인지 Rec.709(보통 화면)인지 모름.
    - "항상 Rec.709 8bit"라는 글이 있으나 출처가 약하다.
    - Action 5 Pro 해설에 "Color Recovery를 켜도 갤러리 재생은 흐리게 보인다"는 내용이 있다. 갤러리 재생 = LRF이므로 Log일 가능성이 있다.
    - **반드시 실물로 확인해야 한다.**
 2. **프레임 수**: 4K60·4K120 원본도 LRF는 30fps라는 보고가 여럿 있다(Resolve 프록시 연결 실패 사례). "원본과 같다"는 반대 보고도 1건 있다. 모델과 펌웨어마다 다를 수 있다.
-3. **시작 시각·길이 차이**: LRF가 원본과 같은 순간에 시작하고 끝나는지(프레임 단위 일치) 모름.
+3. **시작 시각·길이 차이**(DJI 드론 Air 3 = 절반 확률로 1프레임 짧음 보고 → 1단계 허용 오차 1프레임 필요): LRF가 원본과 같은 순간에 시작하고 끝나는지(프레임 단위 일치) 모름.
 4. **GOP 길이(키프레임 간격)**: 한 장 뽑기·구간 캐시 속도를 정한다. 모름.
 5. **특수 모드**: 슬로모(4K120·1080p240), 하이퍼랩스, 세로 촬영, 4GB 넘어 나뉜 파일에도 LRF가 각각 생기는지 모름.
 6. **카드에서 복사할 때**: 사용자가 MP4만 복사하면 LRF가 없다. 지금 작업 흐름에서 LRF가 PC로 같이 오는지 확인해야 한다.
@@ -141,6 +141,13 @@
 - Kdenlive 매뉴얼: 카메라 프록시 프로필(GoPro GL/GX, Insta360 Ace Pro LRV/VID)
 - Blackmagic 포럼 "Questions About Proxy Media": Ace Pro 60fps → LRV 30fps
 - note.com(naru_jpn) "Insta360 の画像・動画ファイルのフォーマットを調べる": X4 LRV ffprobe
+- DJI 포럼 "LRF Files with Matching FPS"(답변: 일반적으로 30fps 로 낮아짐)
+- GitHub wuyuanyi135/dji_proxy_timecode_match(Air 3 LRF 1프레임 짧음)
+- terasor.com "What Is an LRF File?"(Mini 4 Pro LRF 1280×720 ≈19Mbps 실측)
+- file-converter-online.com LRF(타임코드 메타, 960×720 또는 1280×720·30fps)
+- DJI Osmo Action 5 Pro 사용자 매뉴얼 v1.0(Color Recovery = 라이브뷰 미리보기)
+- GoPro 커뮤니티 ".LRV files needed for higher fps"(HERO8 고프레임 모드 LRV 없음), goproforums HERO13 Quik 미리보기 글(LRV·THM 안 생김 보고)
+- GitHub HackPartners/gopro-utils(GPMF: 자이로 ≈400Hz, 가속 ≈200Hz, GPS ≈18Hz)
 - Gyroflow 문서: Insta360 Ace·Ace Pro·GO 시리즈, GoPro HERO5+ — .lrv/.LRV 프록시 안의 자이로 데이터 지원
 - GoPro Labs "Proxy File Support": HERO10~13·MISSION 에서 LRV 대신 `Proxies/GX…_Proxy.MP4`(Premiere) 또는 `Proxy/GX….MP4`(DaVinci) 로 만들게 할 수 있음(그러면 LRV 없음)
 - Insta360 매뉴얼: Ace Pro 2 I-Log(H.264 고정, 8K·100fps 이상 불가), 회색 화면 = I-Log
