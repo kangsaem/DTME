@@ -860,17 +860,48 @@ class EditTab(QWidget):
         job = jobs.Job(work)
         job.signals.done.connect(lambda data, g=gen, fr=frame, t=tok: self._on_preview(g, fr, t, data))
         job.signals.error.connect(lambda msg: (ff.log_error("미리보기", msg), self._say(f"미리보기 오류: {msg[-160:]}", C_WARN)))
+        self._full_shown = None
+        self._quick_preview(s, frame, gen, tok, mode, grade, full)
         jobs.submit(jobs.PREVIEW_POOL, job, priority=5)
+
+    def _quick_preview(self, s, frame, gen, tok, mode, grade, full):
+        """원본 보정 화면이 오기 전에 카메라 프리뷰(LRF, 폭 1280 이상, 판정 통과)로 같은 보정을 먼저(v0.16.22).
+        원본 입력이 이미 메모리에 있으면(바로 나옴) 안 함. 원본이 먼저 오면 버림."""
+        if ff.frame_ready(s, frame):
+            return
+        try:
+            pv = ff.preview_info(s, (full or {}).get("lut", ""), judge=False)     # 저장된 판정만(여기서 판정 안 함)
+        except Exception:  # noqa: BLE001
+            pv = None
+        if not pv or pv.get("w", 0) < ff.PREVIEW_MIN_W_STILL:
+            return
+
+        def work():
+            c = ff.cached_frame_preview(s, frame, pv)
+            out = ff.render_preview(c, ff.preview_grade(grade, pv))
+            before = ff.render_preview(c, ff.preview_grade(ff.lut_only(full), pv)) if mode == "split" else None
+            return out, before
+
+        def done(data, g=gen, fr=frame, t=tok):
+            if self._full_shown == g:             # 원본이 이미 나옴
+                return
+            self._on_preview(g, fr, t, data, quick=True)
+        job = jobs.Job(work)
+        job.signals.done.connect(done)
+        job.signals.error.connect(lambda msg: ff.log_error("미리보기(프리뷰)", msg))
+        jobs.submit(jobs.PREVIEW_POOL, job, priority=6)
 
     def _prefetch_range(self, s, frame):
         """멈춘 곳 앞뒤 1초 원본을 뒤에서 한 번에 디코딩(근처 프레임 보정 화면이 빨라짐). 미리보기보다 낮은 우선순위."""
         job = jobs.Job(lambda: ff.prefetch_range(s, frame))
         jobs.submit(jobs.PREVIEW_POOL, job, priority=-5)
 
-    def _on_preview(self, gen, frame, tok, data):
+    def _on_preview(self, gen, frame, tok, data, quick: bool = False):
         p = self.player
         if gen != self.pgen or frame != p.frame or tok != p._token or p.is_busy():
             return
+        if not quick:
+            self._full_shown = gen
         img, before = data
         p.overlay_frame = frame
         p.mon.set_before(QImage.fromData(before, "PNG") if before else None)

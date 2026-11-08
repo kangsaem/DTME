@@ -551,6 +551,10 @@ class RenderSettings(QWidget):
             cb.addItem("자동", 0)
             for i in range(1, n + 1):
                 cb.addItem(str(i), i)
+        self.use_pv = QComboBox()                                    # 카메라 프리뷰(LRF 등) 사용 — 프록시·AUTO 분석·멈춘 화면 먼저
+        self.use_pv.addItem("사용", 1)
+        self.use_pv.addItem("안 씀", 0)
+        f.addRow("프리뷰 파일", self.use_pv)
         f.addRow("동시 분석", self.jobs_a)
         f.addRow("동시 렌더", self.jobs_r)
         frow = QHBoxLayout()
@@ -574,6 +578,7 @@ class RenderSettings(QWidget):
         self.bitrate.setValue(o.bitrate_mbps)
         self.gpu.setChecked(o.gpu_decode)
         self.still.setCurrentIndex(1 if str(get_setting("still_bits", 8)) == "16" else 0)
+        self.use_pv.setCurrentIndex(0 if str(get_setting("use_preview", 1)) not in ("0", "False", "false", "") else 1)
         from . import jobs as J
         for cb, key, cur in ((self.jobs_a, "auto_jobs", J.AUTO_N), (self.jobs_r, "render_jobs", J.RENDER_N)):
             try:
@@ -598,6 +603,7 @@ class RenderSettings(QWidget):
             set_setting("render_defaults", {"prefix": o.prefix, "encoder": o.encoder, "bitrate_mbps": o.bitrate_mbps,
                                             "gpu_decode": o.gpu_decode})
             set_setting("still_bits", self.still.currentData())
+            set_setting("use_preview", self.use_pv.currentData())
             set_setting("auto_jobs", self.jobs_a.currentData())
             set_setting("render_jobs", self.jobs_r.currentData())
             self.state.retune()

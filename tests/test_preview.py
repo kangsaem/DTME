@@ -85,7 +85,7 @@ assert not r["ok"] and "길이" in r["why"]
 out = ff.make_proxy(sc, lut_name, False)
 assert ff.frame_count(out) == sc.frames
 log = (paths.cache_dir() / "dtme.log").read_text(encoding="utf-8").splitlines()
-assert any("프리뷰 안 씀" in x and c.name in x for x in log[-3:]) and " CPU " in log[-1], log[-3:]
+assert any("안 씀(원본)" in x and c.name in x for x in log[-3:]) and " CPU " in log[-1], log[-3:]
 
 # 4) 다른 장면(시점·내용 안 맞음) → 색 다름
 d = work / "DJI_20261025102000_0152_D.MP4"
@@ -130,6 +130,34 @@ assert ff.find_preview(str(work / "GX010123.MP4")).endswith("GL010123.LRV")
 (work / "VID_20240801_154541_00_012.mp4").write_bytes(b"")
 (work / "LRV_20240801_154541_01_012.lrv").write_bytes(b"")
 assert ff.find_preview(str(work / "VID_20240801_154541_00_012.mp4")).endswith("LRV_20240801_154541_01_012.lrv")
+
+# 6) v0.16.22: 판정 저장 · AUTO 분석 · 멈춘 화면 먼저 · 설정 끄기
+import time as _t
+from dtme import auto
+ff._pv_cache.clear()
+t = _t.time(); p1 = ff.preview_info(sg, lut_name); t1 = _t.time() - t
+t = _t.time(); p2 = ff.preview_info(sg, lut_name); t2 = _t.time() - t
+print(f"판정 저장: 처음 {t1:.2f}초 · 다시 {t2 * 1000:.1f}ms", {k: p1[k] for k in ("color", "shift", "w")})
+assert p1 and p2 is p1 and t2 < 0.05 and (paths.cache_dir() / "preview_judge.json").exists()
+assert ff.preview_info(sg, "", judge=False) is None, "저장 안 된 LUT = 판정 안 함"
+p3 = ff.preview_info(sg, "")
+assert p3 and p3["shift"] == 1, "다른 LUT = 시점은 앞 판정 그대로"
+assert ff.preview_pos(p1, 0) == 0 and ff.preview_pos(p1, 1) == 0 and ff.preview_pos(p1, 3) == 1 and ff.preview_pos(p1, 2) == 0
+fr = sg.frames // 2
+a0 = auto.grab_small(sg, fr, lut_name)
+a1 = auto.grab_small(sg, fr, lut_name, use_preview=True)
+print("AUTO 샘플 원본/프리뷰 평균 차", round(float(abs(a0.mean((0, 1)) - a1.mean((0, 1))).max() * 255), 2))
+assert abs(a0.mean((0, 1)) - a1.mean((0, 1))).max() * 255 < 3
+from dtme.project import NEUTRAL
+g = {**NEUTRAL, "lut": lut_name}
+c = ff.cached_frame_preview(sg, fr, p1)
+png = ff.render_preview(c, ff.preview_grade(g, p1))
+assert png[:4] == b"\x89PNG" and c.size[0] == 1280
+from dtme.project import set_setting
+set_setting("use_preview", 0)
+assert ff.preview_info(sg, lut_name) is None, "설정 끔"
+set_setting("use_preview", 1)
+assert ff.preview_info(sg, lut_name) is not None
 
 (paths.lut_dir() / lut_name).unlink()
 print("OK test_preview")

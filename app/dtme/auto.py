@@ -139,14 +139,26 @@ def sample_frames(src: Source, every: float = SAMPLE_EVERY_SEC, n_max: int = SAM
     return [int(a + (k + 0.5) * (b - a) / n) for k in range(n)]
 
 
-def grab_small(src: Source, frame: int, lut: str, gpu: bool = False, w: int = SAMPLE_W) -> np.ndarray:
-    """원본 1장 → (LUT 만 입혀) 작은 RGB float 배열(0~1)."""
-    ref = ff.lut_ref(lut) if lut else None
+def grab_small(src: Source, frame: int, lut: str, gpu: bool = False, w: int = SAMPLE_W,
+               use_preview: bool = False) -> np.ndarray:
+    """원본 1장 → (LUT 만 입혀) 작은 RGB float 배열(0~1).
+    use_preview(AUTO 분석, v0.16.22) = 판정 통과한 카메라 프리뷰(LRF 등, 폭 640 이상)가 있으면 그 같은 화면에서
+    (프리뷰가 이미 709 면 LUT 없이). 실물 DJI: 결과 거의 같음(빨강 1.02 vs 1.022), 시간 약 1/7."""
+    path, seek, use_lut = src.path, ff._seek(frame, src.fps), lut
+    if use_preview:
+        try:
+            pv = ff.preview_info(src, lut)
+        except Exception:  # noqa: BLE001
+            pv = None
+        if pv and pv.get("w", 0) >= ff.PREVIEW_MIN_W_AUTO:
+            path, seek = pv["path"], ff._seek(ff.preview_pos(pv, frame), ff.preview_fps(pv))
+            use_lut = lut if pv.get("color") == "lut" else ""
+    ref = ff.lut_ref(use_lut) if use_lut else None
     vf = [f"scale={w}:-2:flags=bilinear", "format=gbrp16le"]
     if ref:
         vf.append(f"lut3d=file={ref[1]}:interp=tetrahedral")
     vf.append("format=rgb24")
-    cmd = [paths.ffmpeg(), "-v", "error", *ff._hw(gpu), "-ss", ff._seek(frame, src.fps), "-i", ff._abs(src.path),
+    cmd = [paths.ffmpeg(), "-v", "error", *ff._hw(gpu), "-ss", seek, "-i", ff._abs(path),
            "-frames:v", "1", "-an", "-vf", ",".join(vf), "-f", "rawvideo", "-"]
     try:
         raw = ff.run(cmd, cwd=ref[0] if ref else None)
@@ -160,13 +172,14 @@ def grab_small(src: Source, frame: int, lut: str, gpu: bool = False, w: int = SA
 
 
 def grab_samples(src: Source, lut: str, gpu: bool = False, frames: list[int] | None = None,
-                 cancel=None, on_progress=None) -> list[tuple[int, np.ndarray]]:
+                 cancel=None, on_progress=None, use_preview: bool = True) -> list[tuple[int, np.ndarray]]:
+    """AUTO 분석 샘플. use_preview = 카메라 프리뷰가 맞으면 그걸로(grab_small)."""
     out = []
     frames = frames if frames is not None else sample_frames(src, a=src.io[0], b=src.io[1])
     for i, f in enumerate(frames):
         if cancel is not None and cancel.is_set():
             raise ff.Cancelled()
-        out.append((f, grab_small(src, f, lut, gpu)))
+        out.append((f, grab_small(src, f, lut, gpu, use_preview=use_preview)))
         if on_progress:
             on_progress((i + 1) / len(frames))
     return out

@@ -674,30 +674,56 @@ def find_preview(path: str) -> str | None:
     return None
 
 
-def _tiny(path: str, t: float, lut_ref_: tuple | None, w: int = 64, h: int = 36, gpu: bool = False):
-    """t 초 프레임을 w×h rgb24 로(LUT 는 축소 뒤 — 비교는 양쪽 같은 순서). 실패 = None."""
+PREVIEW_DIFF = 10.0          # 색 판정: 가까운 쪽 차(화소 차 중앙값, 0~255) 상한
+PREVIEW_N = 8                # 판정 창 하나에 프리뷰 몇 장(v0.16.22: 15 → 8)
+PREVIEW_MIN_W_AUTO = 640     # AUTO 분석에 쓸 최소 폭(분석은 320 폭)
+PREVIEW_MIN_W_STILL = 1280   # 멈춘 화면(먼저 보이기)에 쓸 최소 폭(보정 화면이 1280 폭)
+
+
+def _pv_win(path: str, t0: float, n: int, fps: float, ref: tuple | None) -> dict:
+    """t0 부터 n장(키프레임 시크 + 실제 pts 로 번호) → {프레임 번호: (그대로, LUT 입힘 또는 None)} 96×54 float.
+    LUT 는 같은 디코딩에서 갈라 옆에 붙여(hstack) 받음 = 원본을 한 번만 읽음."""
+    import re
     import numpy as np
-    vf = [f"scale={w}:{h}:flags=area"]
-    if lut_ref_:
-        vf += ["format=gbrp16le", f"lut3d=file={lut_ref_[1]}"]
-    vf.append("format=rgb24")
-    cmd = [paths.ffmpeg(), "-v", "error", *_hw(gpu), "-ss", f"{max(0.0, t):.3f}", "-i", _abs(path), "-frames:v", "1",
-           "-an", "-vf", ",".join(vf), "-f", "rawvideo", "-"]
-    try:
-        out = run(cmd, cwd=lut_ref_[0] if lut_ref_ else None)
-    except FFError:
-        return None
-    if len(out) < w * h * 3:
-        return None
-    return np.frombuffer(out[:w * h * 3], dtype=np.uint8).reshape(h, w, 3).astype(np.float32)
+    w, h = 96, 54
+    if ref:
+        fc = (f"[0:v:0]showinfo,scale={w}:{h}:flags=area,split[a][b];[a]format=rgb24[a2];"
+              f"[b]format=gbrp16le,lut3d=file={ref[1]},format=rgb24[b2];[a2][b2]hstack[o]")
+    else:
+        fc = f"[0:v:0]showinfo,scale={w}:{h}:flags=area,format=rgb24[o]"
+    cmd = [paths.ffmpeg(), "-hide_banner", "-copyts", "-ss", f"{max(0.0, t0):.3f}", "-i", _abs(path),
+           "-filter_complex", fc, "-map", "[o]", "-frames:v", str(n), "-fps_mode", "passthrough", "-f", "rawvideo", "-"]
+    pr = _popen(cmd, cwd=ref[0] if ref else None, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    out, err = pr.communicate()
+    if pr.returncode != 0:
+        raise FFError(err.decode("utf-8", "replace")[-300:])
+    ts = [float(x) for x in re.findall(rb"pts_time:\s*([-0-9.]+)", err)]
+    ww = w * 2 if ref else w
+    fr = np.frombuffer(out[:len(out) // (ww * h * 3) * ww * h * 3], np.uint8).reshape(-1, h, ww, 3).astype(np.float32)
+    res = {}
+    for i, t in enumerate(ts[:len(fr)]):
+        res[int(round(t * fps))] = (fr[i][:, :w], fr[i][:, w:] if ref else None)
+    return res
 
 
-def check_preview(src: Source, lut: str, pv: str | None = None) -> dict:
-    """프리뷰 판정. 반환 {"path", "ok", "why", "color": "raw"|"lut"|"", "fps", "dur", "diff"}.
-    ok 조건: 디코딩 됨 · 길이 차 ≤ 프리뷰 1프레임(+원본 1프레임) · 가로세로 비 차 ≤ 2% · 색 = 가운데 프레임(원본 + 요청 LUT)과
-    프리뷰 그대로 / 프리뷰 + LUT 중 가까운 쪽의 차(화소 차 중앙값, 0~255) ≤ PREVIEW_DIFF 이고 다른 쪽의 60% 이하."""
-    r = {"path": pv or find_preview(src.path), "ok": False, "why": "", "color": "", "fps": 0.0, "dur": 0.0, "diff": -1.0,
-         "shift": 0}
+def _dif(x, y) -> float:
+    """화소별 평균 차의 중앙값 → 움직이는 작은 부분·압축 차이는 덜 탐(색 차이는 화면 전체라 그대로 잡힘)."""
+    import numpy as np
+    return float(np.median(abs(x - y).mean(axis=2)))
+
+
+def check_preview(src: Source, lut: str, pv: str | None = None, shift_hint: int | None = None) -> dict:
+    """프리뷰 판정(v0.16.22: 원본을 한 번만 읽음). 반환 {"path","ok","why","color":"raw"|"lut","shift","ratio",
+    "fps_num","fps_den","frames","w","h","diff","sec"}.
+    1) 파일 정보: 디코딩 · 길이 차 ≤ 프리뷰 1프레임 + 원본 1프레임 · 가로세로 비 차 ≤ 2%
+    2) 영상 가운데에서 프리뷰 8장 ↔ 원본 8·ratio+4장(같은 디코딩에서 LUT 입힌 것도). 기준 = 원본(+요청 LUT)
+       색: 프리뷰 그대로 / +LUT 각각 (장마다 짝 후보 중 가장 가까운 차)의 중앙값 → 작은 쪽 ≤ PREVIEW_DIFF, 다른 쪽의 60% 이하
+       시점: 그 색으로 프리뷰 k ↔ 원본 ratio·k+j(j=0..ratio-1) 중 확실히 가까운 j 에 표(DJI 실물 = 영상마다 0 또는 1)
+    3) 표가 모자라면 1/4·3/4 지점에서 더(시점만). 끝까지 모자라면 0."""
+    import time as _t
+    t_start = _t.monotonic()
+    r = {"path": pv or find_preview(src.path), "ok": False, "why": "", "color": "", "shift": 0, "ratio": 1,
+         "fps_num": 30, "fps_den": 1, "frames": 0, "w": 0, "h": 0, "diff": -1.0, "sec": 0.0}
     if not r["path"]:
         r["why"] = "없음"
         return r
@@ -706,90 +732,188 @@ def check_preview(src: Source, lut: str, pv: str | None = None) -> dict:
         d = json.loads(out)
         v = next(x for x in d["streams"] if x.get("codec_type") == "video" and not x.get("disposition", {}).get("attached_pic"))
         n, dd = (int(x) for x in (v.get("avg_frame_rate") or v.get("r_frame_rate") or "30/1").split("/"))
-        r["fps"] = n / dd if dd else 30.0
-        r["dur"] = float(v.get("duration") or d["format"].get("duration") or 0)
-        pw, ph = int(v["width"]), int(v["height"])
+        if not dd or not n:
+            n, dd = 30, 1
+        r["fps_num"], r["fps_den"] = n, dd
+        pfps = n / dd
+        pdur = float(v.get("duration") or d["format"].get("duration") or 0)
+        r["frames"] = int(v.get("nb_frames") or round(pdur * pfps))
+        r["w"], r["h"] = int(v["width"]), int(v["height"])
     except Exception as e:  # noqa: BLE001
         r["why"] = f"읽기 실패 {str(e)[-80:]}"
         return r
-    sdur = src.frames / float(src.fps)
-    tol = 1.0 / max(1.0, r["fps"]) + 1.0 / float(src.fps) + 0.002
-    if abs(r["dur"] - sdur) > tol:
-        r["why"] = f"길이 다름 {r['dur']:.3f}/{sdur:.3f}초"
+    sfps = float(src.fps)
+    sdur = src.frames / sfps
+    if abs(pdur - sdur) > 1.0 / max(1.0, pfps) + 1.0 / sfps + 0.002:
+        r["why"] = f"길이 다름 {pdur:.3f}/{sdur:.3f}초"
         return r
-    if src.width and src.height and abs(pw / ph - src.width / src.height) > 0.02 * (src.width / src.height):
-        r["why"] = f"비율 다름 {pw}x{ph}"
+    if src.width and src.height and abs(r["w"] / r["h"] - src.width / src.height) > 0.02 * (src.width / src.height):
+        r["why"] = f"비율 다름 {r['w']}x{r['h']}"
         return r
+    ratio = max(1, int(round(sfps / pfps)))
+    r["ratio"] = ratio
     ref = lut_ref(lut) if lut else None
-    t = sdur * 0.5
-    a = _tiny(src.path, t, ref)
-    b = _tiny(r["path"], t, None)
-    if a is None or b is None:
-        r["why"] = "디코딩 실패" if b is None else "원본 프레임 실패"
+    npv = max(3, min(PREVIEW_N, r["frames"]))
+
+    def window(frac):
+        t0 = max(0.0, min(sdur * frac - npv / pfps / 2, pdur - (npv + 0.5) / pfps))
+        return _pv_win(r["path"], t0, npv, pfps, ref), _pv_win(src.path, t0, npv * ratio + 4, sfps, ref)
+
+    try:
+        L, O = window(0.5)
+    except Exception as e:  # noqa: BLE001
+        r["why"] = f"디코딩 실패 {str(e)[-120:]}"
         return r
-    def dif(x, y):          # 화소별 평균 차의 중앙값 → 움직이는 작은 부분·압축 차이는 덜 탐(색 차이는 화면 전체라 그대로 잡힘)
-        import numpy as np
-        return float(np.median(abs(x - y).mean(axis=2)))
-    diffs = {"raw": dif(a, b)}
-    if ref:
-        c = _tiny(r["path"], t, ref)
-        if c is not None:
-            diffs["lut"] = dif(a, c)
-    r["shift"] = _align(src, r["path"], r["fps"])
+    R = {j: (o[1] if ref else o[0]) for j, o in O.items()}          # 기준 = 원본(+LUT)
+    cands = {"raw": 0, "lut": 1} if ref else {"raw": 0}
+    diffs = {}
+    for c, ci in cands.items():
+        m = []
+        for k, lf in L.items():
+            js = [ratio * k + j for j in range(ratio)]
+            if all(j in R for j in js) and lf[ci] is not None:
+                m.append(min(_dif(lf[ci], R[j]) for j in js))
+        if len(m) >= 3:
+            import statistics
+            diffs[c] = statistics.median(m)
+    if not diffs:
+        r["why"] = "비교할 프레임 없음"
+        return r
     best = min(diffs, key=diffs.get)
     r["diff"] = round(diffs[best], 1)
-    other = max(diffs.values()) if len(diffs) > 1 else None
     if diffs[best] > PREVIEW_DIFF:
-        r["why"] = f"색 다름 {diffs}"
+        r["why"] = f"색 다름 {({k: round(x, 1) for k, x in diffs.items()})}"
         return r
-    if other is not None and diffs[best] > 0.6 * other:
-        r["why"] = f"색 판정 애매 {diffs}"
+    if len(diffs) > 1 and diffs[best] > 0.6 * max(diffs.values()):
+        r["why"] = f"색 판정 애매 {({k: round(x, 1) for k, x in diffs.items()})}"
         return r
-    r["ok"], r["color"] = True, best
+    r["color"] = best
+    if ratio > 1 and shift_hint is not None:          # 같은 영상을 다른 LUT 로 이미 판정 = 시점은 같음
+        r["shift"] = int(shift_hint)
+    elif ratio > 1:
+        ci = cands[best]
+        votes = [0] * ratio
+
+        def vote(L, R):
+            for k, lf in L.items():
+                js = [ratio * k + j for j in range(ratio)]
+                if not all(j in R for j in js):
+                    continue
+                d = [float(abs(lf[ci] - R[j]).mean()) for j in js]      # 시점은 평균 차(움직임이 화면 일부여도 잡힘)
+                srt = sorted(d)
+                if srt[0] < 0.77 * srt[1]:                       # 확실히 가까운 것만 셈
+                    votes[d.index(srt[0])] += 1
+
+        def decided():
+            mx = max(votes)
+            return mx >= 5 and mx >= 3 * (sum(votes) - mx)
+        vote(L, R)
+        for frac in (0.25, 0.75):
+            if decided():
+                break
+            try:
+                L2, O2 = window(frac)
+            except Exception:  # noqa: BLE001
+                continue
+            vote(L2, {j: (o[1] if ref else o[0]) for j, o in O2.items()})
+        r["shift"] = votes.index(max(votes)) if max(votes) >= 5 else 0
+    r["ok"] = True
+    r["sec"] = round(_t.monotonic() - t_start, 2)
     return r
 
 
-PREVIEW_DIFF = 10.0
+# 판정 결과 저장(v0.16.22): 영상 파일(경로·크기·수정 시각) + LUT 마다 한 번. cache/preview_judge.json 에도(다음 실행)
+_pv_cache: dict = {}
+_pv_lock = threading.Lock()
+_pv_locks: dict = {}
+_pv_loaded = False
 
 
-def _align(src: Source, pv_path: str, pv_fps: float) -> int:
-    """프리뷰 k번째(시각 k/pv_fps)가 원본 몇 번째와 같은 화면인지 = ratio·k + shift 의 shift(0..ratio-1).
-    영상 중간 → 1/4 → 3/4 지점에서 프리뷰 15장씩(키프레임 시크 + 실제 pts 로 짝 맞춤) 비교해 확실한 표가 6개 이상 나오면 결정.
-    실물 DJI(2026-11-08): 영상마다 0 또는 1. 끝까지 판단 안 되면(움직임 없음) 0 — 그런 화면은 어긋나도 티가 안 남."""
-    import re
-    import numpy as np
-    ratio = max(1, int(round(float(src.fps) / max(1.0, pv_fps))))
-    if ratio == 1:
-        return 0
-    fs = float(src.fps)
-    dur = src.frames / fs
+def preview_enabled() -> bool:
+    """⚙ 렌더 설정 '프리뷰 파일'(기본 사용)."""
+    if not PREVIEW_USE:
+        return False
+    try:
+        from .project import get_setting
+        return str(get_setting("use_preview", 1)) not in ("0", "False", "false", "")
+    except Exception:  # noqa: BLE001
+        return True
 
-    def grab(p, t0, n):
-        cmd = [paths.ffmpeg(), "-hide_banner", "-copyts", "-ss", f"{t0:.3f}", "-i", _abs(p), "-map", "0:v:0", "-frames:v", str(n),
-               "-vf", "showinfo,scale=96:54:flags=area,format=rgb24", "-fps_mode", "passthrough", "-f", "rawvideo", "-"]
-        pr = _popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        out, err = pr.communicate()
-        ts = [float(x) for x in re.findall(rb"pts_time:\s*([-0-9.]+)", err)]
-        fr = np.frombuffer(out, np.uint8).reshape(-1, 54, 96, 3).astype(np.float32)
-        return {int(round(t * (fs if p == src.path else pv_fps))): fr[i] for i, t in enumerate(ts[:len(fr)])}
 
-    votes = [0] * ratio
-    for frac in (0.5, 0.25, 0.75):
-        t0 = max(0.0, dur * frac - 0.25)
-        try:
-            L, O = grab(pv_path, t0, 15), grab(src.path, t0, 15 * ratio + 4)
-        except Exception:  # noqa: BLE001
-            continue
-        for k, lf in L.items():
-            d = [float(abs(lf - O[j]).mean()) if j in O else None for j in range(ratio * k, ratio * k + ratio)]
-            if None in d:
-                continue
-            srt = sorted(d)
-            if srt[0] < 0.77 * srt[1]:                       # 확실히 가까운 것만 셈
-                votes[d.index(srt[0])] += 1
-        if max(votes) >= 6 and max(votes) >= 3 * (sum(votes) - max(votes)):
-            return votes.index(max(votes))
-    return votes.index(max(votes)) if max(votes) >= 6 else 0
+def _pv_key(src: Source, lut: str) -> str:
+    st = os.stat(src.path)
+    return f"{os.path.abspath(src.path)}|{st.st_size}|{int(st.st_mtime)}|{lut or ''}"
+
+
+def _pv_file() -> Path:
+    return paths.cache_dir() / "preview_judge.json"
+
+
+def _pv_load():
+    global _pv_loaded
+    if _pv_loaded:
+        return
+    _pv_loaded = True
+    try:
+        _pv_cache.update(json.loads(_pv_file().read_text(encoding="utf-8")))
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _pv_save():
+    try:
+        tmp = _pv_file().with_suffix(".tmp")
+        tmp.write_text(json.dumps(_pv_cache, ensure_ascii=False), encoding="utf-8")
+        replace_retry(tmp, _pv_file())
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def preview_info(src: Source, lut: str, judge: bool = True) -> dict | None:
+    """쓸 수 있는 프리뷰 판정 결과(없거나 안 맞거나 꺼짐 = None). judge=False = 저장된 결과만(판정 안 함, 멈춘 화면용).
+    같은 영상·LUT 를 동시에 판정하지 않음(프록시·AUTO 가 같이 불러도 한 번)."""
+    if not preview_enabled():
+        return None
+    try:
+        key = _pv_key(src, lut)
+    except OSError:
+        return None
+    with _pv_lock:
+        _pv_load()
+        hit = _pv_cache.get(key)
+        if hit is not None or not judge:
+            return hit if (hit and hit.get("ok") and Path(hit["path"]).exists()) else None
+        lk = _pv_locks.setdefault(key, threading.Lock())
+    with lk:
+        with _pv_lock:
+            hit = _pv_cache.get(key)
+        if hit is None:
+            base = key.rsplit("|", 1)[0] + "|"
+            with _pv_lock:
+                hint = next((v.get("shift") for k2, v in _pv_cache.items() if k2.startswith(base) and v.get("ok")), None)
+            hit = check_preview(src, lut or "", shift_hint=hint)
+            if hit["why"] != "없음":
+                name = Path(src.path).name
+                if hit["ok"]:
+                    log_error("프리뷰 판정", f"{name}: 사용 {Path(hit['path']).suffix[1:].upper()} {hit['w']}x{hit['h']} "
+                                         f"{hit['fps_num'] / hit['fps_den']:.2f}fps · 색 {hit['color']} · 시점 +{hit['shift']} "
+                                         f"· 차 {hit['diff']} · {hit['sec']}초")
+                else:
+                    log_error("프리뷰 판정", f"{name}: 안 씀(원본) — {hit['why']}")
+            with _pv_lock:
+                _pv_cache[key] = hit
+                _pv_save()
+    return hit if hit.get("ok") else None
+
+
+def preview_pos(pv: dict, frame: int) -> int:
+    """원본 프레임 → 같은(또는 바로 앞) 화면인 프리뷰 프레임 번호."""
+    k = (frame - int(pv.get("shift", 0))) // max(1, int(pv.get("ratio", 1)))
+    return max(0, min(max(0, int(pv.get("frames", 1)) - 1), k))
+
+
+def preview_fps(pv: dict) -> Fraction:
+    return Fraction(int(pv["fps_num"]), int(pv["fps_den"]))
 
 
 def _proxy_from_preview(src: Source, lut: str, pv: dict, tmp: Path, pw: int, ph: int, on_progress, cancel) -> None:
@@ -845,30 +969,28 @@ def make_proxy(src: Source, lut: str, gpu: bool, on_progress=None, cancel=None) 
         tries.append(("GPU 디코딩", ["-hwaccel", "cuda"], [f"scale={pw}:{ph}:flags=bilinear"]))
     tries.append(("CPU", [], [f"scale={pw}:{ph}:flags=bilinear"]))
     dur = src.frames / float(src.fps)
-    if PREVIEW_USE:                                   # 카메라 프리뷰(LRF 등)가 맞으면 그걸로(실패하면 아래 원본 방식)
-        pv = None
-        t0 = time.monotonic()
+    pv = None
+    try:
+        pv = preview_info(src, lut or "")            # 카메라 프리뷰(LRF 등): 판정 통과면 그걸로(결과 저장, 영상·LUT 마다 한 번)
+    except Exception as e:  # noqa: BLE001
+        log_error("프리뷰 판정 실패 → 원본", f"{Path(src.path).name}: {str(e)[-300:]}")
+    if pv:
         try:
-            pv = check_preview(src, lut or "")
-            if pv["ok"]:
-                t1 = time.monotonic()
-                _proxy_from_preview(src, lut or "", pv, tmp, pw, ph, on_progress, cancel)
-                n = frame_count(str(tmp))
-                if abs(n - src.frames) > 1:
-                    raise FFError(f"프레임 수 다름 {n}/{src.frames}")
-                log_error("프록시", f"{Path(src.path).name} 프리뷰({Path(pv['path']).suffix[1:].upper()}, {pv['fps']:.2f}fps, "
-                                   f"색 {pv['color']}, 차 {pv['diff']}, 시점 +{pv.get('shift', 0)}) 판정 {t1 - t0:.1f}초 + 만들기 {time.monotonic() - t1:.1f}초 "
-                                   f"(영상 {dur:.0f}초)")
-                replace_retry(tmp, out)
-                return str(out)
-            if pv["why"] != "없음":
-                log_error("프리뷰 안 씀 → 원본", f"{Path(src.path).name}: {pv['why']}")
+            t1 = time.monotonic()
+            _proxy_from_preview(src, lut or "", pv, tmp, pw, ph, on_progress, cancel)
+            n = frame_count(str(tmp))
+            if abs(n - src.frames) > 1:
+                raise FFError(f"프레임 수 다름 {n}/{src.frames}")
+            log_error("프록시", f"{Path(src.path).name} 프리뷰({Path(pv['path']).suffix[1:].upper()}) "
+                               f"{time.monotonic() - t1:.1f}초 (영상 {dur:.0f}초)")
+            replace_retry(tmp, out)
+            return str(out)
         except Cancelled:
             raise
         except Exception as e:  # noqa: BLE001
             if cancel is not None and cancel.is_set():
                 raise
-            log_error("프리뷰 실패 → 원본", f"{Path(src.path).name}: {str(e)[-300:]}")
+            log_error("프리뷰 프록시 실패 → 원본", f"{Path(src.path).name}: {str(e)[-300:]}")
     last = None
     for i, (name, hw, pre) in enumerate(tries):
         cmd = [paths.ffmpeg(), "-y", *hw, "-i", _abs(src.path), "-map", "0:v:0", "-vf", ",".join(pre + color + [TO_YUV709]), *tail]
@@ -999,6 +1121,44 @@ def cached_frame(src: Source, frame: int, gpu: bool = False) -> CachedFrame:
             while len(_frame_cache) > _FRAME_CACHE_MAX:
                 _frame_cache.pop(next(iter(_frame_cache)))
         return c
+
+
+def frame_ready(src: Source, frame: int) -> bool:
+    """원본 보정 화면 입력이 이미 메모리에 있음(디코딩 없이 바로) = 프리뷰 먼저 보이기 필요 없음."""
+    key = f"{os.path.abspath(src.path)}|{frame}"
+    with _cache_lock:
+        if key in _frame_cache:
+            return True
+    return range_lookup(src.path, frame - min(PREVIEW_LEAD, frame), frame) is not None
+
+
+def cached_frame_preview(src: Source, frame: int, pv: dict) -> CachedFrame:
+    """멈춘 화면 먼저 보이기(v0.16.22): 카메라 프리뷰(LRF 등)에서 같은(또는 바로 앞) 화면 + 앞 2장 → 1280 폭 10bit.
+    H.264 720p 라 원본 4K 보다 훨씬 빠름. 화질(디테일·계조)은 원본보다 낮아 곧 원본으로 바뀜."""
+    k = preview_pos(pv, frame)
+    key = f"pv|{os.path.abspath(pv['path'])}|{k}"
+    with _cache_lock:
+        c = _frame_cache.get(key)
+    if c is not None:
+        return c
+    lead = min(2, k)
+    data = run([paths.ffmpeg(), "-v", "error", "-ss", _seek(k - lead, preview_fps(pv)), "-i", _abs(pv["path"]),
+                "-frames:v", str(lead + 1), "-an", "-vf", "scale=1280:-2:flags=bicubic,format=yuv420p10le",
+                "-c:v", "ffv1", "-f", "nut", "-"])
+    ch = int(round(1280 * pv["h"] / pv["w"] / 2)) * 2
+    c = CachedFrame(data, lead, (1280, ch))
+    with _cache_lock:
+        _frame_cache[key] = c
+        while len(_frame_cache) > _FRAME_CACHE_MAX:
+            _frame_cache.pop(next(iter(_frame_cache)))
+    return c
+
+
+def preview_grade(g: dict | None, pv: dict) -> dict | None:
+    """프리뷰가 이미 709(색 raw)면 LUT 빼고 같은 보정."""
+    if g is None or pv.get("color") == "lut":
+        return g
+    return {**g, "lut": ""}
 
 
 def lut_only(g: dict | None) -> dict:
