@@ -824,7 +824,7 @@ class AutoDialog(DragMove, QDialog):
         for r in self.rows:
             w = self.state.work.get(r.sid)
             if r.checked and r.result is None and not r.error:
-                if 0 < r.prog < 1:                       # 버튼 전부터 조용히 돌던 것 = 지금 진행률로 바로 표시
+                if getattr(r, "running", False) and r.prog < 1:   # 버튼 전부터 조용히 돌던 것 = 지금 진행률로 바로 표시
                     self.state.set_work(r.sid, "analyze", r.prog)
                 elif not (w and w[0] == "analyze" and w[1] >= 0):
                     self.state.set_work(r.sid, "analyze", -1)
@@ -841,9 +841,9 @@ class AutoDialog(DragMove, QDialog):
             if not r.checked or s is None or not s.frames or r.result is not None or r.prog > 0 or r.error:
                 continue
             lut = self.row_lut(r)
-            r.prog = 0.01
+            r.prog = 0.01                               # 넣음 표시(내부용)
             if self.armed:
-                self.state.set_work(r.sid, "analyze", 0.01)
+                self.state.set_work(r.sid, "analyze", -1)    # v0.16.24: 차례 기다림 = '분석 대기'(시작하면 grab_samples 가 1%)
 
             def done(_smp, r=r):
                 r.prog = 1.0
@@ -858,7 +858,7 @@ class AutoDialog(DragMove, QDialog):
             def err(msg, r=r):
                 ff.log_error("AUTO 분석", msg)
                 if msg != "취소됨" and not getattr(r, "retried", False):
-                    r.retried, r.prog = True, 0.0
+                    r.retried, r.prog, r.running = True, 0.0, False
                     if self.armed:
                         self.state.set_work(r.sid, "analyze", -1)
                     QTimer.singleShot(800, self.analyze_all)
@@ -869,6 +869,7 @@ class AutoDialog(DragMove, QDialog):
                 self._progress()
 
             def prog(v, r=r):
+                r.running = True                        # 실제로 시작함(그 전엔 '분석 대기')
                 r.prog = max(0.01, min(0.99, v))
                 if self.armed:                          # 버튼 전 = 조용히(줄·왼쪽 아래 표시 없음)
                     self.state.set_work(r.sid, "analyze", r.prog)
@@ -894,7 +895,7 @@ class AutoDialog(DragMove, QDialog):
         bad = [r for _i, r in rows if st.get(r.sid) in SG.ERRORS]
         adone = sum(1 for _i, r in rows if r.result is not None or r.error)
         if self.armed:
-            cur = next(((i, r.prog) for i, r in rows if 0 < r.prog < 1), None)
+            cur = next(((i, r.prog) for i, r in rows if getattr(r, "running", False) and r.prog < 1), None)
             if adone < n or cur:
                 parts.append(f"분석 {adone}/{n}" + (f" ({cur[0]}번 {int(cur[1] * 100)}%)" if cur else ""))
                 kind, val = "analyze", sum(min(1.0, r.prog) for _i, r in rows) / n

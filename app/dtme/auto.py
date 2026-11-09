@@ -6,6 +6,9 @@ AI 가 아닌 색 통계 휴리스틱이다. 출발점 용도.
 """
 from __future__ import annotations
 
+import subprocess
+from pathlib import Path
+
 import numpy as np
 
 from . import ff, paths
@@ -147,7 +150,7 @@ def grab_small(src: Source, frame: int, lut: str, gpu: bool = False, w: int = SA
     path, seek, use_lut = src.path, ff._seek(frame, src.fps), lut
     if use_preview:
         try:
-            pv = ff.preview_info(src, lut)
+            pv = ff.preview_for_analysis(src, lut)      # v0.16.24: 시점 판정 안 기다림(색만)
         except Exception:  # noqa: BLE001
             pv = None
         if pv and pv.get("w", 0) >= ff.PREVIEW_MIN_W_AUTO:
@@ -158,7 +161,7 @@ def grab_small(src: Source, frame: int, lut: str, gpu: bool = False, w: int = SA
     if ref:
         vf.append(f"lut3d=file={ref[1]}:interp=tetrahedral")
     vf.append("format=rgb24")
-    cmd = [paths.ffmpeg(), "-v", "error", *ff._hw(gpu), "-ss", seek, "-i", ff._abs(path),
+    cmd = [paths.ffmpeg(), "-v", "error", "-ss", seek, "-i", ff._abs(path),        # v0.16.24: 1장 = CPU(gpu 무시)
            "-frames:v", "1", "-an", "-vf", ",".join(vf), "-f", "rawvideo", "-"]
     try:
         raw = ff.run(cmd, cwd=ref[0] if ref else None)
@@ -171,17 +174,79 @@ def grab_small(src: Source, frame: int, lut: str, gpu: bool = False, w: int = SA
     return np.frombuffer(raw[:w * h * 3], np.uint8).reshape(h, w, 3).astype(np.float32) / 255.0
 
 
+def grab_samples_preview(src: Source, lut: str, pv: dict, frames: list[int]) -> list[tuple[int, np.ndarray]] | None:
+    """v0.16.24: 프리뷰(LRF)를 ffmpeg 한 번으로 — 구간만 읽고 기준 프레임(키프레임)만 디코딩 → 샘플마다 가장 가까운 것.
+    이전(장마다 ffmpeg 1번·정확한 위치) 대비 이 환경 3.4 → 0.2초, HDD 에서 파일 열기·건너뛰기가 12번 → 1번.
+    한계: 샘플 위치가 가장 가까운 기준 프레임(DJI LRF ≈1초 간격 → 최대 ≈0.5초 차). 기준 프레임이 없으면 None."""
+    import re
+    if not frames:
+        return []
+    sfps = float(src.fps)
+    t_a = max(0.0, min(frames) / sfps - 2.0)
+    t_b = max(frames) / sfps + 2.0
+    ref = ff.lut_ref(lut) if (lut and pv.get("color") == "lut") else None
+    vf = ["showinfo", f"scale={SAMPLE_W}:-2:flags=bilinear", "format=gbrp16le"]
+    if ref:
+        vf.append(f"lut3d=file={ref[1]}:interp=tetrahedral")
+    vf.append("format=rgb24")
+    cmd = [paths.ffmpeg(), "-hide_banner", "-v", "info", "-skip_frame", "nokey", "-ss", f"{t_a:.3f}", "-to", f"{t_b:.3f}",
+           "-copyts", "-i", ff._abs(pv["path"]), "-an", "-vf", ",".join(vf), "-fps_mode", "passthrough",
+           "-f", "rawvideo", "-"]
+    with ff._slots(cmd):
+        pr = ff._popen(cmd, cwd=ref[0] if ref else None, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        raw, err = pr.communicate()
+    if pr.returncode != 0:
+        if ff._closing.is_set():
+            raise ff.Cancelled()
+        raise ff.FFError(err.decode("utf-8", "replace")[-300:])
+    ts = [float(x) for x in re.findall(rb"pts_time:\s*([-0-9.]+)", err)]
+    w = SAMPLE_W
+    h = int(round(w * pv["h"] / pv["w"] / 2)) * 2
+    n = min(len(ts), len(raw) // (w * h * 3))
+    if n == 0:
+        return None
+    imgs = np.frombuffer(raw[:n * w * h * 3], np.uint8).reshape(n, h, w, 3)
+    out = []
+    for f in frames:
+        t = f / sfps
+        k = min(range(n), key=lambda i: abs(ts[i] - t))
+        out.append((f, imgs[k].astype(np.float32) / 255.0))
+    return out
+
+
 def grab_samples(src: Source, lut: str, gpu: bool = False, frames: list[int] | None = None,
                  cancel=None, on_progress=None, use_preview: bool = True) -> list[tuple[int, np.ndarray]]:
-    """AUTO 분석 샘플. use_preview = 카메라 프리뷰가 맞으면 그걸로(grab_small)."""
-    out = []
+    """AUTO 분석 샘플. use_preview = 카메라 프리뷰가 맞으면 그걸로(한 번에), 아니면 원본에서 장마다.
+    걸린 시간·자리 대기를 cache/dtme.log 에(v0.16.24)."""
+    import time
+    t0, w0 = time.monotonic(), ff.waited()
+    if on_progress:
+        on_progress(0.01)                        # 실제로 시작함(대기열에서는 '분석 대기')
     frames = frames if frames is not None else sample_frames(src, a=src.io[0], b=src.io[1])
-    for i, f in enumerate(frames):
-        if cancel is not None and cancel.is_set():
-            raise ff.Cancelled()
-        out.append((f, grab_small(src, f, lut, gpu, use_preview=use_preview)))
-        if on_progress:
-            on_progress((i + 1) / len(frames))
+    how, out = "원본", None
+    if use_preview:
+        try:
+            pv = ff.preview_for_analysis(src, lut)
+            if pv and pv.get("w", 0) >= ff.PREVIEW_MIN_W_AUTO:
+                out = grab_samples_preview(src, lut, pv, frames)
+                how = f"프리뷰({Path(pv['path']).suffix[1:].upper()}, 색 {pv.get('why') or '확인'})"
+        except ff.Cancelled:
+            raise
+        except Exception as e:  # noqa: BLE001
+            ff.log_error("분석 프리뷰 실패 → 원본", f"{Path(src.path).name}: {str(e)[-200:]}")
+            out = None
+    if out is None:
+        how, out = "원본", []
+        for i, f in enumerate(frames):
+            if cancel is not None and cancel.is_set():
+                raise ff.Cancelled()
+            out.append((f, grab_small(src, f, lut, gpu, use_preview=False)))
+            if on_progress:
+                on_progress((i + 1) / len(frames))
+    if on_progress:
+        on_progress(1.0)
+    ff.log_info(f"분석 샘플 {Path(src.path).name}: {how} {len(out)}장 {time.monotonic() - t0:.1f}초 "
+                f"(자리 대기 {ff.waited() - w0:.1f}초)")
     return out
 
 

@@ -23,6 +23,7 @@ class Job(QRunnable):
         self.cancel = threading.Event()
         self.signals = JobSignals()
         self.started = False
+        self.prio = 0              # 디스크·GPU 자리 우선순위(작을수록 먼저, submit 이 풀에 따라 정함 — ff.Gate)
 
     def _emit(self, sig, *a):
         try:
@@ -32,6 +33,8 @@ class Job(QRunnable):
 
     def run(self):
         self.started = True
+        from . import ff
+        ff.set_prio(self.prio)
         try:
             r = self.fn(lambda v: self._emit(self.signals.progress, v), self.cancel) if self.with_progress else self.fn()
             self._emit(self.signals.done, r)
@@ -50,11 +53,25 @@ _alive: set = set()
 def submit(pool: QThreadPool, job: Job, priority: int = 0) -> Job:
     """작업이 끝날 때까지 참조를 유지(파이썬 GC 로 신호가 사라지는 것 방지)."""
     job.setAutoDelete(False)
+    job.prio = pool_prio(pool, priority)
     _alive.add(job)
     job.signals.done.connect(lambda *_: _alive.discard(job))
     job.signals.error.connect(lambda *_: _alive.discard(job))
     pool.start(job, priority)
     return job
+
+
+def pool_prio(pool: QThreadPool, priority: int = 0) -> int:
+    """자리 우선순위(v0.16.24): 0 화면(멈춘 화면·스틸 등 사용자가 기다리는 것) · 1 분석 · 2 렌더 · 3 프록시 · 4 뒤에서 미리."""
+    if pool is GRAB_POOL or (pool is PREVIEW_POOL and priority >= 0):
+        return 0
+    if pool in (AUTO_POOL, ANALYZE_POOL):
+        return 1
+    if pool is RENDER_POOL:
+        return 2
+    if pool is PROXY_POOL:
+        return 3
+    return 4
 
 
 def bump(pool: QThreadPool, job: Job, priority: int = 10) -> bool:

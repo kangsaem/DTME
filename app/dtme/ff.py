@@ -17,7 +17,7 @@ from .project import (KEYABLE, OUT_FPS, ImageSource, Marker, Project, Segment, S
                       orig_volume, plan_transitions, reframe_max)
 
 NO_WINDOW = 0x08000000 if os.name == "nt" else 0   # Windows 콘솔창 숨김
-LOW_PRIO = 0x00004000 if os.name == "nt" else 0    # BELOW_NORMAL_PRIORITY_CLASS: 크롬·에펙을 같이 써도 그쪽이 먼저(v0.16.14)
+LOW_PRIO = 0    # v0.16.24: 보통 우선순위(사용자). v0.16.14~23 은 BELOW_NORMAL(0x4000)
 
 def denoise_chain(g: dict) -> list[str]:
     """F안: 밝기·색을 따로. 색은 시간축 평균을 강하게 + 색 채널만 미디언(튀는 점 제거).
@@ -168,6 +168,136 @@ class FFError(Exception):
     pass
 
 
+# ------------------------------------------------------------------ 작업 자리(v0.16.24): 같은 저장장치·GPU 를 동시에 쓰는 ffmpeg 수 제한
+# 이전: 풀(분석·프록시·미리보기·…)마다 따로 세서 HDD 하나를 최대 14개가 동시에 읽음 → 헤드가 오가며 모두 느려짐(사용자 로그: 판정 9.5 → 116초).
+# 이제: ffmpeg 입력 파일의 저장장치마다 자리 수(HDD·SD 2 / 모름 4 / SSD 8, 설정 disk_jobs) + GPU 쓰는 ffmpeg 자리(설정 gpu_jobs, 기본 2).
+# 자리가 나면 우선순위 높은 작업부터: 0 화면(멈춘 화면·스틸) · 1 분석 · 2 렌더 · 3 프록시 · 4 뒤에서 미리.
+# 화면 스레드(메인)에서 부른 ffmpeg 는 기다리지 않음(화면 멈춤 방지).
+import heapq
+import itertools
+import time as _time
+
+_ctx = threading.local()            # prio · waited(이 스레드가 자리를 기다린 시간 합)
+DISK_SLOTS = {"hdd": 2, "removable": 2, "unknown": 4, "ssd": 8}
+GPU_SLOTS = 2
+
+
+def set_prio(p: int) -> None:
+    _ctx.prio = p
+
+
+def waited() -> float:
+    return getattr(_ctx, "waited", 0.0)
+
+
+class Gate:
+    """우선순위 자리표. slot() 안에서만 ffmpeg 실행."""
+
+    def __init__(self, name: str, n: int):
+        self.name, self.n, self.used = name, n, 0
+        self.cv = threading.Condition()
+        self.q: list = []
+        self._seq = itertools.count()
+
+    def acquire(self, prio: int) -> None:
+        t = (prio, next(self._seq))
+        t0 = _time.monotonic()
+        with self.cv:
+            heapq.heappush(self.q, t)
+            try:
+                while not (self.used < self.n and self.q[0] == t):
+                    if _closing.is_set():
+                        raise Cancelled()
+                    self.cv.wait(0.25)
+            except BaseException:
+                self.q.remove(t)
+                heapq.heapify(self.q)
+                self.cv.notify_all()
+                raise
+            heapq.heappop(self.q)
+            self.used += 1
+            self.cv.notify_all()
+        _ctx.waited = waited() + (_time.monotonic() - t0)
+
+    def release(self) -> None:
+        with self.cv:
+            self.used -= 1
+            self.cv.notify_all()
+
+
+_gates: dict = {}
+_gates_lock = threading.Lock()
+
+
+def _setting_int(key: str, default: int) -> int:
+    try:
+        from .project import get_setting
+        return int(get_setting(key, 0) or 0) or default
+    except Exception:  # noqa: BLE001
+        return default
+
+
+def _disk_id(path: str) -> tuple[str, str] | None:
+    """(장치 이름, 종류). 파일이 아니면 None."""
+    try:
+        if not os.path.isfile(path):
+            return None
+        from . import drives
+        did = drives._drive_root(path) if os.name == "nt" else str(os.stat(path).st_dev)
+        return did, drives.kind(path)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _gate(key: str, n: int) -> Gate:
+    with _gates_lock:
+        g = _gates.get(key)
+        if g is None:
+            g = _gates[key] = Gate(key, n)
+        return g
+
+
+def _gates_for(cmd) -> list:
+    """이 ffmpeg 가 차지할 자리들(정해진 순서 = 서로 기다리며 멈추는 일 없음): GPU → 저장장치들."""
+    if threading.current_thread() is threading.main_thread():
+        return []
+    cmd = list(cmd)
+    out = []
+    if "-hwaccel" in cmd or any(str(c).endswith("_nvenc") for c in cmd):
+        out.append(_gate("gpu", _setting_int("gpu_jobs", GPU_SLOTS)))
+    disks = {}
+    for i, c in enumerate(cmd[:-1]):
+        if c == "-i" and not (i >= 2 and cmd[i - 2] == "-f" and cmd[i - 1] == "lavfi"):
+            d = _disk_id(str(cmd[i + 1]))
+            if d:
+                disks[d[0]] = d[1]
+    for did in sorted(disks):
+        out.append(_gate("disk:" + did, _setting_int("disk_jobs", DISK_SLOTS.get(disks[did], 4))))
+    return out
+
+
+class _slots:
+    def __init__(self, cmd):
+        self.gs = _gates_for(cmd)
+        self.got = []
+
+    def __enter__(self):
+        prio = getattr(_ctx, "prio", 0)
+        try:
+            for g in self.gs:
+                g.acquire(prio)
+                self.got.append(g)
+        except BaseException:
+            self.__exit__()
+            raise
+        return self
+
+    def __exit__(self, *a):
+        for g in reversed(self.got):
+            g.release()
+        self.got = []
+
+
 # ------------------------------------------------------------------ 실행
 def _popen(cmd, **kw):
     """ffmpeg 이 키 입력(stdin)을 기다리며 멈추는 일 방지(Windows GUI 에서 렌더가 멈추던 원인): -nostdin + 입력 차단."""
@@ -197,13 +327,14 @@ def _popen(cmd, **kw):
 
 def run(cmd: list[str], cwd: str | None = None, data: bytes | None = None) -> bytes:
     """data 가 있으면 stdin 으로 넘김(미리보기: 디스크 파일 없이)."""
-    if data is not None:
-        cmd = [c for c in cmd]
-        p = _popen(cmd, cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        out, err = p.communicate(data)
-    else:
-        p = _popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        out, err = p.communicate()
+    with _slots(cmd):
+        if data is not None:
+            cmd = [c for c in cmd]
+            p = _popen(cmd, cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            out, err = p.communicate(data)
+        else:
+            p = _popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            out, err = p.communicate()
     if p.returncode != 0:
         if _closing.is_set():
             raise Cancelled()
@@ -215,6 +346,11 @@ def run_progress(cmd: list[str], total_sec: float, on_progress: Callable[[float]
                  cancel: threading.Event | None = None, cwd: str | None = None) -> None:
     """-progress pipe:1 로 진행률(0~1)을 보고하며 실행."""
     cmd = [cmd[0], "-hide_banner", "-nostats", "-progress", "pipe:1"] + cmd[1:]
+    with _slots(cmd):
+        _run_progress(cmd, total_sec, on_progress, cancel, cwd)
+
+
+def _run_progress(cmd, total_sec, on_progress, cancel, cwd) -> None:
     errf = tempfile.TemporaryFile()
     p = _popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=errf, text=True)
     try:
@@ -274,6 +410,8 @@ def _abs(p) -> str:
 
 
 def _hw(gpu: bool) -> list[str]:
+    """GPU 디코딩. v0.16.24: 4K 원본을 길게 읽는 작업(렌더·원본 프록시·흔들림 분석·원본 구간 캐시)에만.
+    사진 1장·작은 영상은 CPU(ffmpeg 마다 CUDA 준비 비용이 더 크고 화면이 끊기던 원인으로 추정)."""
     return ["-hwaccel", "cuda"] if gpu else []
 
 
@@ -792,8 +930,9 @@ def _pv_win(path: str, t0: float, n: int, fps: float, ref: tuple | None) -> dict
         fc = f"[0:v:0]showinfo,scale={w}:{h}:flags=area,format=rgb24[o]"
     cmd = [paths.ffmpeg(), "-hide_banner", "-copyts", "-ss", f"{max(0.0, t0):.3f}", "-i", _abs(path),
            "-filter_complex", fc, "-map", "[o]", "-frames:v", str(n), "-fps_mode", "passthrough", "-f", "rawvideo", "-"]
-    pr = _popen(cmd, cwd=ref[0] if ref else None, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    out, err = pr.communicate()
+    with _slots(cmd):
+        pr = _popen(cmd, cwd=ref[0] if ref else None, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        out, err = pr.communicate()
     if pr.returncode != 0:
         if _closing.is_set():
             raise Cancelled()
@@ -813,14 +952,16 @@ def _dif(x, y) -> float:
     return float(np.median(abs(x - y).mean(axis=2)))
 
 
-def check_preview(src: Source, lut: str, pv: str | None = None, shift_hint: int | None = None) -> dict:
+def check_preview(src: Source, lut: str, pv: str | None = None, shift_hint: int | None = None,
+                  color_only: bool = False) -> dict:
     """프리뷰 판정(v0.16.22: 원본을 한 번만 읽음). 반환 {"path","ok","why","color":"raw"|"lut","shift","ratio",
     "fps_num","fps_den","frames","w","h","diff","sec"}.
     1) 파일 정보: 디코딩 · 길이 차 ≤ 프리뷰 1프레임 + 원본 1프레임 · 가로세로 비 차 ≤ 2%
     2) 영상 가운데에서 프리뷰 8장 ↔ 원본 8·ratio+4장(같은 디코딩에서 LUT 입힌 것도). 기준 = 원본(+요청 LUT)
        색: 프리뷰 그대로 / +LUT 각각 (장마다 짝 후보 중 가장 가까운 차)의 중앙값 → 작은 쪽 ≤ PREVIEW_DIFF, 다른 쪽의 60% 이하
        시점: 그 색으로 프리뷰 k ↔ 원본 ratio·k+j(j=0..ratio-1) 중 확실히 가까운 j 에 표(DJI 실물 = 영상마다 0 또는 1)
-    3) 표가 모자라면 1/4·3/4 지점에서 더(시점만). 끝까지 모자라면 0."""
+    3) 표가 모자라면 1/4·3/4 지점에서 더(시점만). 끝까지 모자라면 0.
+    color_only(v0.16.24, AUTO 분석용) = 2)의 색까지만(시점 안 잼, shift 0)."""
     import time as _t
     t_start = _t.monotonic()
     r = {"path": pv or find_preview(src.path), "ok": False, "why": "", "color": "", "shift": 0, "ratio": 1,
@@ -889,6 +1030,10 @@ def check_preview(src: Source, lut: str, pv: str | None = None, shift_hint: int 
         r["why"] = f"색 판정 애매 {({k: round(x, 1) for k, x in diffs.items()})}"
         return r
     r["color"] = best
+    if color_only:
+        r["ok"] = True
+        r["sec"] = round(_t.monotonic() - t_start, 2)
+        return r
     if ratio > 1 and shift_hint is not None:          # 같은 영상을 다른 LUT 로 이미 판정 = 시점은 같음
         r["shift"] = int(shift_hint)
     elif ratio > 1:
@@ -992,19 +1137,117 @@ def preview_info(src: Source, lut: str, judge: bool = True) -> dict | None:
             base = key.rsplit("|", 1)[0] + "|"
             with _pv_lock:
                 hint = next((v.get("shift") for k2, v in _pv_cache.items() if k2.startswith(base) and v.get("ok")), None)
+            w0 = waited()
             hit = check_preview(src, lut or "", shift_hint=hint)
             if hit["why"] != "없음":
                 name = Path(src.path).name
                 if hit["ok"]:
+                    _batch_seen.add(key)
+                    _batch_note(src, lut or "", hit)
                     log_error("프리뷰 판정", f"{name}: 사용 {Path(hit['path']).suffix[1:].upper()} {hit['w']}x{hit['h']} "
                                          f"{hit['fps_num'] / hit['fps_den']:.2f}fps · 색 {hit['color']} · 시점 +{hit['shift']} "
-                                         f"· 차 {hit['diff']} · {hit['sec']}초")
+                                         f"· 차 {hit['diff']} · {hit['sec']}초 (자리 대기 {waited() - w0:.1f}초)")
                 else:
                     log_error("프리뷰 판정", f"{name}: 안 씀(원본) — {hit['why']}")
             with _pv_lock:
                 _pv_cache[key] = hit
                 _pv_save()
     return hit if hit.get("ok") else None
+
+
+# ------------------------------------------------------------------ AUTO 분석용 프리뷰(v0.16.24): 시점 판정을 기다리지 않음
+# 사용자 로그: 판정 29개 모두 같은 결과(색 lut, 차 1.3~2.0), 다른 것은 시점(0/1)뿐 → 시점은 분석에 필요 없음(색 통계).
+# 같은 묶음(폴더 · LUT · 프리뷰 크기·fps · 원본 크기·fps)에서 색을 두 번 확인해 같으면 나머지는 파일 정보(길이·비율)만 확인.
+# 묶음 안에서 색이 엇갈리면 그 묶음은 영상마다 색 확인. 전체 판정(시점 포함)은 프록시 만들 때(우선순위 낮음).
+BATCH_CONFIRM = 2
+_batch: dict = {}           # 묶음 → {"color", "n", "mixed"}
+_batch_locks: dict = {}
+_batch_seen: set = set()
+
+
+def _batch_key(src: Source, lut: str, meta: dict) -> str:
+    return (f"{os.path.dirname(os.path.abspath(src.path))}|{lut}|{meta['w']}x{meta['h']}|{meta['fps_num']}/{meta['fps_den']}"
+            f"|{src.width}x{src.height}|{src.fps_num}/{src.fps_den}")
+
+
+def _batch_note(src: Source, lut: str, r: dict) -> None:
+    """판정 결과(전체·색만)를 묶음에 더함."""
+    if not r.get("ok"):
+        return
+    k = _batch_key(src, lut, r)
+    with _pv_lock:
+        b = _batch.setdefault(k, {"color": r["color"], "n": 0, "mixed": False})
+        if b["color"] != r["color"]:
+            b["mixed"] = True
+        b["n"] += 1
+
+
+def _pv_meta(src: Source, path: str) -> dict:
+    """프리뷰 파일 정보만으로 1)단계 확인(디코딩 없음). 반환 check_preview 와 같은 모양(color 비어 있음)."""
+    r = {"path": path, "ok": False, "why": "", "color": "", "shift": 0, "ratio": 1,
+         "fps_num": 30, "fps_den": 1, "frames": 0, "w": 0, "h": 0, "diff": -1.0, "sec": 0.0}
+    try:
+        d = json.loads(run([paths.ffprobe(), "-v", "error", "-print_format", "json", "-show_streams", "-show_format",
+                            _abs(path)]))
+        v = next(x for x in d["streams"] if x.get("codec_type") == "video" and not x.get("disposition", {}).get("attached_pic"))
+        n, dd = (int(x) for x in (v.get("avg_frame_rate") or v.get("r_frame_rate") or "30/1").split("/"))
+        if not dd or not n:
+            n, dd = 30, 1
+        r["fps_num"], r["fps_den"] = n, dd
+        pfps = n / dd
+        pdur = float(v.get("duration") or d["format"].get("duration") or 0)
+        r["frames"] = int(v.get("nb_frames") or round(pdur * pfps))
+        r["w"], r["h"] = int(v["width"]), int(v["height"])
+    except Exception as e:  # noqa: BLE001
+        r["why"] = f"읽기 실패 {str(e)[-80:]}"
+        return r
+    sfps = float(src.fps)
+    if abs(pdur - src.frames / sfps) > 1.0 / max(1.0, pfps) + 1.0 / sfps + 0.002:
+        r["why"] = "길이 다름"
+    elif src.width and src.height and abs(r["w"] / r["h"] - src.width / src.height) > 0.02 * (src.width / src.height):
+        r["why"] = "비율 다름"
+    r["ratio"] = max(1, int(round(sfps / pfps)))
+    return r
+
+
+def preview_for_analysis(src: Source, lut: str) -> dict | None:
+    """AUTO 분석에 쓸 프리뷰(색까지 확인된 것) 또는 None(원본으로)."""
+    if not preview_enabled():
+        return None
+    try:
+        key = _pv_key(src, lut)
+    except OSError:
+        return None
+    with _pv_lock:
+        _pv_load()
+        hit = _pv_cache.get(key)
+    if hit is not None:                                    # 전체 판정이 이미 있음(지난 실행 것도) → 묶음 확인에도 셈
+        ok = hit.get("ok") and Path(hit["path"]).exists()
+        if ok and key not in _batch_seen:
+            _batch_seen.add(key)
+            _batch_note(src, lut or "", hit)
+        return hit if ok else None
+    path = find_preview(src.path)
+    if not path:
+        return None
+    meta = _pv_meta(src, path)
+    if meta["why"]:
+        log_error("분석 프리뷰", f"{Path(src.path).name}: 안 씀(원본) — {meta['why']}")
+        return None
+    bk = _batch_key(src, lut, meta)
+    with _pv_lock:
+        lk = _batch_locks.setdefault(bk, threading.Lock())
+    with lk:                                               # 같은 묶음의 색 확인은 하나씩(앞 결과를 뒤가 씀)
+        with _pv_lock:
+            b = dict(_batch.get(bk) or {})
+        if b and not b.get("mixed") and b.get("n", 0) >= BATCH_CONFIRM:
+            meta.update(ok=True, color=b["color"], why="묶음")
+            return meta
+        r = check_preview(src, lut or "", pv=path, color_only=True)
+        _batch_note(src, lut or "", r)
+        log_error("분석 프리뷰", f"{Path(src.path).name}: " + (f"색 확인 {r['color']} · 차 {r['diff']} · {r['sec']}초" if r["ok"]
+                                                              else f"안 씀(원본) — {r['why']}"))
+        return r if r["ok"] else None
 
 
 def preview_pos(pv: dict, frame: int) -> int:
@@ -1077,13 +1320,13 @@ def make_proxy(src: Source, lut: str, gpu: bool, on_progress=None, cancel=None) 
         log_error("프리뷰 판정 실패 → 원본", f"{Path(src.path).name}: {str(e)[-300:]}")
     if pv:
         try:
-            t1 = time.monotonic()
+            t1, w1 = time.monotonic(), waited()
             _proxy_from_preview(src, lut or "", pv, tmp, pw, ph, on_progress, cancel)
             n = frame_count(str(tmp))
             if abs(n - src.frames) > 1:
                 raise FFError(f"프레임 수 다름 {n}/{src.frames}")
             log_error("프록시", f"{Path(src.path).name} 프리뷰({Path(pv['path']).suffix[1:].upper()}) "
-                               f"{time.monotonic() - t1:.1f}초 (영상 {dur:.0f}초)")
+                               f"{time.monotonic() - t1:.1f}초 (영상 {dur:.0f}초, 자리 대기 {waited() - w1:.1f}초)")
             replace_retry(tmp, out)
             return str(out)
         except Cancelled:
@@ -1095,7 +1338,7 @@ def make_proxy(src: Source, lut: str, gpu: bool, on_progress=None, cancel=None) 
     last = None
     for i, (name, hw, pre) in enumerate(tries):
         cmd = [paths.ffmpeg(), "-y", *hw, "-i", _abs(src.path), "-map", "0:v:0", "-vf", ",".join(pre + color + [TO_YUV709]), *tail]
-        t0 = time.monotonic()
+        t0, w0 = time.monotonic(), waited()
         try:
             run_progress(cmd, dur, on_progress, cancel, cwd=ref[0] if ref else None)
         except FFError as e:
@@ -1104,7 +1347,7 @@ def make_proxy(src: Source, lut: str, gpu: bool, on_progress=None, cancel=None) 
             last = e
             log_error(f"프록시 {name} 실패 → 다음 방식", str(e)[-300:])
             continue
-        log_error("프록시", f"{Path(src.path).name} {name} {time.monotonic() - t0:.1f}초 (영상 {dur:.0f}초)")
+        log_error("프록시", f"{Path(src.path).name} {name} {time.monotonic() - t0:.1f}초 (영상 {dur:.0f}초, 자리 대기 {waited() - w0:.1f}초)")
         replace_retry(tmp, out)
         return str(out)
     raise last
@@ -1212,7 +1455,7 @@ def cached_frame(src: Source, frame: int, gpu: bool = False) -> CachedFrame:
         if hit is not None:
             data, w, h = hit
             return CachedFrame(data, lead, (w, h), "raw")
-        data = run([paths.ffmpeg(), "-v", "error", *_hw(gpu), "-ss", _seek(frame - lead, src.fps), "-i", _abs(src.path),
+        data = run([paths.ffmpeg(), "-v", "error", "-ss", _seek(frame - lead, src.fps), "-i", _abs(src.path),
                     "-frames:v", str(lead + 1), "-an", "-vf", "scale=1280:-2:flags=lanczos,format=yuv420p10le",
                     "-c:v", "ffv1", "-f", "nut", "-"])
         ch = int(round(1280 * (src.height or 2160) / (src.width or 3840) / 2)) * 2
@@ -1851,7 +2094,7 @@ def export_still(src: Source, frame: int, g: dict, out_file: str, gpu: bool = Fa
     pf = ("rgb48be" if bits == 16 else "rgb24") if is_png else "rgb48le"
     vf = lens_chain(g, src.width, src.height) + grade_chain(g, lut, 3840) + [SRGB_TAG, f"format={pf}"]
     codec = ["-c:v", "png", "-compression_level", "3"] if is_png else ["-c:v", "tiff", "-compression_algo", "deflate"]
-    cmd = [paths.ffmpeg(), "-v", "error", "-y", *_hw(gpu), "-ss", _seek(start, src.fps), "-i", _abs(src.path),
+    cmd = [paths.ffmpeg(), "-v", "error", "-y", "-ss", _seek(start, src.fps), "-i", _abs(src.path),
            "-frames:v", str(lead + 1), "-an", "-filter_complex", graph(vf, "[0:v]", "[so]"), "-map", "[so]",
            "-update", "1", *codec, _abs(out_file)]
     try:
@@ -1904,7 +2147,7 @@ def export_split(src: Source, frame: int, g: dict, out_file: str, size: int = 19
     cwd, lut = _lut_for(g)
     lead = min(3, frame)
     codec = (["-c:v", "mjpeg", "-q:v", "2"] if fmt == "jpg" else ["-c:v", "png", "-compression_level", "3"])
-    cmd = [paths.ffmpeg(), "-v", "error", "-y", *_hw(gpu), "-ss", _seek(frame - lead, src.fps), "-i", _abs(src.path),
+    cmd = [paths.ffmpeg(), "-v", "error", "-y", "-ss", _seek(frame - lead, src.fps), "-i", _abs(src.path),
            "-frames:v", str(lead + 1), "-an", "-filter_complex", split_vf(g, lut, orientation, size, fmt, (src.width, src.height), layout), "-map", "[so]",
            "-update", "1", *codec, _abs(out_file)]
     try:
