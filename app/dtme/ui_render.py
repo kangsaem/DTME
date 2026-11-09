@@ -96,6 +96,42 @@ class Popup(DragMove, QDialog):
         self.rejected_.emit()
 
 
+class ProgressButton(QPushButton):
+    """렌더 버튼(v0.16.31): 렌더 중 = 전체 진행 막대(왼쪽부터 빨강, 글자 '3/35 · 42%'). frac None = 보통 버튼."""
+
+    def __init__(self, text, parent=None):
+        super().__init__(text, parent)
+        self.frac = None
+        self.ptext = ""
+        self.bad = False
+
+    def set_progress(self, frac, text="", bad=False):
+        self.frac, self.ptext, self.bad = frac, text, bad
+        self.update()
+
+    def paintEvent(self, e):
+        if self.frac is None:
+            return super().paintEvent(e)
+        from PySide6.QtGui import QColor, QPainter
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        r = self.rect().adjusted(0, 0, -1, -1)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor("#4a1f1b"))
+        p.drawRoundedRect(r, 4, 4)
+        w = int(r.width() * max(0.0, min(1.0, self.frac)))
+        if w > 0:
+            p.setBrush(QColor("#8e2a20" if self.bad else "#c0392b"))
+            p.drawRoundedRect(r.adjusted(0, 0, w - r.width(), 0), 4, 4)
+        f = self.font()
+        f.setBold(True)
+        f.setPixelSize(12)
+        p.setFont(f)
+        p.setPen(QColor("#ffffff"))
+        p.drawText(r, Qt.AlignCenter, self.ptext)
+        p.end()
+
+
 def fix_size(b, main=False):
     """주요 버튼 = 고정 88×32. 일반 버튼 = 높이 28, 폭 56~76(자리가 모자라면 줄어듦 → 노트북에서 겹치지 않음)."""
     if main:
@@ -308,6 +344,8 @@ class RenderPanel(QWidget):
     itemProgress = Signal(str, float, bool)       # (항목 id, 진행 0~1, 렌더 계속 중)
     message = Signal(str)                         # 상태줄 짧은 글
     sourcesRequested = Signal()                   # ▼ = 선택한 소스를 렌더 리스트로(EditTab 이 처리)
+    runProgress = Signal(float, str, bool)        # v0.16.31 전체 진행(0~1, '3/35 · 42%', 실패 있음) — 창 제목·작업 표시줄
+    runFinished = Signal(int, int, float, str)    # 완료 수, 실패 수, 걸린 초, 출력 폴더
 
     def __init__(self, state, parent=None):
         super().__init__(parent)
@@ -335,7 +373,7 @@ class RenderPanel(QWidget):
         self.table.addAction(a_re)
         self.table.addAction(a_now)
 
-        self.b_render = QPushButton("렌더")
+        self.b_render = ProgressButton("렌더")
         self.b_render.setFixedSize(MAIN_W, MAIN_H)
         self.b_render.setFocusPolicy(Qt.NoFocus)
         ui_style.tone(self.b_render, "red")
@@ -446,9 +484,12 @@ class RenderPanel(QWidget):
             self.message.emit("새 항목 없음")
             return
         self.running = True
-        self.b_render.setEnabled(False)
+        self.run_items = list(self.queue)
+        self.run_t0 = time.time()
+        self.run_ok, self.run_bad = set(), set()
         free_memory()
         self._next()
+        self._overall()
 
     def enqueue(self, items):
         """렌더 중이면 뒤에 붙여 이어서, 아니면 바로 시작(AUTO: 분석 끝난 영상부터)."""
@@ -460,15 +501,46 @@ class RenderPanel(QWidget):
         for it in items:
             if it.id not in known and not it.done and all(p.source(g.src) for g in it.segs):
                 self.queue.append(it)
+                self.run_items.append(it)
         self._next()
+        self._overall()
 
     def _next(self):
         """빈 자리만큼(jobs.RENDER_N) 다음 항목을 시작. 다 끝나면 running = False."""
         while self.queue and len(self.active) < jobs.RENDER_N:
             self._start(self.queue.pop(0))
-        if not self.queue and not self.active:
+        if not self.queue and not self.active and self.running:
             self.running = False
-            self.b_render.setEnabled(True)
+            self.b_render.set_progress(None)
+            self.runFinished.emit(len(self.run_ok), len(self.run_bad), time.time() - self.run_t0,
+                                  str(out_dir(self.state.project)))
+
+    def _dur(self, it) -> float:
+        p = self.state.project
+        t = 0.0
+        for g in it.segs:
+            src = p.source(g.src)
+            if src is not None and src.fps:
+                t += g.frames / float(src.fps) / max(0.01, g.speed)
+        return max(0.1, t)
+
+    def _overall(self):
+        """전체 진행(영상 길이 가중) → 버튼 · 창 제목 · 작업 표시줄."""
+        if not self.running or not getattr(self, "run_items", None):
+            return
+        tot = sum(self._dur(it) for it in self.run_items)
+        got = 0.0
+        for it in self.run_items:
+            if it.id in self.run_ok or it.id in self.run_bad:
+                got += self._dur(it)
+            elif it.id in self.active:
+                got += self._dur(it) * self.progress.get(it.id, 0.0)
+        frac = got / tot if tot else 0.0
+        n = len(self.run_items)
+        k = len(self.run_ok) + len(self.run_bad)
+        text = f"{k}/{n} · {int(frac * 100)}%"
+        self.b_render.set_progress(frac, text, bool(self.run_bad))
+        self.runProgress.emit(frac, text, bool(self.run_bad))
 
     def _start(self, it):
         p = self.state.project
@@ -492,6 +564,7 @@ class RenderPanel(QWidget):
             self.progress[iid] = v
             self._repaint()
             self.itemProgress.emit(iid, v, True)
+            self._overall()
 
         def done(_r, iid=it.id, item=it):
             self.active.pop(iid, None)
@@ -499,6 +572,8 @@ class RenderPanel(QWidget):
             ff.log_info(f"렌더 {time.time() - t0:.1f}초 (동시 {jobs.RENDER_N}, 코어 {jobs.CORES}) {path}")
             item.done = str(path)                 # 프로젝트에 저장 → 다시 열어도 완료
             self.state.dirty = True
+            self.run_ok.add(iid)
+            self._overall()
             self.refresh()
             self.itemProgress.emit(iid, 1.0, bool(self.queue or self.active))
             self._next()
@@ -507,6 +582,8 @@ class RenderPanel(QWidget):
             self.active.pop(iid, None)
             hint = " (인코더를 x264로)" if "nvenc" in msg.lower() else ""
             self.status[iid] = f"실패{hint}: {msg[-300:]}"
+            self.run_bad.add(iid)
+            self._overall()
             self.refresh()
             self.itemProgress.emit(iid, 1.0, bool(self.queue or self.active))
             self._next()

@@ -56,11 +56,55 @@ class MainWindow(QMainWindow):
         self._autosave.setInterval(60_000)
         self._autosave.timeout.connect(self._do_autosave)
         self._autosave.start()
+        self._rtext = ""                                # v0.16.31 렌더 진행 → 창 제목
+        rp = self.edit.render_panel
+        rp.runProgress.connect(self._render_progress)
+        rp.runFinished.connect(self._render_finished)
         self._title()
 
     def _title(self):
         f = Path(self.state.project.file).name if self.state.project.file else "새 프로젝트"
-        self.setWindowTitle(f"DTME {__version__} — {f}{' *' if self.state.dirty else ''}")
+        r = f"렌더 {self._rtext} — " if getattr(self, "_rtext", "") else ""
+        self.setWindowTitle(f"DTME {__version__} — {r}{f}{' *' if self.state.dirty else ''}")
+
+    # ------------------------------------------------------------ 렌더 진행(v0.16.31): 창 제목 · 작업 표시줄 · 완료 팝업
+    def _render_progress(self, frac: float, text: str, bad: bool):
+        from . import taskbar
+        self._rtext = text
+        self._title()
+        taskbar.set_progress(self, frac, bad)
+
+    def _render_finished(self, ok: int, bad: int, sec: float, folder: str):
+        from . import taskbar
+        self._rtext = ""
+        self._title()
+        taskbar.clear(self)
+        taskbar.flash(self)
+        m, s_ = divmod(int(round(sec)), 60)
+        h, m = divmod(m, 60)
+        took = (f"{h}시간 " if h else "") + (f"{m}분 " if m or h else "") + f"{s_}초"
+        self._done_popup(f"렌더 완료 {ok}개 · 실패 {bad}개 · {took}", folder, bad)
+
+    def _done_popup(self, text: str, folder: str, bad: int):
+        """다른 팝업과 같은 모양, 떠 있는 창(닫지 않아도 다른 조작 가능). [폴더 열기] [확인]."""
+        from PySide6.QtWidgets import QLabel
+        from .ui_render import Popup, open_file
+        old = getattr(self, "_done_dlg", None)
+        if old is not None:
+            old.close()
+        d = Popup(self, floating=True)
+        lb = QLabel(text)
+        lb.setStyleSheet(f"color:{'#ff8a80' if bad else '#e6e6e6'}; font-size:13px;")
+        d.body.addWidget(lb)
+        d.add_buttons("확인", "폴더 열기")
+        d.b_cancel.clicked.disconnect()
+        d.b_cancel.clicked.connect(lambda: (open_file(folder), d.close()))
+        d.b_ok.clicked.disconnect()
+        d.b_ok.clicked.connect(d.close)
+        d.center_on(self)
+        d.show()
+        d.raise_()
+        self._done_dlg = d
 
     # ------------------------------------------------------------ 실행취소
     def undo(self):
