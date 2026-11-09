@@ -40,8 +40,8 @@ if len(sys.argv) < 2:
     for i in range(6):                         # PROXY_POOL = 2 → 2개 돌고 4개 대기
         jobs.submit(jobs.PROXY_POOL, jobs.Job(work(i)))
     t = time.time()
-    while ff.live_count() < 2 and time.time() - t < 10:
-        time.sleep(0.05)
+    while not (ff.live_count() == 2 and leftover() == 2) and time.time() - t < 20:   # 2개 다 뜰 때까지(Windows 는 세는 데 시간이 걸림)
+        time.sleep(0.2)
     print("돌던 ffmpeg", ff.live_count(), "· 시작한 작업", len(started), "· 남은 프로세스", leftover())
     assert ff.live_count() == 2 and leftover() == 2
     t = time.time()
