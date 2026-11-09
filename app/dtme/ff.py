@@ -79,6 +79,91 @@ class Cancelled(Exception):
     pass
 
 
+# ------------------------------------------------------------------ 종료 정리(v0.16.23)
+# 창을 닫아도 대기열의 분석·프록시가 끝까지 돌며 GPU 를 쓰던 문제 → 실행 중인 ffmpeg 를 모아 두고 종료 때 끔.
+# Windows 는 작업 묶음(Job Object, 닫히면 안의 프로세스 모두 종료)에도 넣음 → DTME 가 갑자기 죽어도 ffmpeg 가 남지 않음.
+_live: set = set()
+_live_lock = threading.Lock()
+_closing = threading.Event()
+_job_handle = None
+
+
+def _win_job():
+    """KILL_ON_JOB_CLOSE 작업 묶음 하나(프로세스가 끝나면 Windows 가 핸들을 닫고 → 안의 ffmpeg 종료)."""
+    global _job_handle
+    if _job_handle is not None or os.name != "nt":
+        return _job_handle
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k = ctypes.WinDLL("kernel32", use_last_error=True)
+        k.CreateJobObjectW.restype = wintypes.HANDLE
+        k.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+        k.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+
+        class BASIC(ctypes.Structure):
+            _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64),
+                        ("LimitFlags", wintypes.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
+                        ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wintypes.DWORD),
+                        ("Affinity", ctypes.c_size_t), ("PriorityClass", wintypes.DWORD),
+                        ("SchedulingClass", wintypes.DWORD)]
+
+        class IO(ctypes.Structure):
+            _fields_ = [(n, ctypes.c_uint64) for n in ("r", "w", "o", "rb", "wb", "ob")]
+
+        class EXT(ctypes.Structure):
+            _fields_ = [("Basic", BASIC), ("Io", IO), ("ProcessMemoryLimit", ctypes.c_size_t),
+                        ("JobMemoryLimit", ctypes.c_size_t), ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                        ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+        h = k.CreateJobObjectW(None, None)
+        if not h:
+            return None
+        info = EXT()
+        info.Basic.LimitFlags = 0x2000          # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        if not k.SetInformationJobObject(h, 9, ctypes.byref(info), ctypes.sizeof(info)):   # 9 = Extended
+            return None
+        _job_handle = h
+    except Exception:  # noqa: BLE001
+        _job_handle = None
+    return _job_handle
+
+
+def _attach(p) -> None:
+    h = _win_job()
+    if not h:
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k = ctypes.WinDLL("kernel32", use_last_error=True)
+        k.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        k.AssignProcessToJobObject(h, wintypes.HANDLE(int(p._handle)))
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def kill_all() -> int:
+    """종료 중 표시 + 실행 중인 ffmpeg·ffprobe 모두 끔. 끈 개수."""
+    _closing.set()
+    with _live_lock:
+        ps = list(_live)
+    n = 0
+    for p in ps:
+        try:
+            if p.poll() is None:
+                p.kill()
+                n += 1
+        except Exception:  # noqa: BLE001
+            pass
+    return n
+
+
+def live_count() -> int:
+    with _live_lock:
+        return sum(1 for p in list(_live) if p.poll() is None)
+
+
 class FFError(Exception):
     pass
 
@@ -92,8 +177,18 @@ def _popen(cmd, **kw):
     kw.setdefault("stdin", subprocess.DEVNULL)
     import time
     for i in range(12):      # WinError 32(백신이 ffmpeg.exe 를 잠깐 잡음 등) → 0.2초 간격 다시 시도. 화면에 '미리보기 오류'가 자주 뜨던 원인
+        if _closing.is_set():                # 종료 중 = 새 ffmpeg 안 띄움(v0.16.23)
+            raise Cancelled()
         try:
-            return subprocess.Popen(cmd, creationflags=NO_WINDOW | LOW_PRIO, **kw)
+            p = subprocess.Popen(cmd, creationflags=NO_WINDOW | LOW_PRIO, **kw)
+            with _live_lock:
+                for q in [q for q in _live if q.returncode is not None or q.poll() is not None]:
+                    _live.discard(q)          # 끝난 것 정리
+                _live.add(p)
+            _attach(p)
+            if _closing.is_set():            # 띄우는 사이 종료 시작
+                p.kill()
+            return p
         except OSError as e:
             if getattr(e, "winerror", None) not in (32, 33) or i == 11:
                 raise
@@ -110,6 +205,8 @@ def run(cmd: list[str], cwd: str | None = None, data: bytes | None = None) -> by
         p = _popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         out, err = p.communicate()
     if p.returncode != 0:
+        if _closing.is_set():
+            raise Cancelled()
         raise FFError(err.decode("utf-8", "replace")[-2000:])
     return out
 
@@ -136,6 +233,8 @@ def run_progress(cmd: list[str], total_sec: float, on_progress: Callable[[float]
         if p.poll() is None:
             p.kill()
     if p.returncode != 0:
+        if _closing.is_set():
+            raise Cancelled()
         errf.seek(0)
         raise FFError(errf.read().decode("utf-8", "replace")[-2000:])
     if on_progress:
@@ -696,6 +795,8 @@ def _pv_win(path: str, t0: float, n: int, fps: float, ref: tuple | None) -> dict
     pr = _popen(cmd, cwd=ref[0] if ref else None, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     out, err = pr.communicate()
     if pr.returncode != 0:
+        if _closing.is_set():
+            raise Cancelled()
         raise FFError(err.decode("utf-8", "replace")[-300:])
     ts = [float(x) for x in re.findall(rb"pts_time:\s*([-0-9.]+)", err)]
     ww = w * 2 if ref else w

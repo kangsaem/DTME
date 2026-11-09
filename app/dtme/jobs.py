@@ -67,10 +67,29 @@ def bump(pool: QThreadPool, job: Job, priority: int = 10) -> bool:
     return False
 
 
+_pools: list = []
+
+
 def make_pool(n: int) -> QThreadPool:
     p = QThreadPool()
     p.setMaxThreadCount(n)
+    _pools.append(p)
     return p
+
+
+def shutdown(wait_ms: int = 1500) -> int:
+    """종료 정리(v0.16.23): 대기열 비움 → 돌던 작업 취소 신호 → ffmpeg 모두 끔 → 잠깐 기다림. 끈 ffmpeg 개수.
+    이전엔 창을 닫아도 대기열의 분석·프록시를 끝까지 처리한 뒤에야 프로그램이 끝났음(GPU 계속 사용)."""
+    from . import ff
+    for p in _pools:
+        p.clear()
+    for j in list(_alive):
+        j.cancel.set()
+    n = ff.kill_all()
+    for p in _pools:
+        p.waitForDone(max(0, wait_ms // max(1, len(_pools))))
+    n += ff.kill_all()
+    return n
 
 
 def _cores() -> int:

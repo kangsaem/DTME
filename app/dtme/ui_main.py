@@ -6,7 +6,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QAction, QKeySequence
-from PySide6.QtWidgets import QFileDialog, QMainWindow, QToolBar
+from PySide6.QtWidgets import QApplication, QFileDialog, QMainWindow, QToolBar
 
 from . import __version__, paths, ui_style
 from .project import AUDIO_EXT, IMAGE_EXT, Project
@@ -126,8 +126,15 @@ class MainWindow(QMainWindow):
                 pass
 
     def closeEvent(self, e):
+        rp = getattr(getattr(self, "edit", None), "render_panel", None)
+        if rp is not None and rp.running and self.isVisible():     # v0.16.23: 메인 창에서도 렌더 중 확인
+            if ui_style.confirm(self, "렌더 중입니다. 끄고 종료할까요?",
+                                [("cancel", "취소", 72, None), ("quit", "종료", 80, "red")]) != "quit":
+                e.ignore()
+                return
         if self._confirm_discard():
             e.accept()
+            QApplication.quit()             # 숨은 창(시작 창 등)이 남아도 프로그램 종료 → main.finish 정리
         else:
             e.ignore()
 

@@ -54,7 +54,27 @@ def main():
         QTimer.singleShot(2000, lambda: app.exit(0 if n > 0 else 3))
     if args:
         w.edit.import_files(args)
-    sys.exit(app.exec())
+    code = app.exec()
+    sys.exit(finish(code))
+
+
+def finish(code: int) -> int:
+    """창을 닫으면 남은 작업·ffmpeg 를 정리하고 바로 끝냄(v0.16.23). 스레드가 끝날 때까지 기다리지 않음."""
+    from dtme import ff, jobs
+    try:
+        n = jobs.shutdown()
+        if n:
+            ff.log_info(f"종료: ffmpeg {n}개 끔")
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except Exception:  # noqa: BLE001
+        pass
+    if os.environ.get("DTME_NO_HARD_EXIT"):
+        return code
+    os._exit(code)
 
 
 if __name__ == "__main__":
