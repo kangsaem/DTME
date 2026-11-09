@@ -171,18 +171,6 @@ def item_base(project, segs) -> str:
     return short_name(s.path) if s else "DTME"
 
 
-def paths_cache_preview():
-    from . import paths
-    d = paths.cache_dir() / "preview"
-    d.mkdir(parents=True, exist_ok=True)
-    for old in sorted(d.glob("preview_*.mp4"))[:-3]:      # 최근 3개만 남김
-        try:
-            old.unlink()
-        except OSError:
-            pass
-    return d / f"preview_{int(time.time())}.mp4"
-
-
 def open_file(path):
     import os
     import subprocess
@@ -287,6 +275,7 @@ class RenderPanel(QWidget):
     """렌더 설정 + 렌더 리스트(바) + 빨간 렌더 버튼."""
     itemProgress = Signal(str, float, bool)       # (항목 id, 진행 0~1, 렌더 계속 중)
     message = Signal(str)                         # 상태줄 짧은 글
+    sourcesRequested = Signal()                   # ▼ = 선택한 소스를 렌더 리스트로(EditTab 이 처리)
 
     def __init__(self, state, parent=None):
         super().__init__(parent)
@@ -321,12 +310,15 @@ class RenderPanel(QWidget):
         self.b_render.clicked.connect(self.render)
         self.dlg = RenderSettingsDialog(state, self)
         self.settings = self.dlg.settings
-        self.b_prev = QPushButton("미리보기 렌더")
-        fix_size(self.b_prev, main=True)
-        self.b_prev.setMaximumWidth(16777215)
-        self.b_prev.setToolTip("타임라인을 작은 크기(540p)로 빠르게 렌더해 재생")
-        self.b_prev.setFocusPolicy(Qt.NoFocus)
-        self.b_prev.clicked.connect(self.preview_render)
+        self.b_down = QPushButton("▼")             # v0.16.25: 미리보기 렌더 자리 → 소스 목록에서 선택한 것을 렌더 리스트로
+        fix_size(self.b_down, main=True)
+        self.b_down.setToolTip("선택한 소스 → 렌더 리스트")
+        ui_style.tone(self.b_down, "navy")               # 타임라인 ▼ 와 같은 모양
+        f = self.b_down.font()
+        f.setPixelSize(15)
+        self.b_down.setFont(f)
+        self.b_down.setFocusPolicy(Qt.NoFocus)
+        self.b_down.clicked.connect(self.sourcesRequested.emit)
         self.b_set = QPushButton("⚙")
         self.b_set.setFixedSize(34, MAIN_H)
         self.b_set.setToolTip("렌더 설정")
@@ -334,7 +326,8 @@ class RenderPanel(QWidget):
         self.b_set.clicked.connect(lambda: self.dlg.open_at(self))
         top = QHBoxLayout()
         top.setSpacing(4)
-        top.addWidget(self.b_prev, 1)
+        top.addWidget(self.b_down)
+        top.addStretch(1)
         top.addWidget(self.b_set)
         top.addWidget(self.b_render)
 
@@ -435,40 +428,6 @@ class RenderPanel(QWidget):
             if it.id not in known and not it.done and all(p.source(g.src) for g in it.segs):
                 self.queue.append(it)
         self._next()
-
-    def preview_render(self):
-        """타임라인 전체(없으면 렌더 리스트 첫 항목)를 960×540 x264 ultrafast 로 → 기본 플레이어로 열기."""
-        p = self.state.project
-        segs = [g.copy() for g in p.segments] or (p.render_items[0].segs if p.render_items else [])
-        extras = {"titles": p.titles, "music": p.music, "mix": p.mix} if p.segments else {}
-        if not segs or self.running:
-            return
-        out = paths_cache_preview()
-        self.b_prev.setEnabled(False)
-        self.b_prev.setText("미리보기 0%")
-        orient = p.output.orientation
-
-        def work(prog, cancel):
-            ff.render_video(p, segs, str(out), prog, cancel, "preview_v" if orient == "vertical" else "preview",
-                            p.output.audio, fast=True, extras=extras)
-            return str(out)
-
-        job = jobs.Job(work, with_progress=True)
-        job.signals.progress.connect(lambda v: self.b_prev.setText(f"미리보기 {int(v * 100)}%"))
-
-        def done(path):
-            self.b_prev.setEnabled(True)
-            self.b_prev.setText("미리보기 렌더")
-            open_file(path)
-
-        def err(msg):
-            self.b_prev.setEnabled(True)
-            self.b_prev.setText("미리보기 렌더")
-            ff.log_error("미리보기 렌더", msg)
-            self.b_prev.setToolTip(f"실패: {msg[-200:]}")
-        job.signals.done.connect(done)
-        job.signals.error.connect(err)
-        jobs.submit(jobs.RENDER_POOL, job)
 
     def _next(self):
         """빈 자리만큼(jobs.RENDER_N) 다음 항목을 시작. 다 끝나면 running = False."""

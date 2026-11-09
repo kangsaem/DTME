@@ -133,6 +133,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
           python tests/test_gates.py
           if ($LASTEXITCODE -ne 0) { exit 1 }
+          python tests/test_ui_srcrender.py srcrender_test
+          if ($LASTEXITCODE -ne 0) { exit 1 }
 
       - name: Smoke test (exe 실행)
         shell: pwsh

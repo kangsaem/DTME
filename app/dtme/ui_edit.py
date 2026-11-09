@@ -11,7 +11,7 @@ from PySide6.QtCore import QEvent, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QImage, QImageReader, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (QAbstractSpinBox, QApplication, QButtonGroup, QCheckBox, QDialog, QFileDialog, QFrame,
                                QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-                               QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSlider,
+                               QMenu, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSlider,
                                QSplitter, QStyle, QStyledItemDelegate, QTextEdit, QVBoxLayout, QWidget)
 
 from . import ff, jobs, ui_style
@@ -225,7 +225,7 @@ class EditTab(QWidget):
         self.src_list.currentItemChanged.connect(self._on_src_selected)
         self.src_list.itemClicked.connect(lambda it: self.state.prioritize(it.data(Qt.UserRole)))   # 읽기 실패 줄 = 다시 읽기
         self.src_list.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.src_list.customContextMenuRequested.connect(lambda _pos: self.add_files())
+        self.src_list.customContextMenuRequested.connect(self._src_menu)
         self.src_list.itemPressed.connect(lambda _it: self._set_target("src"))
         # 스틸 소스(이미지) — 영상 목록 아래, 클릭 = 현재 영상에 레이어로 얹음
         self.img_list = QListWidget()
@@ -465,6 +465,7 @@ class EditTab(QWidget):
         self.render_panel = RenderPanel(state)
         self.render_panel.itemProgress.connect(self._render_progress)
         self.render_panel.message.connect(lambda t: self._say(t, C_WARN))
+        self.render_panel.sourcesRequested.connect(self.sources_to_render)
 
         # 3열: 보정 | 모니터·타임라인 | 소스·렌더
         rw = QWidget()
@@ -1109,7 +1110,10 @@ class EditTab(QWidget):
     # ================================================================ 보내기
     def _cur_segment(self):
         """인/아웃 구간 + 그 구간에 걸친 이미지 레이어(사본)."""
-        s = self._cur()
+        return self._segment_of(self._cur())
+
+    def _segment_of(self, s):
+        """소스 s 의 인/아웃 구간(배속·레이어·리프레임·◆·꺼 둔 항목 사본)."""
         a, b = s.io
         lays = [copy.deepcopy(l) for l in s.layers if l["fout"] > a and l["fin"] < b]
         for l in lays:
@@ -1134,6 +1138,50 @@ class EditTab(QWidget):
         self.state.checkpoint()
         self.state.project.render_items.append(self._new_item([self.state.project.snap_seg(self._cur_segment())]))
         self.state.touch("render")
+
+    def sources_to_render(self):
+        """v0.16.25 ▼ · 소스 우클릭: 소스 목록에서 선택한 소스마다 렌더 항목 1개(지금 값: 인/아웃·배속·보정값·◆·출력 방향).
+        이미 그 소스 단독 항목이 있으면: 완료 = 건너뜀, 완료 안 됨 = 지금 값으로 갱신(렌더 중인 것은 건너뜀). 렌더는 [렌더] 로."""
+        p = self.state.project
+        rp = self.render_panel
+        want = set(self._selected_sids())
+        srcs = [s for s in p.sources if s.id in want and s.frames]
+        if not srcs:
+            self._say("소스를 선택하세요", C_WARN)
+            return
+        self.state.checkpoint()
+        add = upd = skip = 0
+        for s in srcs:
+            seg = p.snap_seg(self._segment_of(s))
+            orient = s.out or p.output.orientation
+            same = [it for it in p.render_items if len(it.segs) == 1 and it.segs[0].src == s.id and not it.titles]
+            if any(it.done or rp.status.get(it.id, "").startswith("완료") for it in same):
+                skip += 1
+                continue
+            idle = [it for it in same if it.id not in rp.active]
+            if idle:
+                idle[0].segs, idle[0].orientation = [seg], orient
+                rp.status.pop(idle[0].id, None)
+                upd += 1
+            elif same:
+                skip += 1
+            else:
+                p.render_items.append(RenderItem(name=short_name(s.path), segs=[seg], orientation=orient, audio=p.output.audio))
+                add += 1
+        self.state.touch("render")
+        self._say(f"렌더 리스트: 추가 {add} · 갱신 {upd} · 건너뜀 {skip}", C_OK)
+
+    def _src_menu(self, pos):
+        """소스 목록 우클릭: 렌더 리스트로(선택한 것) · 영상 추가."""
+        m = QMenu(self)
+        a_r = m.addAction("렌더 리스트로")
+        a_r.setEnabled(bool(self._selected_sids()))
+        a_add = m.addAction("영상 추가…")
+        act = m.exec(self.src_list.viewport().mapToGlobal(pos))
+        if act is a_r:
+            self.sources_to_render()
+        elif act is a_add:
+            self.add_files()
 
     def timeline_to_render(self):
         p = self.state.project
