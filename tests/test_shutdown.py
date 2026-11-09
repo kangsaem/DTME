@@ -10,8 +10,11 @@ LONG = ["-v", "error", "-f", "lavfi", "-i", "testsrc2=s=640x360:d=600", "-metada
 
 
 def leftover() -> int:
-    if os.name == "nt":
-        return 0
+    if os.name == "nt":                        # 명령줄에 TAG 가 든 ffmpeg 개수
+        ps = (f"(Get-CimInstance Win32_Process -Filter \"Name='ffmpeg.exe'\" | "
+              f"Where-Object {{ $_.CommandLine -like '*{TAG}*' }} | Measure-Object).Count")
+        r = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True)
+        return int((r.stdout.strip() or "0").splitlines()[-1])
     r = subprocess.run(["pgrep", "-f", TAG], capture_output=True, text=True)
     return len([x for x in r.stdout.split() if x.strip() and int(x) != os.getpid()])
 
