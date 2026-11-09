@@ -378,7 +378,11 @@ class AutoDelegate(QStyledItemDelegate):
         p.setPen(Qt.NoPen)
         p.setBrush(QColor(SG.ROW_BG if row.checked else SG.ROW_OFF))
         p.drawRoundedRect(r, 3, 3)
-        if stg and stg[0] in SG.STAGE and stg[1] is not None and 0 < stg[1] < 1:
+        active = bool(stg and stg[0] in SG.STAGE and stg[1] is not None and 0 < stg[1] < 1)
+        if not active and row.checked and row.result and not row.error and not (stg and stg[0] == "error"):
+            p.setBrush(QColor(SG.STAGE["analyze"][0]))          # v0.16.27: 분석 끝 = 청록이 끝까지 찬 채로
+            p.drawRoundedRect(r, 3, 3)
+        if active:
             pr = QRectF(r)
             pr.setWidth(r.width() * stg[1])
             p.setBrush(QColor(SG.STAGE[stg[0]][0]))
