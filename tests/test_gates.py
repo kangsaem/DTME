@@ -77,3 +77,23 @@ th = threading.Thread(target=waiter); th.start(); time.sleep(0.3)
 ff._closing.set(); th.join(3); ff._closing.clear()
 assert err.get("c"), "종료 중 대기 취소 안 됨"
 print("OK")
+
+# 5) 미리 읽기(v0.16.26): HDD·SD 만, 읽은 파일은 저장장치 자리 안 잡음, 한계 넘으면 오래된 것부터 잊음
+from dtme import drives
+if drives.kind(clip) in ("hdd", "removable"):
+    big = os.path.join(work, "b.mp4")
+    ff.run([paths.ffmpeg(), "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=640x360:d=3", big])
+    assert ff.precache(clip) and ff.is_precached(clip)
+    res2 = {}
+    th = threading.Thread(target=lambda: res2.update(g=ff._gates_for([paths.ffmpeg(), "-i", clip, "-f", "null", "-"])))
+    th.start(); th.join()
+    assert res2["g"] == [], "미리 읽은 파일 = 자리 안 잡음"
+    project.set_setting("precache_gb", 1)
+    ff.precache(big)
+    print("미리 읽음:", {os.path.basename(k): v for k, v in ff._pre.items()})
+    project.set_setting("precache_gb", 0)
+    ff.precache_forget()
+    print("미리 읽기: OK")
+else:
+    print("미리 읽기: 이 환경 저장장치가 SSD 라 건너뜀")
+print("OK 2")

@@ -609,10 +609,14 @@ def short_name(path: str) -> str:
     return m.group(1)[:12] if m else stem
 
 
+def spaced(n: str) -> str:
+    """읽기 쉽게: 202610251207 → 2026 1025 1207 (숫자 12자리만, 나머지 그대로)."""
+    return " ".join(n[i:i + 4] for i in range(0, len(n), 4)) if n.isdigit() and len(n) == 12 else n
+
+
 def display_name(path: str) -> str:
     """목록 표시용: 202610251207 → 2026 1025 1207"""
-    n = short_name(path)
-    return " ".join(n[i:i + 4] for i in range(0, len(n), 4)) if n.isdigit() else n
+    return spaced(short_name(path))
 
 
 def speed_label(sp: float) -> str:

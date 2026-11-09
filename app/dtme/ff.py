@@ -179,7 +179,7 @@ import time as _time
 
 _ctx = threading.local()            # prio · waited(이 스레드가 자리를 기다린 시간 합)
 DISK_SLOTS = {"hdd": 2, "removable": 2, "unknown": 4, "ssd": 8}
-GPU_SLOTS = 2
+GPU_SLOTS = 6               # v0.16.26: 조각 렌더(2 → 6). 설정 gpu_jobs. GPU 인코더 개수 제한에 걸리면 nvenc_max 로 줄여 기억
 
 
 def set_prio(p: int) -> None:
@@ -269,16 +269,125 @@ def _gates_for(cmd) -> list:
     cmd = list(cmd)
     out = []
     if "-hwaccel" in cmd or any(str(c).endswith("_nvenc") for c in cmd):
-        out.append(_gate("gpu", _setting_int("gpu_jobs", GPU_SLOTS)))
+        out.append(_gate("gpu", gpu_cap()))
     disks = {}
     for i, c in enumerate(cmd[:-1]):
         if c == "-i" and not (i >= 2 and cmd[i - 2] == "-f" and cmd[i - 1] == "lavfi"):
+            if is_precached(str(cmd[i + 1])):          # 미리 읽어 메모리에 있음 = 저장장치 자리 안 잡음(v0.16.26)
+                continue
             d = _disk_id(str(cmd[i + 1]))
             if d:
                 disks[d[0]] = d[1]
     for did in sorted(disks):
         out.append(_gate("disk:" + did, _setting_int("disk_jobs", DISK_SLOTS.get(disks[did], 4))))
     return out
+
+
+def gpu_cap() -> int:
+    """GPU 쓰는 ffmpeg 동시 최대 = min(설정 gpu_jobs(기본 6), 기억한 인코더 한계 nvenc_max)."""
+    n = _setting_int("gpu_jobs", GPU_SLOTS)
+    m = _setting_int("nvenc_max", 0)
+    return max(1, min(n, m) if m else n)
+
+
+NVENC_LIMIT_ERR = ("OpenEncodeSessionEx", "incompatible client key", "out of memory", "No NVENC capable",
+                   "Cannot init CUDA", "CUDA_ERROR_OUT_OF_MEMORY")
+
+
+def nvenc_limited(msg: str) -> bool:
+    return any(k.lower() in msg.lower() for k in NVENC_LIMIT_ERR)
+
+
+def lower_gpu_cap(running: int) -> int:
+    """GPU 인코더 동시 개수 한계에 걸림 → 지금 돌던 수 - 1 로 줄여 기억(settings nvenc_max). 새 한계."""
+    from .project import set_setting
+    with _gates_lock:
+        cur = gpu_cap()
+        new = max(1, min(cur, running) - 1) if running > 1 else 1
+        if new < cur:
+            try:
+                set_setting("nvenc_max", new)
+            except Exception:  # noqa: BLE001
+                pass
+            log_info(f"GPU 인코더 동시 한계 → {new}개로 줄여 기억(settings nvenc_max, 지우면 다시 {GPU_SLOTS})")
+        return new
+
+
+# ------------------------------------------------------------------ 미리 읽기(v0.16.26): HDD·SD 원본을 순서대로 한 번 읽어 Windows 캐시에
+# 렌더(조각 여러 개가 동시에 읽음)가 HDD 를 헤드 왕복 없이 메모리에서 읽게. 지금 렌더 + 다음 항목, 합계 precache_gb(기본 32GB) 까지.
+# Windows 파일 캐시('캐시됨'·대기 메모리) = 다른 프로그램이 필요하면 바로 내줌. 한계를 넘는 파일은 미리 읽지 않음(그냥 HDD 에서).
+PRECACHE_GB = 32
+_pre: "dict[str, int]" = {}          # 경로 → 읽은 바이트(넣은 순서 = 오래된 것부터)
+_pre_lock = threading.Lock()
+_pre_disk_locks: dict = {}            # 장치마다 미리 읽기는 하나씩(순서대로 읽어야 빠름)
+
+
+def is_precached(path: str) -> bool:
+    with _pre_lock:
+        return os.path.abspath(path) in _pre
+
+
+def precache(path: str, frac_a: float = 0.0, frac_b: float = 1.0, cancel=None) -> bool:
+    """path 의 [frac_a, frac_b] 부분(+ 앞뒤 머리 정보)을 순서대로 읽음. HDD·SD 만. 반환 = 메모리에 있다고 봄."""
+    path = os.path.abspath(path)
+    if is_precached(path):
+        return True
+    d = _disk_id(path)
+    if not d or d[1] not in ("hdd", "removable"):
+        return False
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return False
+    budget = _setting_int("precache_gb", PRECACHE_GB) << 30
+    margin = 32 << 20
+    a = max(0, int(size * max(0.0, frac_a)) - margin)
+    b = min(size, int(size * min(1.0, frac_b)) + margin)
+    spans = [(0, min(size, 4 << 20)), (a, b), (max(0, size - (16 << 20)), size)]     # 앞 머리 · 구간 · 끝(moov)
+    need = sum(y - x for x, y in spans)
+    if need > budget:
+        log_info(f"미리 읽기 건너뜀 {Path(path).name}: {need >> 20}MB > 한계 {budget >> 30}GB")
+        return False
+    with _pre_lock:
+        lk = _pre_disk_locks.setdefault(d[0], threading.Lock())
+    t0, w0 = _time.monotonic(), waited()
+    with lk:
+        if is_precached(path):
+            return True
+        g = _gate("disk:" + d[0], _setting_int("disk_jobs", DISK_SLOTS.get(d[1], 4)))
+        g.acquire(getattr(_ctx, "prio", 0))
+        try:
+            got = 0
+            buf = bytearray(8 << 20)
+            with open(path, "rb", buffering=0) as f:
+                for x, y in spans:
+                    f.seek(x)
+                    pos = x
+                    while pos < y:
+                        if _closing.is_set() or (cancel is not None and cancel.is_set()):
+                            raise Cancelled()
+                        n = f.readinto(memoryview(buf)[:min(len(buf), y - pos)])
+                        if not n:
+                            break
+                        pos += n
+                        got += n
+        finally:
+            g.release()
+    sec = _time.monotonic() - t0
+    with _pre_lock:
+        _pre[path] = got
+        while sum(_pre.values()) > budget and len(_pre) > 1:
+            _pre.pop(next(iter(_pre)))
+    log_info(f"미리 읽기 {Path(path).name}: {got >> 20}MB {sec:.1f}초 ({(got >> 20) / max(0.01, sec):.0f}MB/s, 자리 대기 {waited() - w0:.1f}초)")
+    return True
+
+
+def precache_forget(path: str | None = None) -> None:
+    with _pre_lock:
+        if path is None:
+            _pre.clear()
+        else:
+            _pre.pop(os.path.abspath(path), None)
 
 
 class _slots:
@@ -1928,7 +2037,8 @@ def post_graph(fparts: list, cmd: list, project: Project, extras: dict, total: f
 
 def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orientation: str | None = None,
                      audio: bool | None = None, fast: bool = False,
-                     extras: dict | None = None) -> tuple[list[str], float, str | None]:
+                     extras: dict | None = None, head_trim: int = 0) -> tuple[list[str], float, str | None]:
+    """head_trim(조각 렌더, v0.16.26) = 앞 출력 프레임 몇 장을 버림(노이즈 제거 시간축 예열). 컷 1개·소리 없음일 때만."""
     o = project.output
     orientation = orientation or o.orientation
     audio = o.audio if audio is None else audio
@@ -2023,6 +2133,9 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orien
     if not any(plan):
         if audio:
             fparts.append(f"{''.join(labels)}concat=n={n}:v=1:a=1[vo][ao]")
+        elif head_trim and n == 1:
+            fparts.append(f"{labels[0]}trim=start_frame={head_trim},setpts=PTS-STARTPTS[vo]")
+            total = max(0.0, total - head_trim / float(OUT_FPS))
         else:
             fparts.append(f"{''.join(labels)}concat=n={n}:v=1:a=0[vo]")
     else:
@@ -2035,7 +2148,9 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orien
     if audio:
         cmd += ["-map", "[ao]", "-c:a", "aac", "-b:a", "192k"]
     br = int(o.bitrate_mbps * {"horizontal1440": 1.5, "horizontal2160": 2.5}.get(orientation, 1.0))   # 설정값 = 1080p 기준
-    if fast:                         # 미리보기 렌더: 작고 빠르게
+    if TEST_LOSSLESS:                # 시험 전용: 무손실(조각 ↔ 통째 화면 비교)
+        cmd += ["-c:v", "libx264", "-preset", "ultrafast", "-qp", "0"]
+    elif fast:                       # 미리보기 렌더: 작고 빠르게
         cmd += ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "26"]
     elif o.encoder == "nvenc":
         cmd += ["-c:v", "h264_nvenc", "-preset", "p6", "-tune", "hq", "-rc", "vbr", "-cq", "19",
@@ -2043,17 +2158,190 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orien
     else:
         cmd += ["-c:v", "libx264", "-preset", "medium", "-crf", "18",
                 "-maxrate", f"{int(br * 1.5)}M", "-bufsize", f"{br * 2}M"]
-    cmd += ["-pix_fmt", "yuv420p", "-r", f"{OUT_FPS.numerator}/{OUT_FPS.denominator}",
+    cmd += ["-pix_fmt", "yuv420p" if not TEST_LOSSLESS else "yuv420p", "-r", f"{OUT_FPS.numerator}/{OUT_FPS.denominator}",
             "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709", "-color_range", "tv",
             "-map_metadata", "-1", "-write_tmcd", "0", "-movflags", "+faststart", _abs(out_file)]
     # 모든 LUT 는 같은 캐시 폴더에 있으므로 cwd 하나로 충분
     return cmd, total, cwd
 
 
+# ------------------------------------------------------------------ 조각 렌더(v0.16.26)
+# 렌더 1개의 필터(노이즈·LUT·색·물 노이즈)는 대부분 코어를 늘려도 안 빨라짐(측정: 2스레드 1.0~1.1배) → 64코어에서 출력 ≈21장/초.
+# 컷 1개짜리 항목은 구간을 조각내 동시에(조각마다 ffmpeg) 렌더하고 다시 인코딩 없이 이어 붙임. 소리는 따로 한 번.
+# 조각 경계: 앞 PREROLL_OUT 장을 더 렌더해 버림(시간축 노이즈 제거 예열). ◆·리프레임·레이어는 컷 시작 기준이라 조각 시작만 바꾸면 맞음.
+# 안 하는 경우: 흔들림 보정 · 여러 컷/전환 · 글자·음악 · 조각 2개가 안 되는 길이 · 배속×fps 가 정수배가 아닌 원본.
+TEST_LOSSLESS = False
+CHUNK_MIN_SEC = 10.0
+CHUNK_MAX = 8
+PREROLL_OUT = 15            # 출력 프레임(29.97fps 0.5초)
+
+
+def chunk_plan(project: Project, segs: list, orientation: str, extras: dict | None, fast: bool = False) -> list | None:
+    """[(조각 Segment, 버릴 앞 출력 프레임 수, 출력 프레임 수)] 또는 None(통째로)."""
+    import dataclasses
+    import math
+    if fast or len(segs) != 1 or (extras and (extras.get("titles") or extras.get("music"))):
+        return None
+    seg = segs[0]
+    src = project.source(seg.src)
+    if src is None or not src.frames:
+        return None
+    g = project.grade_for_source(src.id, seg=seg)
+    if stab_params(g):
+        return None
+    r = Fraction(src.fps) * Fraction(seg.speed).limit_denominator(1000) / OUT_FPS      # 원본 프레임 / 출력 프레임
+    if r.denominator == 1:
+        unit, out_per_unit = r.numerator, 1
+    elif r.numerator == 1:
+        unit, out_per_unit = 1, r.denominator
+    else:
+        return None
+    total_out = seg.frames * out_per_unit // unit
+    sec = total_out / float(OUT_FPS)
+    n = min(_setting_int("chunk_max", CHUNK_MAX), int(sec // CHUNK_MIN_SEC))
+    if n < 2:
+        return None
+    L = math.ceil(seg.frames / n / unit) * unit                  # 조각 길이(원본 프레임, unit 배수 = 출력 경계 일치)
+    pre_src = math.ceil(PREROLL_OUT / out_per_unit) * unit
+    plan = []
+    k = 0
+    while seg.fin + k * L < seg.fout:
+        a, b = seg.fin + k * L, min(seg.fout, seg.fin + (k + 1) * L)
+        a0 = max(seg.fin, a - pre_src) if k else a
+        sub = dataclasses.replace(seg, fin=a0, fout=b)
+        plan.append((sub, (a - a0) * out_per_unit // unit, (b - a) * out_per_unit // unit))
+        k += 1
+    return plan
+
+
+def _audio_cmd(project: Project, seg: Segment, out_file: str) -> list[str]:
+    """통째 렌더와 같은 소리(같은 입력 시크 · atrim · atempo · 48k)."""
+    src = project.source(seg.src)
+    seg_src_sec = float(Fraction(seg.frames) / src.fps)
+    out_sec = seg_src_sec / seg.speed
+    if src.has_audio:
+        a = [f"atrim=duration={seg_src_sec:.6f}", "asetpts=PTS-STARTPTS"]
+        if seg.speed != 1.0:
+            a.append(f"atempo={seg.speed}")
+        a.append("aresample=48000")
+        inp = ["-ss", _seek(seg.fin, src.fps), "-t", f"{seg_src_sec + 0.5:.6f}", "-i", _abs(src.path)]
+        fg = f"[0:a:0]{','.join(a)}[ao]"
+    else:
+        inp = []
+        fg = f"anullsrc=r=48000:cl=stereo,atrim=duration={out_sec:.6f}[ao]"
+    return [paths.ffmpeg(), "-y", *inp, "-filter_complex", fg, "-map", "[ao]", "-c:a", "aac", "-b:a", "192k", _abs(out_file)]
+
+
+def _render_chunked(project: Project, segs: list, plan: list, out_file: str, on_progress, cancel,
+                    orientation: str, audio: bool | None) -> None:
+    import shutil
+    from concurrent.futures import ThreadPoolExecutor
+    t0, w0 = _time.monotonic(), waited()
+    prio = getattr(_ctx, "prio", 2)
+    audio = project.output.audio if audio is None else audio
+    out = Path(out_file)
+    parts = out.parent / f".{out.stem}.parts"
+    shutil.rmtree(parts, ignore_errors=True)
+    parts.mkdir(parents=True, exist_ok=True)
+    n = len(plan)
+    prog = [0.0] * (n + 1)
+    weights = [max(1, k[2]) for k in plan]
+    wsum = float(sum(weights))
+    plock = threading.Lock()
+    running = [0]
+    fails = []
+
+    class _Stop:
+        """밖의 취소 또는 조각 하나 실패 = 모든 조각 멈춤."""
+        def __init__(self):
+            self.ev = threading.Event()
+
+        def is_set(self):
+            return self.ev.is_set() or (cancel is not None and cancel.is_set())
+
+        def set(self):
+            self.ev.set()
+    stop = _Stop()
+
+    def report():
+        if on_progress:
+            v = sum(prog[i] * weights[i] for i in range(n)) / wsum
+            on_progress(min(0.99, 0.97 * v + 0.03 * prog[n]))
+
+    def one(i):
+        set_prio(prio)
+        sub, drop, _nout = plan[i]
+        f = parts / f"p{i:02d}.mp4"
+        tries = 0
+        while True:
+            cmd, total, cwd = build_render_cmd(project, [sub], str(f), orientation, False, False, None, head_trim=drop)
+            try:
+                with plock:
+                    running[0] += 1
+                try:
+                    run_progress(cmd, total, lambda v: (prog.__setitem__(i, v), report()), stop, cwd=cwd)
+                finally:
+                    with plock:
+                        running[0] -= 1
+                return str(f)
+            except FFError as e:
+                tries += 1
+                if stop.is_set():
+                    raise
+                if nvenc_limited(str(e)) and tries <= 4:
+                    with plock:
+                        r = running[0] + 1
+                    lower_gpu_cap(r)
+                    _time.sleep(0.5)
+                    continue
+                if tries == 1 and "-hwaccel" in cmd:              # GPU 디코딩 실패 → CPU 로 한 번
+                    cmd2 = [c for c in cmd if c not in ("-hwaccel", "cuda")]
+                    run_progress(cmd2, total, lambda v: (prog.__setitem__(i, v), report()), stop, cwd=cwd)
+                    return str(f)
+                raise
+
+    try:
+        with ThreadPoolExecutor(max_workers=n) as ex:
+            futs = [ex.submit(one, i) for i in range(n)]
+            files = []
+            for fu in futs:
+                try:
+                    files.append(fu.result())
+                except Exception as e:  # noqa: BLE001
+                    fails.append(e)
+                    stop.set()                               # 나머지 조각도 멈춤
+            if fails:
+                if cancel is not None and cancel.is_set():
+                    raise Cancelled()
+                raise next((e for e in fails if not isinstance(e, Cancelled)), fails[0])
+        lst = parts / "list.txt"
+        lst.write_text("".join(f"file '{Path(x).name}'\n" for x in files), encoding="utf-8")
+        cmd = [paths.ffmpeg(), "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", lst.name]
+        maps = ["-map", "0:v:0"]
+        if audio:
+            run(_audio_cmd(project, segs[0], str(parts / "a.m4a")))
+            cmd += ["-i", "a.m4a"]
+            maps += ["-map", "1:a:0"]
+        cmd += [*maps, "-c", "copy", "-map_metadata", "-1", "-write_tmcd", "0", "-movflags", "+faststart", _abs(out_file)]
+        run(cmd, cwd=str(parts))
+        prog[n] = 1.0
+        report()
+    finally:
+        shutil.rmtree(parts, ignore_errors=True)
+    src = project.source(segs[0].src)
+    dur = float(Fraction(segs[0].frames) / src.fps / Fraction(segs[0].speed).limit_denominator(1000))
+    log_info(f"조각 렌더 {Path(out_file).name}: {n}조각 {_time.monotonic() - t0:.1f}초 (영상 {dur:.0f}초, "
+             f"GPU 동시 한계 {gpu_cap()}, 자리 대기 {waited() - w0:.1f}초)")
+
+
 def render_video(project: Project, segs: list[Segment], out_file: str, on_progress=None, cancel=None,
                  orientation: str | None = None, audio: bool | None = None, fast: bool = False,
                  extras: dict | None = None) -> None:
     orient = orientation or project.output.orientation
+    plan = chunk_plan(project, segs, orient, extras, fast)
+    if plan:
+        _render_chunked(project, segs, plan, out_file, on_progress, cancel, orientation, audio)
+        return
     gpu = project.output.gpu_decode
     # 1패스: 흔들림 분석(필요한 컷만, 결과 캐시). 진행률 앞 40%
     todo = []

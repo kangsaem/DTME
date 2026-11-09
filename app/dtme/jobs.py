@@ -124,6 +124,7 @@ PREVIEW_POOL = make_pool(4)
 GRAB_POOL = make_pool(2)      # 프록시 프레임 즉시 표시
 RENDER_POOL = make_pool(RENDER_N)
 AUTO_POOL = make_pool(AUTO_N)  # AUTO·추천: 샘플 추출
+PRECACHE_POOL = make_pool(1)   # v0.16.26: 렌더 다음 항목 원본 미리 읽기(우선순위 4)
 DRIVE = "unknown"              # 원본 저장장치(가장 느린 것) — tune()
 
 

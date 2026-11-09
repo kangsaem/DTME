@@ -726,7 +726,7 @@ class AutoDialog(DragMove, QDialog):
     def _name_preview(self, *_):
         first = next((self.state.project.source(r.sid) for r in self.rows if r.checked), None)
         pre = self.name.text().strip() or "DTME"
-        self.name_eg.setText(f"{pre}_{short_name(first.path) if first else ''}.mp4")
+        self.name_eg.setText(f"{pre}_{display_name(first.path) if first else ''}.mp4")
 
     def _sel_rows(self):
         idx = sorted({i.row() for i in self.list.selectedIndexes()})

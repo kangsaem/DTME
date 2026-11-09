@@ -1141,7 +1141,8 @@ class EditTab(QWidget):
 
     def sources_to_render(self):
         """v0.16.25 ▼ · 소스 우클릭: 소스 목록에서 선택한 소스마다 렌더 항목 1개(지금 값: 인/아웃·배속·보정값·◆·출력 방향).
-        이미 그 소스 단독 항목이 있으면: 완료 = 건너뜀, 완료 안 됨 = 지금 값으로 갱신(렌더 중인 것은 건너뜀). 렌더는 [렌더] 로."""
+        같은 소스 · 같은 구간(인/아웃) 단독 항목이 있으면: 완료 = 건너뜀, 완료 안 됨 = 지금 값으로 갱신(렌더 중인 것은 건너뜀).
+        구간이 다르면 새 항목(v0.16.26: 한 소스를 나눠 렌더). 렌더는 [렌더] 로."""
         p = self.state.project
         rp = self.render_panel
         want = set(self._selected_sids())
@@ -1154,7 +1155,8 @@ class EditTab(QWidget):
         for s in srcs:
             seg = p.snap_seg(self._segment_of(s))
             orient = s.out or p.output.orientation
-            same = [it for it in p.render_items if len(it.segs) == 1 and it.segs[0].src == s.id and not it.titles]
+            same = [it for it in p.render_items if len(it.segs) == 1 and it.segs[0].src == s.id and not it.titles
+                    and (it.segs[0].fin, it.segs[0].fout) == (seg.fin, seg.fout)]
             if any(it.done or rp.status.get(it.id, "").startswith("완료") for it in same):
                 skip += 1
                 continue

@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog,
                                QHBoxLayout, QLineEdit, QPushButton, QSpinBox, QVBoxLayout, QWidget)
 
 from . import ff, jobs
-from .project import short_name
+from .project import short_name, spaced
 
 ORIENT_TXT = {"horizontal": "가로", "horizontal1440": "가로 1440", "horizontal2160": "가로 4K", "vertical": "세로"}
 
@@ -208,11 +208,43 @@ def ensure_folder(parent, state) -> bool:
     return True
 
 
+def precache_item(p, it, cancel=None):
+    """렌더 항목의 원본 구간들을 미리 읽음(HDD·SD 만, ff.precache)."""
+    for g in it.segs:
+        src = p.source(g.src)
+        if src is None or not src.frames:
+            continue
+        try:
+            ff.precache(src.path, g.fin / src.frames, g.fout / src.frames, cancel)
+        except ff.Cancelled:
+            raise
+        except Exception as e:  # noqa: BLE001
+            ff.log_error("미리 읽기", f"{src.path}: {e}")
+
+
+def free_memory():
+    """렌더 시작(v0.16.26): DTME 메모리 캐시 비움(프레임 이동 캐시 · 원본 구간 캐시 · 멈춘 화면 · 보정 미리보기).
+    렌더 속도와는 무관(측정) — 다른 프로그램 여유. 편집으로 돌아와 프레임을 넘기면 다시 채움."""
+    import gc
+    try:
+        from . import framecache
+        if framecache._cache is not None:
+            framecache._cache.release()
+        ff.range_clear()
+        with ff._cache_lock:
+            ff._frame_cache.clear()
+        from . import ui_edit
+        ui_edit.PREVIEW_LRU.clear()
+    except Exception as e:  # noqa: BLE001
+        ff.log_error("메모리 비우기", str(e))
+    gc.collect()
+
+
 def file_name(project, item) -> str:
     pre = project.output.prefix.strip() or "DTME"
     if pre and not pre.endswith(("_", "-", " ")):
         pre += "_"
-    return f"{pre}{item.name}"
+    return f"{pre}{spaced(item.name)}"            # v0.16.26: DTMD_2026 1028 1144 (소스 목록처럼)
 
 
 class RenderDelegate(QStyledItemDelegate):
@@ -415,6 +447,7 @@ class RenderPanel(QWidget):
             return
         self.running = True
         self.b_render.setEnabled(False)
+        free_memory()
         self._next()
 
     def enqueue(self, items):
@@ -446,8 +479,14 @@ class RenderPanel(QWidget):
         self.progress[it.id] = 0.0
         self.refresh()
         extras = {"titles": it.titles, "music": it.music, "mix": it.mix}
-        job = jobs.Job(lambda prog, cancel: ff.render_video(p, it.segs, str(path), prog, cancel,
-                                                            it.orientation, it.audio, extras=extras), with_progress=True)
+
+        def work(prog, cancel, it=it, path=path):
+            precache_item(p, it, cancel)               # v0.16.26: HDD 원본을 순서대로 한 번 읽어 메모리에(조각들이 거기서 읽음)
+            ff.render_video(p, it.segs, str(path), prog, cancel, it.orientation, it.audio, extras=extras)
+        job = jobs.Job(work, with_progress=True)
+        if self.queue:                                 # 다음 항목도 뒤에서 미리 읽기
+            nxt = self.queue[0]
+            jobs.submit(jobs.PRECACHE_POOL, jobs.Job(lambda nxt=nxt: precache_item(p, nxt)))
 
         def prog(v, iid=it.id):
             self.progress[iid] = v

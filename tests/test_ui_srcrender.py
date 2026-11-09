@@ -1,6 +1,7 @@
 """v0.16.25 점검: 렌더 칸 ▼(미리보기 렌더 자리) · 소스 우클릭 '렌더 리스트로'.
 - 소스 목록에서 선택한 것만, 소스마다 항목 1개(인/아웃·배속·지금 보정값·출력 방향 = AUTO 출력 또는 렌더 설정)
-- 다시 누르면: 완료 안 된 항목 = 지금 값으로 갱신(개수 그대로), 완료 = 건너뜀
+- 다시 누르면: 같은 소스·같은 구간 = 완료 안 됨이면 갱신, 완료면 건너뜀 / 다른 구간 = 새 항목(나눠 렌더)
+- 출력 이름 = 접두어_2026 1109 1000 (소스 목록처럼)
 - 미리보기 렌더 버튼 없음
 사용: python tests/test_ui_srcrender.py <작업폴더>"""
 import os, sys, time
@@ -57,10 +58,15 @@ i0 = next(it for it in items if it.segs[0].src == s0.id); i1 = next(it for it in
 assert (i0.segs[0].fin, i0.segs[0].fout, i0.segs[0].speed) == (10, 90, 2.0) and i0.segs[0].grade["r_gain"] == 1.3
 assert i0.orientation == "horizontal" and i1.orientation == "vertical", "출력 방향 = AUTO 출력 또는 렌더 설정"
 
-# 갱신: 값 바꾸고 다시 → 개수 그대로, 새 값
-s0.grade["r_gain"] = 1.1; s0.sel_in, s0.sel_out = 0, 60
+# 갱신: 같은 구간에서 값만 바꾸고 다시 → 개수 그대로, 새 값
+s0.grade["r_gain"] = 1.1
 e.sources_to_render(); wait(0.2)
-assert len(p.render_items) == 2 and i0.segs[0].grade["r_gain"] == 1.1 and i0.segs[0].fout == 60, "완료 안 된 항목 = 갱신"
+assert len(p.render_items) == 2 and i0.segs[0].grade["r_gain"] == 1.1, "같은 구간·완료 안 됨 = 갱신"
+# 나눠 렌더(v0.16.26): 같은 소스 다른 구간 → 새 항목, 앞 구간 항목은 그대로
+s0.sel_in, s0.sel_out = 90, 115
+e.sources_to_render(); wait(0.2)
+assert len(p.render_items) == 3 and (i0.segs[0].fin, i0.segs[0].fout) == (10, 90), "다른 구간 = 새 항목"
+p.render_items.pop(); s0.sel_in, s0.sel_out = 10, 90
 # 완료 = 건너뜀
 i1.done = "x.mp4"; s1.grade["b_gain"] = 0.9
 e.sources_to_render(); wait(0.2)
@@ -71,4 +77,7 @@ assert len(p.render_items) == 3
 st.undo(); wait(0.3)
 print("실행취소 후 항목:", len(st.project.render_items))
 assert len(st.project.render_items) == 2, "실행취소 1번"
+from dtme.ui_render import file_name
+nm = file_name(p, p.render_items[0])
+print("출력 이름:", nm); assert nm.endswith("2026 1109 1000"), nm
 print("OK test_ui_srcrender")

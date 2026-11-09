@@ -2,7 +2,7 @@
 
 - 프록시(640px, 예전 960px 도 그대로, 모든 프레임 키프레임)를 구간(CHUNK 프레임) 단위로 한 번에 디코딩(ffmpeg 1번 = 120장)해 메모리에 둠
 - 재생 위치가 있는 구간부터 → 앞뒤로 넓혀 가며 백그라운드로 채움(가능하면 클립 전체)
-- 상한(기본 = 실제 메모리의 25%, 최대 64GB, settings `ram_cache_gb` 로 바꿈)을 넘으면 오래 안 쓴 구간부터 비움
+- 상한(기본 = 실제 메모리의 12%, 최대 32GB — v0.16.26, 예전 25%·64GB, settings `ram_cache_gb` 로 바꿈)을 넘으면 오래 안 쓴 구간부터 비움
 - 한 장 = 640×360×3 ≈ 0.7MB → 59.94fps 1분 ≈ 2.5GB (예전 960 프록시 = 1.5MB·5.6GB)
 """
 from __future__ import annotations
@@ -49,7 +49,7 @@ def cap_bytes() -> int:
             return max(0, int(float(gb) * (1 << 30)))
         except (TypeError, ValueError):
             pass
-    return min(64 << 30, total_ram() // 4)
+    return min(32 << 30, total_ram() * 12 // 100)       # v0.16.26: 25%·64GB → 12%·32GB(다른 프로그램 여유)
 
 
 class FrameCache:
@@ -179,6 +179,13 @@ class FrameCache:
         with self.lock:
             for k in [k for k in self.chunks if proxy is None or k[0] == proxy]:
                 self.used -= self.chunks.pop(k).nbytes
+
+    def release(self):
+        """렌더 시작(v0.16.26): 모두 비우고 채우기 멈춤. 편집에서 프레임을 넘기면(focus) 다시 채움."""
+        with self.lock:
+            self.focus = None
+            self.chunks.clear()
+            self.used = 0
 
 
 _cache: FrameCache | None = None
