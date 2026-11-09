@@ -136,12 +136,15 @@ SAMPLE_MAX = 12          # v0.16.17: 20 → 12 (분석 시간 ≈60%, 사용자 
 def sample_frames(src: Source, every: float = SAMPLE_EVERY_SEC, n_max: int = SAMPLE_MAX,
                   a: int | None = None, b: int | None = None) -> list[int]:
     """구간 [a, b) 에서 every 초마다 1장(최대 n_max, 넘으면 고르게). 가운데 정렬.
-    v0.16.29: 맨 앞(인점)에도 1장 → ◆ 첫 키 = 인점(녹화 시작 직후 카메라 색이 바뀌는 구간도 따라감, 사용자)."""
+    v0.16.29: 맨 앞(인점)에도 1장 → ◆ 첫 키 = 인점(녹화 시작 직후 카메라 색이 바뀌는 구간도 따라감, 사용자).
+    v0.16.30: 첫 샘플이 인점에서 1초 안이면 그 샘플 대신 인점(사용자)."""
     a = 0 if a is None else a
     b = src.frames if b is None else b
     n = max(1, min(n_max, int((b - a) / float(src.fps) / every)))
     fr = [int(a + (k + 0.5) * (b - a) / n) for k in range(n)]
-    if fr[0] - a >= max(1, int(round(float(src.fps) * 0.25))):      # 첫 칸 가운데가 인점에서 0.25초 이상 뒤면
+    if fr[0] - a < float(src.fps) * 1.0:          # v0.16.30: 첫 샘플이 인점에서 1초 안 = 인점으로 바꿈(가까운 두 장 대신 한 장)
+        fr[0] = int(a)
+    else:                                         # 1초 이상 뒤 = 인점을 맨 앞에 더함
         fr.insert(0, int(a))
     return fr
 
