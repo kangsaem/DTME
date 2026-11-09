@@ -250,11 +250,16 @@ def _disk_id(path: str) -> tuple[str, str] | None:
 
 
 def _gate(key: str, n: int) -> Gate:
+    """자리 수는 부를 때마다 설정값으로(실행 중 바꿔도 다음 ffmpeg 부터)."""
     with _gates_lock:
         g = _gates.get(key)
         if g is None:
             g = _gates[key] = Gate(key, n)
-        return g
+    if g.n != n:
+        with g.cv:
+            g.n = n
+            g.cv.notify_all()
+    return g
 
 
 def _gates_for(cmd) -> list:

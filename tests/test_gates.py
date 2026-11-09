@@ -31,6 +31,7 @@ assert res["gpu"][0] == "gpu" and res["gpu"][1].startswith("disk:") and res["nve
 # 1) 2) 자리 수·우선순위: 자리 2개, 긴 ffmpeg(파일 입력)를 프록시 풀 4개 + 분석 풀 2개
 from dtme import project
 project.set_setting("disk_jobs", 2)
+print("저장장치 종류:", __import__("dtme.drives", fromlist=["x"]).kind(clip), "· 기본 자리", ff.DISK_SLOTS)
 order, peak, lock = [], [0], threading.Lock()
 LONG = lambda: [paths.ffmpeg(), "-v", "error", "-stream_loop", "-1", "-re", "-i", clip, "-t", "1.2", "-f", "null", "-"]
 
