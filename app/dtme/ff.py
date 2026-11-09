@@ -884,6 +884,16 @@ def reframe_expr(keys: list, f0: int, frames_per_sec: float, mul: float = 1.0) -
     return f"if(lt(t,{tk[0][0]:.6f}),{tk[0][1]:.3f},{e})"
 
 
+def _crop_noop(src: Source, orientation: str) -> bool:
+    """화면비가 이미 출력과 같음(크롭 없음) — GPU 축소 조건."""
+    w, h = out_size(orientation)
+    return bool(src.width and src.height) and abs(src.width * h - src.height * w) <= max(w, h) * 2
+
+
+def _dl_fmt(src: Source) -> str:
+    return "p010le" if "10" in (_proxy_pix(src.path) or "") else "nv12"
+
+
 def frame_chain(orientation: str) -> list[str]:
     """화면비 맞춰 중앙 크롭(4K에서) 후 축소."""
     w, h = out_size(orientation)
@@ -2037,9 +2047,14 @@ def post_graph(fparts: list, cmd: list, project: Project, extras: dict, total: f
 
 def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orientation: str | None = None,
                      audio: bool | None = None, fast: bool = False,
-                     extras: dict | None = None, head_trim: int = 0) -> tuple[list[str], float, str | None]:
-    """head_trim(조각 렌더, v0.16.26) = 앞 출력 프레임 몇 장을 버림(노이즈 제거 시간축 예열). 컷 1개·소리 없음일 때만."""
+                     extras: dict | None = None, head_trim: int = 0,
+                     gpu_scale: bool | None = None) -> tuple[list[str], float, str | None]:
+    """head_trim(조각 렌더, v0.16.26) = 앞 출력 프레임 몇 장을 버림(노이즈 제거 시간축 예열). 컷 1개·소리 없음일 때만.
+    gpu_scale(v0.16.28) = 4K → 출력 크기 축소를 GPU(scale_cuda)에서 한 뒤 CPU 로(넘기는 양 1/4, CPU 축소 없음).
+    None = GPU 디코딩 켜짐이면 사용. 조건이 안 맞는 컷(크롭 필요·렌즈·흔들림·리프레임)은 그 컷만 CPU 축소."""
     o = project.output
+    if gpu_scale is None:
+        gpu_scale = bool(o.gpu_decode) and not fast and _setting_int("gpu_scale", 1) != 0
     orientation = orientation or o.orientation
     audio = o.audio if audio is None else audio
     cmd = [paths.ffmpeg(), "-y"]
@@ -2056,10 +2071,13 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orien
         seg_src_sec = float(Fraction(seg.frames) / src.fps)
         out_sec = seg_src_sec / seg.speed
         total += out_sec
-        cmd += [*_hw(o.gpu_decode), "-ss", _seek(seg.fin, src.fps), "-t", f"{seg_src_sec + 0.5:.6f}", "-i", _abs(src.path)]
-        v = [f"trim=end_frame={seg.frames}", "setpts=PTS-STARTPTS"]
         lensf = lens_chain(g, src.width, src.height)
         sp = None if fast else stab_params(g)       # 미리보기 렌더는 흔들림 보정 생략(분석이 느림)
+        gs = (gpu_scale and not sp and not lensf and not seg_reframe(src, seg, orientation)
+              and _crop_noop(src, orientation))
+        cmd += [*_hw(o.gpu_decode), *(["-hwaccel_output_format", "cuda"] if gs else []),
+                "-ss", _seek(seg.fin, src.fps), "-t", f"{seg_src_sec + 0.5:.6f}", "-i", _abs(src.path)]
+        v = [f"trim=end_frame={seg.frames}", "setpts=PTS-STARTPTS"]
         if sp:
             ow, oh = out_size(orientation)
             trf = stab_file(src, seg, orientation, sp[0], lensf)
@@ -2079,6 +2097,10 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orien
                 xe = reframe_expr(keys, seg.fin, float(src.fps) * seg.speed)
                 v += [f"crop={cw}:{ch}:x='clip((iw-{cw})/2+{xe},0,iw-{cw})':y=(ih-{ch})/2",
                       f"scale={ow}:{oh}:flags=lanczos"]
+            elif gs:
+                ow, oh = out_size(orientation)
+                v += [f"scale_cuda={ow}:{oh}:interp_algo=lanczos", "hwdownload", f"format={_dl_fmt(src)}",
+                      "format=yuv420p10le" if _dl_fmt(src) == "p010le" else "format=yuv420p"]
             else:
                 v += frame_chain(orientation)
         if has_gkeys(seg):          # 색 키프레임: 프레임마다 값 변경(sendcmd, 파일은 LUT 와 같은 작업 폴더)
@@ -2268,13 +2290,22 @@ def _render_chunked(project: Project, segs: list, plan: list, out_file: str, on_
             v = sum(prog[i] * weights[i] for i in range(n)) / wsum
             on_progress(min(0.99, 0.97 * v + 0.03 * prog[n]))
 
+    import os as _os
+    thr = _setting_int("chunk_threads", 0) or max(2, (_os.cpu_count() or 8) // max(1, min(n * 2, gpu_cap())))
+    gscale = [None]                                   # GPU 축소 실패하면 False 로(이 렌더 동안)
+    nohw = [False]                                    # GPU 디코딩도 실패하면 True(CPU 디코딩)
+
     def one(i):
         set_prio(prio)
         sub, drop, _nout = plan[i]
         f = parts / f"p{i:02d}.mp4"
         tries = 0
         while True:
-            cmd, total, cwd = build_render_cmd(project, [sub], str(f), orientation, False, False, None, head_trim=drop)
+            cmd, total, cwd = build_render_cmd(project, [sub], str(f), orientation, False, False, None, head_trim=drop,
+                                               gpu_scale=gscale[0])
+            if nohw[0]:
+                cmd = [c for c in cmd if c not in ("-hwaccel", "cuda")]
+            cmd[1:1] = ["-filter_complex_threads", str(thr), "-threads", str(thr)]   # v0.16.28 A: 조각마다 코어 나눔
             try:
                 with plock:
                     running[0] += 1
@@ -2294,10 +2325,15 @@ def _render_chunked(project: Project, segs: list, plan: list, out_file: str, on_
                     lower_gpu_cap(r)
                     _time.sleep(0.5)
                     continue
-                if tries == 1 and "-hwaccel" in cmd:              # GPU 디코딩 실패 → CPU 로 한 번
-                    cmd2 = [c for c in cmd if c not in ("-hwaccel", "cuda")]
-                    run_progress(cmd2, total, lambda v: (prog.__setitem__(i, v), report()), stop, cwd=cwd)
-                    return str(f)
+                # 실패한 명령에 든 것 기준(조각 여러 개가 동시에 실패해도 각자 다음 단계로): GPU 축소 → GPU 디코딩 → 포기
+                if tries <= 8 and "scale_cuda" in " ".join(map(str, cmd)):
+                    if gscale[0] is not False:
+                        gscale[0] = False
+                        log_error("GPU 축소 실패 → CPU 축소", str(e)[-300:])
+                    continue
+                if tries <= 8 and "-hwaccel" in cmd:              # GPU 디코딩 실패 → CPU 디코딩(이 렌더 동안)
+                    nohw[0] = True
+                    continue
                 raise
 
     try:
@@ -2331,7 +2367,8 @@ def _render_chunked(project: Project, segs: list, plan: list, out_file: str, on_
     src = project.source(segs[0].src)
     dur = float(Fraction(segs[0].frames) / src.fps / Fraction(segs[0].speed).limit_denominator(1000))
     log_info(f"조각 렌더 {Path(out_file).name}: {n}조각 {_time.monotonic() - t0:.1f}초 (영상 {dur:.0f}초, "
-             f"GPU 동시 한계 {gpu_cap()}, 자리 대기 {waited() - w0:.1f}초)")
+             f"GPU 동시 한계 {gpu_cap()}, 조각 스레드 {thr}, GPU 축소 {'끔' if gscale[0] is False else '켬'}, "
+             f"자리 대기 {waited() - w0:.1f}초)")
 
 
 def render_video(project: Project, segs: list[Segment], out_file: str, on_progress=None, cancel=None,
@@ -2362,9 +2399,18 @@ def render_video(project: Project, segs: list[Segment], out_file: str, on_progre
     cmd, total, cwd = build_render_cmd(project, segs, out_file, orientation, audio, fast, extras)
     try:
         run_progress(cmd, total, on_progress, cancel, cwd=cwd)
-    except FFError:
-        if not project.output.gpu_decode:
+    except FFError as e:
+        if not project.output.gpu_decode or (cancel is not None and cancel.is_set()):
             raise
+        if "scale_cuda" in " ".join(map(str, cmd)):            # GPU 축소 실패 → CPU 축소(GPU 디코딩은 유지)
+            log_error("GPU 축소 실패 → CPU 축소", str(e)[-300:])
+            cmd, total, cwd = build_render_cmd(project, segs, out_file, orientation, audio, fast, extras, gpu_scale=False)
+            try:
+                run_progress(cmd, total, on_progress, cancel, cwd=cwd)
+                return
+            except FFError:
+                if cancel is not None and cancel.is_set():
+                    raise
         cmd = [c for c in cmd if c not in ("-hwaccel", "cuda")]
         run_progress(cmd, total, on_progress, cancel, cwd=cwd)
 

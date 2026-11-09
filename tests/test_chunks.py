@@ -67,5 +67,21 @@ for name, fin, fout, speed, orient in [("x1", 0, s.frames, 1.0, "horizontal"), (
     if d.max() > 1.0 or abs(adur(a) - adur(b)) > 0.03:
         ok = False
 set_setting("chunk_max", 0)
+# v0.16.28: GPU 축소 명령 모양 · GPU 없는 환경에서는 실패 → CPU 로 넘어가도 결과 같음
+p.output.gpu_decode = True
+seg = p.snap_seg(Segment(s.id, 0, s.frames, 1.0))
+cmd, _t, _c = ff.build_render_cmd(p, [seg], os.path.join(WORK, "x.mp4"), "horizontal", False)
+js = " ".join(cmd)
+print("GPU 축소 명령:", "scale_cuda" in js, "-hwaccel_output_format" in js)
+assert "scale_cuda=1920:1080" in js and "hwdownload" in js and "-hwaccel_output_format" in js
+cmdv, _t, _c = ff.build_render_cmd(p, [seg], os.path.join(WORK, "x.mp4"), "vertical", False)
+assert "scale_cuda" not in " ".join(cmdv), "세로(크롭 필요) = CPU 축소"
+c = os.path.join(WORK, "chunk_gpu.mp4")
+ff.render_video(p, [seg], c, orientation="horizontal", audio=True)
+G = frames_of(c); A0 = frames_of(os.path.join(WORK, "whole_x1.mp4"))
+dd = np.abs(G - A0).mean(axis=(1, 2, 3)) if len(G) == len(A0) else np.array([99.0])
+print(f"GPU 켬(시험 환경은 GPU 없음 → CPU 로 넘어감): 프레임 {len(G)}/{len(A0)} 차 최대 {dd.max():.3f}")
+ok = ok and len(G) == len(A0) and dd.max() <= 1.0
+p.output.gpu_decode = False
 assert ok, "조각 렌더 결과가 통째와 다름"
 print("OK test_chunks")
