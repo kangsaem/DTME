@@ -33,6 +33,33 @@ GRADE_KEYS = ["lut", "r_gain", "b_gain", "hue", "sat", "water", "gy", "curve", "
 OUTPUTS = [("horizontal", "1920×1080"), ("horizontal1440", "2560×1440"), ("horizontal2160", "3840×2160"),
            ("vertical", "1080×1920")]
 
+OUT_H = {"horizontal": 1080, "horizontal1440": 1440, "horizontal2160": 2160}   # 가로 출력 높이(세로 = 늘 허용)
+
+
+def src_out_h(width: int, height: int) -> int:
+    """16:9 로 자른 원본 높이(업스케일 없이 낼 수 있는 가로 출력 높이). 모름 = 0."""
+    if not width or not height:
+        return 0
+    return int(min(height, width * 9 / 16))
+
+
+def outputs_for(h: int) -> list[str]:
+    """v0.16.32: 원본(16:9 높이 h)에 맞는 출력 — 가로 1080·세로는 늘, 1440·4K 는 원본이 그 이상일 때만. h=0(모름) = 전부."""
+    return [k for k, _ in OUTPUTS if k == "vertical" or not h or OUT_H[k] <= max(h, 1080)]
+
+
+def clamp_out(key: str, h: int) -> str:
+    """원본보다 큰 가로 출력이면 원본이 낼 수 있는 가장 큰 가로로."""
+    ok = outputs_for(h)
+    if key in ok:
+        return key
+    return max((k for k in ok if k in OUT_H), key=lambda k: OUT_H[k], default="horizontal")
+
+
+def source_out_h(src) -> int:
+    return src_out_h(getattr(src, "width", 0), getattr(src, "height", 0)) if src is not None else 0
+
+
 DEFAULT_LUT = "DJI_OSMO_Action_4_D-Log_M_to_Rec.709_V1.cube"   # DJI 공개 LUT, 프로그램에 포함
 DEFAULTS_REV = 2      # 공장 기본값을 바꾸면 올림 → 이전에 저장한 '새 프로젝트 기본값'은 한 번 무시
 

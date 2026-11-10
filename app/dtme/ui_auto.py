@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (QButtonGroup, QComboBox, QDialog, QFileDialog, QF
 
 from . import auto, ff, jobs, stage as SG, ui_style
 from .ui_render import DragMove
-from .project import (OUTPUTS, Segment, auto_lut, display_name, has_clip_grade, get_setting, grade_at, list_presets, load_preset, set_setting,
+from .project import (OUTPUTS, Segment, clamp_out, outputs_for, source_out_h, auto_lut, display_name, has_clip_grade, get_setting, grade_at, list_presets, load_preset, set_setting,
                       short_name)
 
 # ------------------------------------------------------------------ 색·모양 (DTME 공통)
@@ -476,7 +476,7 @@ class AutoDialog(DragMove, QDialog):
             choice = auto.normalize_key(rec.get("preset", "")) if rec.get("by") == "user" else "auto"
             bad = state.status.get(s.id) in ("읽기 오류", "원본 없음")
             self.rows.append(AutoRow(s, not bad and not (keep == "keep" and has_c), choice or "auto",
-                                     s.out or p.output.orientation))
+                                     clamp_out(s.out or p.output.orientation, source_out_h(s))))   # v0.16.32 원본보다 크지 않게
         self.jobs = []
         self.waiting = None              # 'start' | 'sample' (분석 끝나길 기다리는 중)
         self.busy = False
@@ -613,6 +613,7 @@ class AutoDialog(DragMove, QDialog):
         self._name_preview()
         if self.list.count():
             self.list.setCurrentRow(0)
+        self._out_options()
         self.proxy_wait = False             # 시작 창 [보정+편집]: 프록시까지 끝나면 닫힘
         self.armed = False                  # 버튼 전 = 분석만 뒤에서 조용히 미리(v0.16.18), 값 넣기·렌더·표시는 버튼 뒤
         for r in self.rows:                 # 이번 실행 중에 이미 분석한 영상(같은 LUT)은 바로 결과(계산만, 0초)
@@ -745,7 +746,17 @@ class AutoDialog(DragMove, QDialog):
         if r:
             self.grid.set_current(r.choice)
             self.out.set_value(r.out)
+        self._out_options()
         self._show_detail()
+
+    def _out_options(self):
+        """v0.16.32: 고른 줄(없으면 전체)의 원본 중 하나라도 낼 수 있는 출력만 보임."""
+        p = self.state.project
+        ok = set()
+        for r in self._targets():
+            ok |= set(outputs_for(source_out_h(p.source(r.sid))))
+        for k, b in self.out.btns.items():
+            b.setVisible(k in ok)
 
     def _show_detail(self):
         r = self._current()
@@ -779,8 +790,9 @@ class AutoDialog(DragMove, QDialog):
         self._show_detail()
 
     def _out(self, k):
+        p = self.state.project
         for r in self._targets():
-            r.out = k
+            r.out = clamp_out(k, source_out_h(p.source(r.sid)))     # 원본보다 크면 그 원본의 가장 큰 값
         self.list.viewport().update()
 
     def _keep(self, k):

@@ -353,6 +353,7 @@ class GradePanel(QWidget):
         self._debounce.timeout.connect(self._emit_change)
 
         state.changed.connect(self._on_state)
+        state.sourceStatus.connect(lambda _sid: self._load_output())     # v0.16.32: 원본 크기를 읽은 뒤 출력 칸 갱신
         self._fill_luts()
         self._fill_presets()
         self._fill_targets()
@@ -539,7 +540,22 @@ class GradePanel(QWidget):
 
     # ------------------------------------------------------------ 출력
     def _load_output(self):
-        o = self.state.project.output
+        """v0.16.32: 불러온 원본 중 가장 큰 것에 맞는 출력만(업스케일 없음, 세로는 늘). 기본값이 넘으면 낮춤."""
+        from .project import OUTPUTS, clamp_out, outputs_for, source_out_h
+        p = self.state.project
+        o = p.output
+        hs = [source_out_h(x) for x in p.sources]
+        h = 0 if (not hs or 0 in hs) else max(hs)
+        ok = outputs_for(h)
+        self.out.blockSignals(True)
+        if [self.out.itemData(i) for i in range(self.out.count())] != ok:
+            self.out.clear()
+            for k, label in OUTPUTS:
+                if k in ok:
+                    self.out.addItem(label, k)
+        if o.orientation not in ok:
+            o.orientation = clamp_out(o.orientation, h)
+        self.out.blockSignals(False)
         self.out.setCurrentIndex(max(0, self.out.findData(o.orientation)))
         self.audio.blockSignals(True)
         self.audio.setChecked(o.audio)
