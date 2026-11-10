@@ -1,6 +1,7 @@
 """v0.16.37 AUTO 창: ✓ 칸 누른 채 쓸기(칠하기·되돌리면 원래대로) · 왼쪽 아래 버전.
 사용: python tests/test_ui_autocheck.py"""
-import os, subprocess, sys, tempfile, time  # noqa: E401
+import faulthandler, os, subprocess, sys, tempfile, time  # noqa: E401
+faulthandler.enable()
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "app"))
 os.environ["QT_QPA_PLATFORM"] = "offscreen"; os.environ["DTME_NO_AUDIO"] = "1"
 from PySide6.QtCore import QPoint, Qt
@@ -28,11 +29,14 @@ def wait(sec, cond=None):
 
 st, e = w.state, w.edit
 e.import_files(vids); wait(60, lambda: len(st.project.sources) == 5 and all(st.status.get(x.id) == "준비" for x in st.project.sources))
+print("소스", len(st.project.sources), [st.status.get(x.id) for x in st.project.sources], flush=True)
 dlg = e.make_auto_dialog(); dlg.show(); wait(1)
+print("창", dlg.list.count(), flush=True)
 assert dlg.ver_lab.text() == f"DTME {__version__}"
 vp = dlg.list.viewport()
 pt = lambda i: QPoint(dlg.list.visualItemRect(dlg.list.item(i)).left() + 14, dlg.list.visualItemRect(dlg.list.item(i)).center().y())  # noqa: E731
 ck = lambda: [r.checked for r in dlg.rows]  # noqa: E731
+print("체크", ck(), flush=True)
 assert ck() == [True] * 5
 sel0 = [it.isSelected() for it in (dlg.list.item(i) for i in range(5))]
 # 1번 줄 누름(끔) → 3번까지 쓸기 → 2번으로 되돌림 → 놓기
