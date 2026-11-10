@@ -544,6 +544,7 @@ class RenderPanel(QWidget):
             self._start(self.queue.pop(0))
         if not self.queue and not self.active and self.running:
             self.running = False
+            self.b_render.setToolTip("")
             self.b_render.set_progress(None)
             self.runFinished.emit(len(self.run_ok), len(self.run_bad), time.time() - self.run_t0,
                                   str(out_dir(self.state.project)))
@@ -572,8 +573,21 @@ class RenderPanel(QWidget):
         n = len(self.run_items)
         k = len(self.run_ok) + len(self.run_bad)
         text = f"{k}/{n} · {int(frac * 100)}%"
+        left = self._left_text(frac)
         self.b_render.set_progress(frac, text, bool(self.run_bad))
-        self.runProgress.emit(frac, text, bool(self.run_bad))
+        self.b_render.setToolTip(f"남은 시간 {left}" if left else "")
+        self.runProgress.emit(frac, f"{text} · 남은 {left}" if left else text, bool(self.run_bad))      # 창 제목
+
+    def _left_text(self, frac: float) -> str:
+        """남은 시간(v0.16.41): 지금까지 속도로 어림. 처음 10초·3% 전에는 안 보임(초반 값이 크게 흔들림)."""
+        el = time.time() - getattr(self, "run_t0", time.time())
+        if el < 10 or frac < 0.03 or frac >= 1:
+            return ""
+        s = int(el * (1 - frac) / frac)
+        s = (s + 4) // 5 * 5 if s < 120 else (s + 29) // 30 * 30          # 숫자가 매초 바뀌지 않게
+        m, s = divmod(s, 60)
+        h, m = divmod(m, 60)
+        return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
 
     def _start(self, it):
         p = self.state.project
@@ -640,8 +654,8 @@ class RenderSettings(QWidget):
         self.prefix.setPlaceholderText("DTME")
         f.addRow("명칭", self.prefix)
         self.encoder = QComboBox()
-        self.encoder.addItem("NVENC (GPU)", "nvenc")
-        self.encoder.addItem("x264 (CPU)", "x264")
+        for key, name in ff.ENCODERS:               # v0.16.41: HEVC 10bit 2개 추가(기본은 그대로)
+            self.encoder.addItem(name, key)
         f.addRow("인코더", self.encoder)
         self.bitrate = QSpinBox()
         self.bitrate.setRange(8, 100)
@@ -667,7 +681,6 @@ class RenderSettings(QWidget):
         f.addRow("동시 렌더", self.jobs_r)
         frow = QHBoxLayout()
         self.folder = QLineEdit()
-        self.folder.setPlaceholderText("렌더할 때 물어봄")
         b = QPushButton("선택…")
         fix_size(b)
         b.clicked.connect(self._pick_folder)

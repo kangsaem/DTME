@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import os
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
@@ -28,6 +29,7 @@ class AppState(QObject):
         self.work: dict[str, tuple] = {}      # sid → (단계 "analyze"|"sample"|"render", 진행 0~1 | -1 = 대기, 글자 | "")
         self._proxy_jobs: dict[str, jobs.Job] = {}
         self._undo: list[dict] = []
+        self._redo: list[dict] = []
         self._ck_tag, self._ck_t = "", 0.0
         self.dirty = False
 
@@ -56,18 +58,85 @@ class AppState(QObject):
         self._ck_tag, self._ck_t = tag, now
         self._undo.append(copy.deepcopy(self.project.to_dict()))
         del self._undo[:-80]
+        self._redo = []                       # 새 작업 = 다시 실행 목록 비움
 
 
     def undo(self) -> bool:
         if not self._undo:
             return False
+        self._redo.append(copy.deepcopy(self.project.to_dict()))
+        self._swap(self._undo.pop())
+        return True
+
+    def redo(self) -> bool:
+        """다시 실행(v0.16.41): 실행취소한 것을 되돌림. 새 작업을 하면 비워짐."""
+        if not self._redo:
+            return False
+        self._undo.append(copy.deepcopy(self.project.to_dict()))
+        self._swap(self._redo.pop())
+        return True
+
+    def _swap(self, d: dict):
         file = self.project.file
-        p = Project.from_dict(self._undo.pop())
+        p = Project.from_dict(d)
         p.file = file
         self.project = p
+        self._ck_tag = ""
         self.dirty = True
         self.changed.emit("undo")
-        return True
+
+    def missing(self) -> list:
+        return [s for s in self.project.sources if self.status.get(s.id) == "원본 없음"]
+
+    def relink(self, folder: str) -> int:
+        """원본 없음(v0.16.41): 고른 폴더(아래 폴더 포함)에서 같은 파일 이름을 찾아 다시 연결. 찾은 개수.
+        영상·이미지·음악 모두. 보정·컷은 그대로(경로만 바뀜)."""
+        want = {}
+        for s in self.missing():
+            want.setdefault(Path(s.path).name.lower(), []).append(s)
+        imgs = [m for m in self.project.images if not Path(m.path).exists()]
+        for m in imgs:
+            want.setdefault(Path(m.path).name.lower(), []).append(m)
+        auds = [a for a in getattr(self.project, "audios", []) if not Path(a.get("path", "") if isinstance(a, dict) else a.path).exists()]
+        for a in auds:
+            want.setdefault(Path(a.get("path", "") if isinstance(a, dict) else a.path).name.lower(), []).append(a)
+        if not want:
+            return 0
+        found, seen = 0, 0
+        for root, _dirs, files in os.walk(folder):
+            for f in files:
+                seen += 1
+                for it in want.pop(f.lower(), []):
+                    full = str(Path(root) / f)
+                    if isinstance(it, dict):
+                        for m in self.project.music:          # 타임라인에 올린 음악도 같은 파일이면 같이
+                            if m.get("path") == it["path"]:
+                                m["path"] = full
+                        it["path"] = full
+                    else:
+                        it.path = full
+                    found += 1
+            if not want or seen > 200_000:
+                break
+        if not found:
+            return 0
+        for m in self.project.images:
+            if self.img_status.get(m.id) == "원본 없음" and Path(m.path).exists():
+                self.img_status.pop(m.id, None)
+                if not m.width:
+                    self._queue_image(m)
+        for s in self.project.sources:
+            if self.status.get(s.id) == "원본 없음" and Path(s.path).exists():
+                self.status.pop(s.id, None)
+                s.proxy = ""
+                (self._queue_proxy if s.frames > 0 else self._queue_analyze)(s)
+                self.sourceStatus.emit(s.id)
+        self.dirty = True
+        self.retune()
+        self.changed.emit("sources")
+        self.changed.emit("images")
+        self.importProgress.emit()
+        return found
 
     def touch(self, what: str):
         self.dirty = True
@@ -76,6 +145,7 @@ class AppState(QObject):
     def set_project(self, p: Project):
         self.project = p
         self._undo = []
+        self._redo = []
         self.status, self.proxy_pct, self._proxy_jobs = {}, {}, {}
         self.img_status = {}
         self.dirty = False

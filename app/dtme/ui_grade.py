@@ -301,7 +301,9 @@ class GradePanel(QWidget):
             s_col.lay.addWidget(self._box(key, self._row(key, name, 54, Qt.AlignLeft, tip)))
         s_col.lay.setSpacing(3)
         self.curve = CurveEditor()
-        self.curve.changed.connect(lambda pts: self._set("curve", pts))
+        self.curve.changed.connect(self._curve_done)
+        self.curve.editing.connect(self._curve_live)      # v0.16.41 끄는 동안 모니터가 따라감
+        self._curve_drag = False
         cv = QVBoxLayout()
         cv.setSpacing(3)
         cv.addWidget(self.curve)
@@ -973,10 +975,25 @@ class GradePanel(QWidget):
             x = float(e.get(k, 0))
             v.show_value("끔" if k == "stab" and x <= 0 else SLIDERS[k][3].format(x))
 
-    def _set(self, key, value, slider=False):
+    def _curve_live(self, pts):
+        """커브 점을 끄는 동안: 처음 움직일 때 실행취소 지점 1번, 그 뒤는 값만 쓰고 모니터만 갱신(샘플·타임라인은 놓을 때)."""
+        if not self._curve_drag:
+            self._curve_drag = True
+            self._touch("curve")
+            self.state.checkpoint()
+        self._write("curve", pts)
+        self.state.dirty = True
+        self.liveChanged.emit()
+
+    def _curve_done(self, pts):
+        drag, self._curve_drag = self._curve_drag, False
+        self._set("curve", pts, ck=not drag)          # 끌었으면 실행취소 지점은 이미 있음(끌기 1번 = 실행취소 1번)
+
+    def _set(self, key, value, slider=False, ck=True):
         # 슬라이더: 손잡이·홈 클릭·휠 어느 쪽이든 실행취소 지점(연속 조작은 1번으로 합침)
         self._touch(key)
-        self.state.checkpoint(f"slider:{key}" if slider else "")
+        if ck:
+            self.state.checkpoint(f"slider:{key}" if slider else "")
         self._write(key, value)
         self.state.dirty = True
         self._update_labels()

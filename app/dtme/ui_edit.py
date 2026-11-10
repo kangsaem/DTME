@@ -33,12 +33,12 @@ IMG_DISPLAY_MAX = 2048      # 모니터 표시용 이미지 최대 변(렌더는
 # Windows 물리 키(스캔코드) — 한/영 상태와 무관하게 동작
 SCAN = {0x11: "w", 0x32: "m", 0x39: "space", 0x24: "j", 0x26: "l", 0x17: "i", 0x18: "o", 0x1A: "i", 0x1B: "o", 0x1F: "s", 0x22: "g",
         0x30: "b", 0x02: "1", 0x03: "2", 0x04: "3", 0x53: "del", 0x0E: "del", 0x01: "esc",
-        0x4B: "left", 0x4D: "right", 0x50: "down", 0x1C: "enter", 0x2C: "z"}
+        0x4B: "left", 0x4D: "right", 0x50: "down", 0x1C: "enter", 0x2C: "z", 0x15: "y"}
 QKEY = {Qt.Key_W: "w", Qt.Key_M: "m", Qt.Key_Space: "space", Qt.Key_J: "j", Qt.Key_L: "l", Qt.Key_I: "i", Qt.Key_O: "o",
         Qt.Key_BracketLeft: "i", Qt.Key_BracketRight: "o", Qt.Key_S: "s", Qt.Key_G: "g", Qt.Key_B: "b",
         Qt.Key_1: "1", Qt.Key_2: "2", Qt.Key_3: "3", Qt.Key_Delete: "del", Qt.Key_Backspace: "del",
         Qt.Key_Escape: "esc", Qt.Key_Left: "left", Qt.Key_Right: "right", Qt.Key_Down: "down",
-        Qt.Key_Return: "enter", Qt.Key_Enter: "enter", Qt.Key_Z: "z"}
+        Qt.Key_Return: "enter", Qt.Key_Enter: "enter", Qt.Key_Z: "z", Qt.Key_Y: "y"}
 TEXT_INPUTS = (QLineEdit, QAbstractSpinBox, QTextEdit, QPlainTextEdit)
 
 C_INFO, C_OK, C_WARN = "#cfd8e3", "#7fd18b", "#f2c94c"
@@ -258,17 +258,18 @@ class EditTab(QWidget):
         self.auto_bar.setTextVisible(False)
         self.auto_bar.setFixedHeight(3)
         self.auto_bar.setVisible(False)
-        ab = QHBoxLayout()                      # [AUTO][영상 추가][삭제] 한 줄(v0.16.8)
+        ab = QHBoxLayout()                      # [영상 추가][AUTO][삭제] 한 줄(v0.16.41 사용자: AUTO 를 가운데)
         ab.setSpacing(4)
         self.b_auto.setMinimumWidth(64)         # 열이 좁으면(노트북) 셋이 같이 줄어듦
         self.b_auto.setMaximumWidth(MAIN_W)
-        ab.addWidget(self.b_auto, 4)
         for text, fn in (("영상 추가", self.add_files), ("삭제", self._remove_selected)):
             b = _btn(text, "", fn)
             b.setFixedHeight(MAIN_H)
             b.setMinimumWidth(48)
             b.setMaximumWidth(ADD_W)
             ab.addWidget(b, 3)
+            if text == "영상 추가":
+                ab.addWidget(self.b_auto, 4)
         ab.addStretch(1)
         left = QVBoxLayout()
         left.setContentsMargins(0, 0, 0, 0)
@@ -375,7 +376,9 @@ class EditTab(QWidget):
         cut.addWidget(render_list_button(lambda: self._key("enter"), "렌더리스트로 (Enter)"))
         cut.addStretch(1)
 
+        self._say_hold = False
         self.status = QLabel("")
+        self.status.mousePressEvent = lambda _e: self._say_clear()
         self.status.setStyleSheet("font-size:13px; padding:3px 6px; background:#1c1c1c; border-radius:3px;")
 
         # 타임라인 머리줄: [타임라인 n초] ··· [▼] ··· [확대 ━━] [전체 삭제] [렌더리스트로]
@@ -549,7 +552,8 @@ class EditTab(QWidget):
             # 입력란에 커서가 있어도 Ctrl+Z / Ctrl+S 는 앱 기능(실행취소·저장)
             if e.modifiers() & Qt.ControlModifier and e.key() in (Qt.Key_Z, Qt.Key_S):
                 fw.clearFocus()
-                (self.window().undo if e.key() == Qt.Key_Z else self.window().save_project)()
+                redo = bool(e.modifiers() & Qt.ShiftModifier)
+                (self.window().save_project if e.key() == Qt.Key_S else self.window().redo if redo else self.window().undo)()
                 return True
             self._text_key = stamp
             return False
@@ -565,14 +569,17 @@ class EditTab(QWidget):
             return True
         ctrl = bool(e.modifiers() & Qt.ControlModifier)
         if ctrl:
-            if name == "z":
-                self.window().undo()
+            if name == "z":                      # Ctrl+Z 실행취소 · Ctrl+Shift+Z 다시 실행(v0.16.41)
+                (self.window().redo if e.modifiers() & Qt.ShiftModifier else self.window().undo)()
+                return True
+            if name == "y":
+                self.window().redo()
                 return True
             if name == "s":
                 self.window().save_project()
                 return True
             return False
-        if name == "z":
+        if name in ("z", "y"):
             return False
         if e.isAutoRepeat() and name not in ("left", "right"):
             return True
@@ -664,7 +671,19 @@ class EditTab(QWidget):
 
     # ================================================================ 표시
     def _say(self, text, color=C_INFO):
+        """상태줄. 오류·실패 글은 다른 안내 글에 덮이지 않고 남음 → 상태줄을 누르면 지워짐(새 오류·실패는 바꿔 씀, v0.16.41).
+        '프록시 준비 중' 같은 노란 안내는 예전처럼 다음 글에 바뀜."""
+        bad = color == C_WARN and any(k in text for k in ("오류", "실패"))
+        if self._say_hold and not bad:
+            return
+        self._say_hold = bad
+        self.status.setToolTip("누르면 지움" if bad else "")
         self.status.setText(f"<span style='color:{color}'>{text}</span>")
+
+    def _say_clear(self):
+        self._say_hold = False
+        self.status.setToolTip("")
+        self.status.setText("")
 
     def _on_import_progress(self):
         _a, _done, n, frac = self.state.progress_summary()
@@ -1259,8 +1278,13 @@ class EditTab(QWidget):
         a_r = m.addAction("렌더 리스트로")
         a_r.setEnabled(bool(self._selected_sids()))
         a_add = m.addAction("영상 추가…")
+        a_link = m.addAction("원본 폴더 지정…") if self.state.missing() else None      # 원본 없음이 있을 때만(v0.16.41)
         act = m.exec(self.src_list.viewport().mapToGlobal(pos))
-        if act is a_r:
+        if act is None:
+            return
+        if act is a_link:
+            self.window().relink()
+        elif act is a_r:
             self.sources_to_render()
         elif act is a_add:
             self.add_files()

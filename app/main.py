@@ -73,7 +73,15 @@ def main():
     dark(app)
     w = MainWindow()
     args = [a for a in sys.argv[1:] if Path(a).suffix.lower() in (".mp4", ".mov")]
-    if args or os.environ.get("DTME_NO_LAUNCHER"):
+    restored = False
+    if w.autosave_file().exists() and not args and not os.environ.get("DTME_SELFTEST"):
+        # 자동 저장 파일이 남아 있음 = 지난번에 정상 종료가 아니었음(정상 종료·저장 때는 지움, v0.16.41)
+        from dtme import ui_style
+        if ui_style.confirm(None, "저장 안 된 작업이 남아 있습니다.",
+                            [("cancel", "버리기", 80, None), ("ok", "되살리기", 92, "blue")]) == "ok":
+            restored = w.restore_autosave()
+        w.drop_autosave()
+    if args or restored or os.environ.get("DTME_NO_LAUNCHER"):
         w.show()
     else:                                  # 시작 창: 큰 AUTO + 작은 MANUAL (v0.16.8)
         from dtme.ui_launch import Launcher
@@ -93,7 +101,11 @@ def main():
 
 def finish(code: int) -> int:
     """창을 닫으면 남은 작업·ffmpeg 를 정리하고 바로 끝냄(v0.16.23). 스레드가 끝날 때까지 기다리지 않음."""
-    from dtme import ff, jobs
+    from dtme import ff, jobs, paths
+    try:                                   # 정상 종료 = 자동 저장 파일 지움(남아 있으면 다음에 되살릴지 물음)
+        (paths.cache_dir() / "autosave.dtme.json").unlink(missing_ok=True)
+    except OSError:
+        pass
     try:
         n = jobs.shutdown()
         if n:

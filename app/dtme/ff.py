@@ -2376,25 +2376,93 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orien
         fparts[:] = [f.replace("[vo]", "[vm]").replace("[ao]", "[am]") for f in fparts]
         post_graph(fparts, cmd, project, extras, total, orientation, audio, len(segs) + len(img_inputs))
         cwd = cwd or str(paths.cache_dir() / "lut")
+    ten = is_10bit(o.encoder) and not fast and not TEST_LOSSLESS
+    if ten:                          # 10bit 출력(v0.16.41): 컷 끝·합성·전환 뒤 형식을 10bit 로(보정은 원래 16bit 계산)
+        fparts[:] = [f.replace("format=yuv420p,", "format=yuv420p10le,").replace("format=yuv420p[", "format=yuv420p10le[")
+                     .replace(":format=yuv420:", ":format=yuv420p10:") for f in fparts]
     cmd += [*filter_complex_args(";".join(fparts)), "-map", "[vo]"]
     if audio:
         cmd += ["-map", "[ao]", "-c:a", "aac", "-b:a", "192k"]
     br = int(o.bitrate_mbps * {"horizontal1440": 1.5, "horizontal2160": 2.5}.get(orientation, 1.0))   # 설정값 = 1080p 기준
+    rate = ["-maxrate", f"{int(br * 1.5)}M", "-bufsize", f"{br * 2}M"]
+    pix = "yuv420p"
     if TEST_LOSSLESS:                # 시험 전용: 무손실(조각 ↔ 통째 화면 비교)
         cmd += ["-c:v", "libx264", "-preset", "ultrafast", "-qp", "0"]
     elif fast:                       # 미리보기 렌더: 작고 빠르게
         cmd += ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "26"]
     elif o.encoder == "nvenc":
         cmd += ["-c:v", "h264_nvenc", "-preset", "p6", "-tune", "hq", "-rc", "vbr", "-cq", "19",
-                "-b:v", f"{br}M", "-maxrate", f"{int(br * 1.5)}M", "-bufsize", f"{br * 2}M", "-profile:v", "high"]
+                "-b:v", f"{br}M", *rate, "-profile:v", "high", *nvenc_aq("h264_nvenc")]
+    elif o.encoder == "nvenc_hevc10":
+        pix = "p010le"
+        cmd += ["-c:v", "hevc_nvenc", "-preset", "p6", "-tune", "hq", "-rc", "vbr", "-cq", "21",
+                "-b:v", f"{br}M", *rate, "-profile:v", "main10", "-tag:v", "hvc1", *nvenc_aq("hevc_nvenc")]
+    elif o.encoder == "x265_10":
+        pix = "yuv420p10le"
+        cmd += ["-c:v", "libx265", "-preset", "medium", "-crf", "20", *rate, "-tag:v", "hvc1",
+                "-x265-params", "log-level=error"]
     else:
-        cmd += ["-c:v", "libx264", "-preset", "medium", "-crf", "18",
-                "-maxrate", f"{int(br * 1.5)}M", "-bufsize", f"{br * 2}M"]
-    cmd += ["-pix_fmt", "yuv420p", "-r", f"{OUT_FPS.numerator}/{OUT_FPS.denominator}",
+        cmd += ["-c:v", "libx264", "-preset", "medium", "-crf", "18", *rate]
+    cmd += ["-pix_fmt", pix, "-r", f"{OUT_FPS.numerator}/{OUT_FPS.denominator}",
             "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709", "-color_range", "tv",
             "-map_metadata", "-1", "-write_tmcd", "0", "-movflags", "+faststart", _abs(out_file)]
     # 모든 LUT 는 같은 캐시 폴더에 있으므로 cwd 하나로 충분
     return cmd, total, cwd
+
+
+# ------------------------------------------------------------------ 인코더(v0.16.41)
+ENCODERS = [("nvenc", "NVENC (GPU)"), ("x264", "x264 (CPU)"), ("nvenc_hevc10", "NVENC HEVC 10bit (GPU)"), ("x265_10", "x265 10bit (CPU)")]
+AQ_ARGS = ["-spatial-aq", "1", "-temporal-aq", "1", "-aq-strength", "8", "-rc-lookahead", "20"]
+_aq_lock = threading.Lock()
+_aq_known: dict = {}                  # 인코더 이름 → True/False(이번 실행 동안). 판단 못 함(GPU 가 바쁨·없음)은 60초 뒤 다시
+_aq_retry: dict = {}
+
+
+def is_10bit(encoder: str) -> bool:
+    return encoder in ("nvenc_hevc10", "x265_10")
+
+
+def is_hevc(encoder: str) -> bool:
+    return is_10bit(encoder)
+
+
+def nvenc_aq(codec: str) -> list[str]:
+    """AQ(완만한 물빛에 비트를 더 줌 = 계단 줄임) — 이 PC 의 GPU·드라이버·ffmpeg 가 받는지 아주 짧게 인코딩해 보고
+    되면 자동으로 켬, 안 되면 끔(사용자 '확인 후 자동'). 실행마다 인코더별 1번, 결과는 cache/dtme.log.
+    AQ 없이도 안 되면(GPU 없음·자리 없음) 판단을 미룸(끔으로 돌려주고 60초 뒤 다시 확인)."""
+    if os.environ.get("DTME_NO_AQ"):
+        return []
+    with _aq_lock:
+        if codec in _aq_known:
+            return list(AQ_ARGS) if _aq_known[codec] else []
+        if _time.monotonic() < _aq_retry.get(codec, 0.0):
+            return []
+        base = [paths.ffmpeg(), "-v", "error", "-f", "lavfi", "-i", "testsrc2=s=640x360:r=30:d=0.5", "-frames:v", "8",
+                "-c:v", codec, "-preset", "p6", "-tune", "hq", "-rc", "vbr", "-cq", "19", "-b:v", "8M"]
+        end = ["-pix_fmt", "p010le" if codec == "hevc_nvenc" else "yuv420p", "-f", "null", "-"]
+
+        def ok(extra):
+            try:
+                p = _popen(base + extra + end, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                _out, err = p.communicate(timeout=30)
+                return p.returncode == 0, err.decode("utf-8", "replace")[-200:].strip()
+            except Cancelled:
+                raise
+            except Exception as e:  # noqa: BLE001
+                return False, str(e)
+        good, msg = ok(AQ_ARGS)
+        if good:
+            _aq_known[codec] = True
+            log_info(f"AQ 확인 {codec}: 됨 → 켬")
+            return list(AQ_ARGS)
+        plain, msg2 = ok([])
+        if plain:
+            _aq_known[codec] = False
+            log_info(f"AQ 확인 {codec}: 안 됨 → 끔 ({msg})")
+        else:
+            _aq_retry[codec] = _time.monotonic() + 60
+            log_info(f"AQ 확인 {codec}: 인코더 자체가 안 열림 → 이번엔 끔, 나중에 다시 ({msg2})")
+        return []
 
 
 # ------------------------------------------------------------------ 조각 렌더(v0.16.26)
@@ -2568,6 +2636,8 @@ def _render_chunked(project: Project, segs: list, plan: list, out_file: str, on_
             run(_audio_cmd(project, segs[0], str(parts / "a.m4a")))
             cmd += ["-i", "a.m4a"]
             maps += ["-map", "1:a:0"]
+        if is_hevc(project.output.encoder):
+            maps += ["-tag:v", "hvc1"]
         cmd += [*maps, "-c", "copy", "-map_metadata", "-1", "-write_tmcd", "0", "-movflags", "+faststart", _abs(out_file)]
         run(cmd, cwd=str(parts))
         prog[n] = 1.0

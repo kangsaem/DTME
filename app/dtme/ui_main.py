@@ -36,7 +36,7 @@ class MainWindow(QMainWindow):
                               ("실행취소", QKeySequence.Undo, self.undo)):
             a = QAction(text, self)
             a.setShortcut(key)
-            a.setToolTip(QKeySequence(key).toString())
+            a.setToolTip(QKeySequence(key).toString() + (" · 다시 실행 Ctrl+Shift+Z" if fn == self.undo else ""))
             a.triggered.connect(fn)
             tb.addAction(a)
         from PySide6.QtWidgets import QToolButton
@@ -94,6 +94,51 @@ class MainWindow(QMainWindow):
         else:
             self.statusBar().showMessage("더 이상 취소할 작업이 없습니다", 3000)
 
+    def redo(self):
+        if self.state.redo():
+            self.statusBar().showMessage("다시 실행", 3000)
+        else:
+            self.statusBar().showMessage("다시 실행할 작업이 없습니다", 3000)
+
+    # ------------------------------------------------------------ 원본 없음 → 폴더 다시 지정(v0.16.41)
+    def relink(self) -> int:
+        """원본을 못 찾은 소스가 있으면 폴더를 골라 같은 이름으로 다시 연결. 찾은 개수."""
+        if not self.state.missing() and not any(v == "원본 없음" for v in self.state.img_status.values()):
+            return 0
+        d = QFileDialog.getExistingDirectory(self, "원본 폴더", "")
+        if not d:
+            return 0
+        n = self.state.relink(d)
+        left = len(self.state.missing())
+        self.statusBar().showMessage(f"원본 {n}개 다시 연결" + (f" · {left}개 못 찾음" if left else ""), 8000)
+        return n
+
+    # ------------------------------------------------------------ 자동 저장 되살리기(v0.16.41)
+    def autosave_file(self) -> Path:
+        return paths.cache_dir() / "autosave.dtme.json"
+
+    def drop_autosave(self):
+        try:
+            self.autosave_file().unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    def restore_autosave(self) -> bool:
+        """지난번에 저장 못 하고 꺼진 작업(자동 저장 파일)을 불러옴. 원래 프로젝트 파일 이름은 유지, 저장 안 된 상태로."""
+        import json
+        from .project import Project
+        try:
+            d = json.loads(self.autosave_file().read_text(encoding="utf-8"))
+            p = Project.from_dict(d)
+            p.file = d.get("_file", "") or ""
+        except Exception as e:  # noqa: BLE001
+            ui_style.notice(self, f"되살리기 실패: {e}")
+            return False
+        self.state.set_project(p)
+        self.state.dirty = True
+        self._title()
+        return True
+
     # ------------------------------------------------------------ 프로젝트
     def _confirm_discard(self) -> bool:
         if not self.state.dirty:
@@ -126,7 +171,10 @@ class MainWindow(QMainWindow):
         self.state.set_project(p)
         self._title()
         if missing:
-            ui_style.notice(self, "원본 파일을 찾을 수 없습니다:\n" + "\n".join(missing))
+            more = f"\n… 외 {len(missing) - 8}개" if len(missing) > 8 else ""
+            if ui_style.confirm(self, "원본 파일을 찾을 수 없습니다:\n" + "\n".join(missing[:8]) + more,
+                                [("cancel", "닫기", 72, None), ("pick", "폴더 지정", 92, "blue")]) == "pick":
+                self.relink()
 
     def save_project(self, save_as=False) -> bool:
         p = self.state.project
@@ -138,6 +186,7 @@ class MainWindow(QMainWindow):
                 return False
         p.save(f)
         self.state.dirty = False
+        self.drop_autosave()
         self._title()
         self.statusBar().showMessage(f"저장됨: {f}", 5000)
         return True
@@ -146,7 +195,8 @@ class MainWindow(QMainWindow):
         if self.state.dirty and self.state.project.sources:
             try:
                 from .project import write_json_atomic
-                write_json_atomic(paths.cache_dir() / "autosave.dtme.json", self.state.project.to_dict(), indent=1)
+                write_json_atomic(self.autosave_file(), {**self.state.project.to_dict(), "_file": self.state.project.file or ""},
+                                  indent=1)
             except Exception:  # noqa: BLE001
                 pass
 

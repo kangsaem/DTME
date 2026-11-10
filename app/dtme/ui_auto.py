@@ -402,9 +402,10 @@ class AutoDelegate(QStyledItemDelegate):
         p.setPen(QColor("#ffffff" if row.checked else SG.OFF_TXT))
         x = cb.right() + 10
         nm = display_name(src.path) if src else ""
-        p.drawText(QRectF(x, r.top(), 78, r.height()), Qt.AlignVCenter | Qt.AlignLeft,
-                   p.fontMetrics().elidedText(nm, Qt.ElideRight, 76))          # 길면 … (C 표시와 겹치지 않게)
-        x += 80
+        nw = int(max(78, min(p.fontMetrics().horizontalAdvance(nm) + 4, r.width() * 0.34)))   # v0.16.41: 줄이 넓으면 이름 다 보임(좁으면 …)
+        p.drawText(QRectF(x, r.top(), nw, r.height()), Qt.AlignVCenter | Qt.AlignLeft,
+                   p.fontMetrics().elidedText(nm, Qt.ElideRight, nw - 2))          # 길면 … (C 표시와 겹치지 않게)
+        x += nw + 2
         if src and has_clip_grade(src):
             p.setPen(QColor(YELLOW))
             p.drawText(QRectF(x, r.top(), 12, r.height()), Qt.AlignVCenter, "C")
