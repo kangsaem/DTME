@@ -109,5 +109,12 @@ assert im["kind"] == "image" and im["t0"] == 0.0 and abs(e.tl_time) < 1e-6, (im[
 e.player.play(); wait(0.8)
 print("재생 중 틀 숨김:", e.player.mon.playing); assert e.player.mon.playing
 e.player.pause(); wait(0.3); assert not e.player.mon.playing
+# v0.16.38: ◆ 없는 종류를 만지면 활성 안 됨 · 타임라인 줄 = 쌓이는 순서(위 레이어 = 윗줄)
+gp.clear_active(); s = e._cur()
+s.gkeys.pop("hue", None); gp._touch("hue"); assert gp.active == [], gp.active
+from dtme.project import new_rect, new_text  # noqa: E402
+st.project.titles = [new_rect(0.0, 3.0), new_text(0.5, 2.5, "A")]; st.touch("titles"); wait(0.2)
+rows = {t["kind"]: r for t, r in e.timeline._title_rows()[0]}
+print("타임라인 줄:", rows); assert rows["text"] == 0 and rows["rect"] == 1
 print("UI V1635 OK")
 os._exit(0)

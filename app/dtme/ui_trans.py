@@ -64,9 +64,21 @@ class TransTile(QWidget):
         p.restore()
 
     def _rot_frame(self, v):
-        """회전 줌 한 장: 앞 컷 각도 θ, 뒤 컷 θ∓180°, 가운데 ROT_MIX 만 섞음."""
+        """회전 줌 한 장: 앞 컷 각도 θ, 뒤 컷 θ∓180°, 가운데 ROT_MIX 만 섞음.
+        v0.16.38 회전 줌아웃 = 뒤 컷(확대 → 원래) 위에서 앞 컷이 시계 방향으로 돌며 작아지고 사라짐(렌더 rotout_mix 와 같은 식)."""
         from PySide6.QtGui import QImage
         v = max(0.0, min(1.0, v))
+        if self.kind == ff.ROTOUT:
+            deg, sa, op, sb = ff.rotout_state(v)
+            im = QImage(W, H, QImage.Format_RGB32)
+            im.fill(QColor("black"))
+            p = QPainter(im)
+            p.setRenderHint(QPainter.SmoothPixmapTransform)
+            self._draw_zoom(p, self.b, sb, 0)
+            if op > 0:
+                self._draw_zoom(p, self.a, sa, deg, op)
+            p.end()
+            return im
         deg, s = ff.rot_state(self.kind, v)
         back = deg - 180 if self.kind == "rotzoomin" else deg + 180
         deg, back = -deg, -back          # 렌더(perspective)와 같은 화면 방향(QPainter 는 + = 시계 방향)

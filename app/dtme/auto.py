@@ -133,10 +133,13 @@ SAMPLE_EVERY_SEC = 2.0
 SAMPLE_MAX = 12          # v0.16.17: 20 → 12 (분석 시간 ≈60%, 사용자 확정). v0.16.29 부터 + 맨 앞 1장
 
 
-EARLY_SEC = (1, 2, 3, 5)          # v0.16.34 시작 구간 샘플(초)
+EARLY_SEC = (0.5, 1, 2, 3, 5)     # v0.16.34 시작 구간 샘플(초), v0.16.38 0.5초 추가(0~1초 사이 튐)
 EARLY_WIN = 6.0                   # 이 초 안을 시작 구간으로 봄
 CURVE_TOL = 0.04                  # 시작 구간 밝기 양끝이 뒤쪽과 이만큼 넘게 다르면 커브 ◆
 CURVE_KEYS_MAX = 3
+COLOR_TOL = 0.095                 # v0.16.38 시작 구간 색(빨강/초록·파랑/초록 비, log) 이만큼(≈10%) 넘게 다르면 색 ◆
+COLOR_R_MAX = 1.8                 # 시작 빨강 게인 = 자리 잡은 값의 최대 1.8배(빨강 정보가 적은 화면 노이즈)
+COLOR_B_RANGE = (0.7, 1.3)
 
 
 def sample_frames(src: Source, every: float = SAMPLE_EVERY_SEC, n_max: int = SAMPLE_MAX,
@@ -385,7 +388,7 @@ def _med3(v: list[float]) -> list[float]:
 KEY_TOL_R, KEY_TOL_B = 0.08, 0.05       # 이보다 크게 변하면 키프레임(빨강을 조금만 쓰는 값에 맞춤)
 
 
-def settle_index(frames: list[int], ends: list[tuple[float, float]], fps: float | None) -> int:
+def settle_index(frames: list[int], ends: list[tuple[float, float]], fps: float | None, tol: float = CURVE_TOL) -> int:
     """시작 구간(인점~EARLY_WIN초)에서 밝기 양끝(p2/p98)이 뒤쪽 중앙값과 CURVE_TOL 안으로 들어온 첫 샘플 번호.
     0 = 처음부터 안정(커브 ◆ 없음). 뒤쪽 샘플이 없거나 fps 모름 = 0."""
     if not fps or len(frames) < 3:
@@ -396,15 +399,50 @@ def settle_index(frames: list[int], ends: list[tuple[float, float]], fps: float 
         return 0
     for k in (0, 1):            # 기준 샘플끼리 다르면(장면이 바뀌는 중) 판단 안 함 — 장면 변화를 카메라 적응으로 오인 방지
         v = [ends[i][k] for i in late]
-        if max(v) - min(v) > 2 * CURVE_TOL:
+        if max(v) - min(v) > 2 * tol:
             return 0
     rl = float(np.median([ends[i][0] for i in late]))
     rh = float(np.median([ends[i][1] for i in late]))
-    off = [abs(ends[i][0] - rl) > CURVE_TOL or abs(ends[i][1] - rh) > CURVE_TOL for i in early]
+    off = [abs(ends[i][0] - rl) > tol or abs(ends[i][1] - rh) > tol for i in early]
     if not any(off):
         return 0
     last = max(k for k, o in enumerate(off) if o)
     return early[last + 1] if last + 1 < len(early) else late[0]
+
+
+def _start_color_keys(gkeys: dict, frames: list[int], sts: list[dict], g: dict, fps: float | None) -> None:
+    """v0.16.38 시작 구간 색 ◆: 카메라 화이트밸런스가 자리 잡는 동안(빨강이 점점 늘어남) 빨강·파랑 ◆ 최대 3개
+    (인점 · 가운데 1 · 자리 잡은 지점). 값 = 자리 잡은 지점 게인 × (자리 잡은 색 비 / 그 샘플 색 비), 빨강 최대 1.8배·2.0,
+    파랑 0.7~1.3배. 자리 잡은 지점 앞의 기존 빨강·파랑 ◆는 이것으로 바꿈, 뒤는 그대로."""
+    from .project import key_at
+    lv = [(float(np.log(max(1e-4, x["rg"]))), float(np.log(max(1e-4, x["bg"])))) for x in sts]
+    si = settle_index(frames, lv, fps, COLOR_TOL)
+    if si <= 0:
+        return
+    fs = frames[si]
+    rk, bk = gkeys.get("r_gain"), gkeys.get("b_gain")
+    r_s = key_at(rk, fs) if rk else float(g["r_gain"])
+    b_s = key_at(bk, fs) if bk else float(g["b_gain"])
+    idx = [0]
+    if si >= 2:                      # 직선(log)에서 가장 벗어난 가운데 1장
+        def dev(i):
+            t = (frames[i] - frames[0]) / max(1, fs - frames[0])
+            return max(abs(lv[i][k] - (lv[0][k] + (lv[si][k] - lv[0][k]) * t)) for k in (0, 1))
+        j = max(range(1, si), key=dev)
+        if dev(j) > COLOR_TOL:
+            idx.append(j)
+
+    def rv(i):
+        k = float(np.exp(lv[si][0] - lv[i][0]))
+        return round(min(2.0, r_s * min(COLOR_R_MAX, max(1 / COLOR_R_MAX, k))), 3)
+
+    def bv(i):
+        k = float(np.exp(lv[si][1] - lv[i][1]))
+        return round(max(0.5, min(1.5, b_s * min(COLOR_B_RANGE[1], max(COLOR_B_RANGE[0], k)))), 3)
+    for key, fn, cur, val_s in (("r_gain", rv, rk, r_s), ("b_gain", bv, bk, b_s)):
+        keep = [x for x in (cur or []) if x["f"] > fs]
+        new = [{"f": frames[i], "v": fn(i)} for i in idx] + [{"f": fs, "v": round(val_s, 3)}]
+        gkeys[key] = new + keep
 
 
 def recommend(samples: list[tuple[int, np.ndarray]], base: dict, scene: str | None = None, subject: str | None = None,
@@ -450,6 +488,7 @@ def recommend(samples: list[tuple[int, np.ndarray]], base: dict, scene: str | No
             idx = [idx[int(round(i * (len(idx) - 1) / 5))] for i in range(6)]
         gkeys = {"r_gain": [{"f": frames[i], "v": round(rs[i], 3)} for i in idx],
                  "b_gain": [{"f": frames[i], "v": round(bs[i], 3)} for i in idx]}
+    _start_color_keys(gkeys, frames, sts, g, fps)
     if si > 0:          # v0.16.34 커브 ◆: 인점 · (가운데 1개) · 안정 지점(= 클립 커브), 최대 3개. 뒤는 클립 커브 그대로
         ck = [0]
         if si >= 2 and CURVE_KEYS_MAX >= 3:

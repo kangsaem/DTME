@@ -103,7 +103,7 @@ class SourceBar(QWidget):
         from .project import GKEY_STYLE
         fm = self.fontMetrics()
         t = "·".join(GKEY_STYLE.get(k, (k, ""))[0] for k in self.active)
-        w = 14 + fm.horizontalAdvance(t) + 22
+        w = 18 + fm.horizontalAdvance(t) + 8          # v0.16.38 X 없음(지우기로 오해) — 누르면 전체 ◆ 보기
         return QRectF(self.width() - w - 4, 4, w, self.height() - 8), t
 
     def _key_at(self, x):
@@ -185,11 +185,7 @@ class SourceBar(QWidget):
                                      QPointF(r.left() + 3, cy)]))
             p.setPen(QColor("#e8e8e8"))
             p.setFont(self.font())
-            p.drawText(QRectF(r.left() + 16, r.top(), r.width() - 36, r.height()), Qt.AlignVCenter | Qt.AlignLeft, t)
-            xr = QRectF(r.right() - 16, cy - 5, 10, 10)
-            p.setPen(QPen(QColor("#cfcfcf"), 1.6))
-            p.drawLine(xr.topLeft(), xr.bottomRight())
-            p.drawLine(xr.topRight(), xr.bottomLeft())
+            p.drawText(QRectF(r.left() + 18, r.top(), r.width() - 20, r.height()), Qt.AlignVCenter | Qt.AlignLeft, t)
 
     def _paint_gkeys(self, p, h):
         """◆ 종류별 색. 같은 프레임 여러 종류 = 위아래로 나눔(작게). 활성 있으면 그 종류만 진하게."""
@@ -480,17 +476,18 @@ class SeqTimeline(QWidget):
         return max(0.0, (x - 4) / self.pps)
 
     def _title_rows(self):
-        """겹치는 글자·이미지는 줄을 나눠 쌓음 → [(title, row)], 줄 수"""
-        ends, out = [], []
-        for t in sorted(self.titles, key=lambda x: float(x["t0"])):
-            r = next((i for i, e in enumerate(ends) if e <= float(t["t0"]) + 1e-6), None)
-            if r is None:
-                ends.append(float(t["t1"]))
-                r = len(ends) - 1
-            else:
-                ends[r] = float(t["t1"])
+        """겹치는 글자·이미지는 줄을 나눠 쌓음 → [(title, row)], 줄 수.
+        v0.16.38: 화면에 쌓이는 순서대로 — 위에 그려지는 것(목록 뒤쪽)이 윗줄(0). 사각형(맨 아래)은 겹치는 글자 아래 줄"""
+        placed = []                    # (t0, t1, 줄) — 위 레이어부터
+        out = []
+        for t in reversed(self.titles):
+            a, b = float(t["t0"]), float(t["t1"])
+            over = [r for x0, x1, r in placed if not (b <= x0 + 1e-6 or a >= x1 - 1e-6)]
+            r = max(over) + 1 if over else 0           # 겹치는 위 레이어들보다 아래 줄
+            placed.append((a, b, r))
             out.append((t, r))
-        return out, max(1, len(ends))
+        out.reverse()
+        return out, max(1, 1 + max((r for _a, _b, r in placed), default=0))
 
     def _lanes(self):
         h = self.height()

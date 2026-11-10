@@ -431,8 +431,9 @@ class GradePanel(QWidget):
         self.set_active([])
 
     def _touch(self, key):
-        """보정 항목을 만지면 그 종류 활성."""
-        if key in self.rowbox and self.active != [key]:
+        """보정 항목을 만지면 그 종류 활성 — 이 클립에 그 종류 ◆가 있을 때만(v0.16.38)."""
+        s = self._src()
+        if key in self.rowbox and self.active != [key] and s and s.gkeys.get(key):
             self.set_active([key])
 
     def _all_mode(self) -> bool:
@@ -508,7 +509,6 @@ class GradePanel(QWidget):
         s = self._src()
         if not s:
             return
-        self._touch(key)
         self.state.checkpoint()
         ks = s.gkeys.setdefault(key, [])
         hit = next((k for k in ks if k["f"] == self.frame), None)
@@ -520,6 +520,10 @@ class GradePanel(QWidget):
             ks.sort(key=lambda k: k["f"])
         if not ks:
             s.gkeys.pop(key, None)
+            if key in self.active or key in self.marked:     # 마지막 ◆ 지움 = 그 종류 활성 풀기
+                self.set_active([k for k in self.active if k != key])
+        else:
+            self._touch(key)
         self.state.dirty = True
         self._load_controls()
         self.keysChanged.emit()

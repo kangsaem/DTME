@@ -50,6 +50,24 @@ assert CURVE_KEY not in r2["gkeys"], r2["gkeys"].keys()
 # fps 모름(이전 호출) = 커브 ◆ 없음
 assert CURVE_KEY not in auto.recommend(smp, base, "shallow", None, "mid")["gkeys"]
 
+# 2b) v0.16.38 시작 구간 색 ◆: 빨강이 0초 1/3 → 5초에 자리 잡음 = 빨강·파랑 ◆(최대 3 + 자리 잡은 지점), 빨강 시작 ≤ 1.8배
+def img_c(rk):
+    a = rng.random((90, 160, 3)).astype(np.float32) * 0.6 + 0.2
+    return np.clip(a * np.array([0.6 * rk, 1.0, 1.0 + 0.2 * (1 - rk)], np.float32), 0, 1)
+
+
+ramp = {0: 0.33, 0.5: 0.45, 1: 0.55, 2: 0.7, 2.5: 0.78, 3: 0.86, 5: 1.0}
+smp3 = [(f, img_c(ramp.get(round(f / FPS * 2) / 2, 1.0))) for f in fr]
+r3 = auto.recommend(smp3, base, "shallow", None, "mid", fps=FPS)
+rk3 = r3["gkeys"].get("r_gain")
+print("색 ◆ 빨강:", rk3, "파랑:", r3["gkeys"].get("b_gain"))
+assert rk3 and rk3[0]["f"] == 0 and len([k for k in rk3 if k["f"] <= 5 * FPS]) <= 4
+settle = [k for k in rk3 if k["f"] <= 5 * FPS][-1]
+assert rk3[0]["v"] > settle["v"] * 1.3 and rk3[0]["v"] <= min(2.0, settle["v"] * 1.8 + 1e-3), (rk3[0], settle)
+assert r3["gkeys"]["b_gain"][0]["v"] < [k for k in r3["gkeys"]["b_gain"] if k["f"] == settle["f"]][0]["v"]
+# 색이 안정된 클립 = 색 ◆ 없음
+assert "r_gain" not in auto.recommend([(f, img_c(1.0)) for f in fr], base, "shallow", None, "mid", fps=FPS)["gkeys"]
+
 # 3) grade_at / 렌더 sendcmd
 g = grade_at(dict(r["grade"]), r["gkeys"], ck[-1]["f"] + 100)
 assert g["curve"] == r["grade"]["curve"]

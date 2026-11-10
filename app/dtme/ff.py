@@ -1730,7 +1730,71 @@ ROT_MIX = 0.2          # 겹침 구간 가운데에서 섞는 비율(나머지�
 ROT_BLUR = 16          # 모션블러 서브프레임 수
 ROT_SHUTTER = 0.5      # 셔터 180°(1프레임 시간의 절반)
 ROT_EXTRA = 0.5        # 검은 모서리 안 생기는 확대 위에 더하는 확대(가운데 최대)
-ROT_KINDS = ("rotzoomin", "rotzoomout")
+ROT_KINDS = ("rotzoomin",)            # v0.16.38: 회전 줌아웃 = 따로(ROTOUT) — 예전엔 방향만 다른 같은 효과
+ROTOUT = "rotzoomout"
+ROTOUT_SA = 0.75       # 앞 컷이 작아지는 양(1 → 0.25)
+ROTOUT_SB = 0.6        # 뒤 컷 시작 확대(1.6 → 1)
+ROTOUT_FADE = (0.7, 0.95)   # 앞 컷이 사라지는 진행 구간
+
+
+def rotout_state(v: float) -> tuple[float, float, float, float]:
+    """회전 줌아웃 진행 v(0~1) → (앞 컷 각도°(화면 시계 +), 앞 컷 배율, 앞 컷 불투명도, 뒤 컷 배율). 미리보기·렌더 같은 식."""
+    v = max(0.0, min(1.0, v))
+    e = 4 * v ** 3 if v < 0.5 else 1 - (-2 * v + 2) ** 3 / 2
+    a0, a1 = ROTOUT_FADE
+    op = max(0.0, min(1.0, (a1 - v) / (a1 - a0)))
+    return ROT_DEG * e, 1 - ROTOUT_SA * e, op, 1 + ROTOUT_SB * (1 - e)
+
+
+def _ease(v: str) -> str:
+    return f"if(lt({v},0.5),4*pow({v},3),1-pow(2-2*{v},3)/2)"
+
+
+def _rotout_a(off: float, nd: int) -> str:
+    """앞 컷 한 장(투명 테두리 덧댄 뒤): 시계 방향으로 돌며 작아짐 — sense=destination(원본 모서리를 보낼 자리)."""
+    v = f"clip((in+{off:.5f})/{nd},0,1)"
+    e = _ease(v)
+    th = f"(PI*{e})"
+    sc = f"(1-{ROTOUT_SA}*{e})"
+
+    def pt(dx, dy):
+        return (f"W/2+(({dx})*cos({th})-({dy})*sin({th}))*{sc}",
+                f"H/2+(({dx})*sin({th})+({dy})*cos({th}))*{sc}")
+    xy = [pt(dx, dy) for dx, dy in (("-W/2", "-H/2"), ("W/2", "-H/2"), ("-W/2", "H/2"), ("W/2", "H/2"))]
+    opts = ":".join(f"x{i}='{x}':y{i}='{y}'" for i, (x, y) in enumerate(xy))
+    return f"perspective={opts}:sense=destination:interpolation=cubic:eval=frame"
+
+
+def _rotout_b(nd: int) -> str:
+    """뒤 컷: 확대(1.6) → 원래(1). 회전 없음."""
+    v = f"clip(in/{nd},0,1)"
+    sc = f"(1+{ROTOUT_SB}*(1-{_ease(v)}))"
+    xy = [(f"W/2+({dx})/{sc}", f"H/2+({dy})/{sc}") for dx, dy in (("-W/2", "-H/2"), ("W/2", "-H/2"), ("-W/2", "H/2"), ("W/2", "H/2"))]
+    opts = ":".join(f"x{i}='{x}':y{i}='{y}'" for i, (x, y) in enumerate(xy))
+    return f"perspective={opts}:interpolation=cubic:eval=frame"
+
+
+def rotout_mix(fparts: list, a_lab: str, b_lab: str, out: str, nd: int, w: int, h: int, uid: str, blur: int = ROT_BLUR):
+    """앞 컷 마지막 nd 장(a_lab) + 뒤 컷 처음 nd 장(b_lab) → 회전 줌아웃 nd 장. 앞 컷 = 투명 테두리 2px 덧대 돌리고 줄여
+    (perspective 는 바깥을 가장자리로 채움 → 투명 테두리가 바깥 = 투명) 모션블러 후 서서히 사라짐, 뒤 컷 위에 얹음."""
+    fps = float(OUT_FPS)
+    a0, a1 = ROTOUT_FADE
+    pre = f"{a_lab}format=yuva444p,pad=iw+4:ih+4:2:2:color=black@0"
+    n = max(1, int(blur))
+    if n == 1:
+        fparts.append(f"{pre},{_rotout_a(0, nd)}[ra{uid}]")
+    else:
+        subs = [f"[ras{uid}_{j}]" for j in range(n)]
+        fparts.append(f"{pre},split={n}{''.join(subs)}")
+        outs = []
+        for j, lab in enumerate(subs):
+            o = f"[rap{uid}_{j}]"
+            fparts.append(f"{lab}{_rotout_a((j / (n - 1) - 0.5) * ROT_SHUTTER, nd)}{o}")
+            outs.append(o)
+        fparts.append(f"{''.join(outs)}mix=inputs={n}[ra{uid}]")
+    fparts.append(f"[ra{uid}]crop=iw-4:ih-4:2:2,fade=t=out:st={a0 * nd / fps:.5f}:d={(a1 - a0) * nd / fps:.5f}:alpha=1[rb{uid}]")
+    fparts.append(f"{b_lab}{_rotout_b(nd)},format=yuva444p[rc{uid}]")
+    fparts.append(f"[rc{uid}][rb{uid}]overlay=0:0:format=yuv444:eof_action=pass,format=yuv420p,setsar=1,setpts=PTS-STARTPTS{out}")
 
 
 def rot_frames(d: float) -> tuple[int, int, int]:
@@ -1840,6 +1904,9 @@ def transition_graph(fparts: list, plan: list, lens: list, audio: bool, blur: in
                 eff[i - 1] -= k / fps
                 eff[i] -= k / fps
                 xdur[i], adur[i] = x / fps, nd / fps
+            elif t[0] == ROTOUT:
+                nd = max(3, int(round(t[1] * fps)))
+                xdur[i] = adur[i] = nd / fps
             else:
                 xdur[i] = adur[i] = t[1]
     for i in range(n):                       # 컷 자체에 들어가는 효과(줌·회전 줌·첫 컷 페이드)
@@ -1898,7 +1965,25 @@ def transition_graph(fparts: list, plan: list, lens: list, audio: bool, blur: in
         last = i == n - 1
         ov, oa = ("[vo]", "[ao]") if last else (f"[xv{i}]", f"[xa{i}]")
         t = plan[i]
-        if t:
+        if t and t[0] == ROTOUT:              # v0.16.38 회전 줌아웃 = 앞 컷 끝 nd 장 · 뒤 컷 처음 nd 장을 얹어 합침
+            d = xdur[i]
+            nd = int(round(d * fps))
+            pf = int(round(acc * fps))
+            fparts.append(f"{acc_v}split=2[zp{i}][za{i}]")
+            fparts.append(f"[zp{i}]trim=end_frame={pf - nd},setpts=PTS-STARTPTS[zpre{i}]")
+            fparts.append(f"[za{i}]trim=start_frame={pf - nd}:end_frame={pf},setpts=PTS-STARTPTS[zaw{i}]")
+            fparts.append(f"{vl[i]}split=2[zb{i}][zq{i}]")
+            fparts.append(f"[zb{i}]trim=end_frame={nd},setpts=PTS-STARTPTS[zbw{i}]")
+            fparts.append(f"[zq{i}]trim=start_frame={nd},setpts=PTS-STARTPTS[zpost{i}]")
+            rotout_mix(fparts, f"[zaw{i}]", f"[zbw{i}]", f"[zmid{i}]", nd, 0, 0, f"z{i}", blur)
+            fparts.append(f"[zpre{i}]format=yuv420p,settb=AVTB[zp2{i}]")
+            fparts.append(f"[zmid{i}]settb=AVTB[zm2{i}]")
+            fparts.append(f"[zpost{i}]format=yuv420p,settb=AVTB[zq2{i}]")
+            fparts.append(f"[zp2{i}][zm2{i}][zq2{i}]concat=n=3:v=1:a=0{ov}")
+            if audio:
+                fparts.append(f"{acc_a}{al[i]}acrossfade=d={adur[i]:.5f}{oa}")
+            acc += eff[i] - d
+        elif t:
             d = xdur[i]
             fparts.append(f"{acc_v}{vl[i]}xfade=transition={XFADE[t[0]]}:duration={d:.5f}:offset={acc - d:.5f}{ov}")
             if audio:

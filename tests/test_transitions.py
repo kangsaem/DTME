@@ -22,7 +22,7 @@ def main(sample, work, every=False):
     fps = float(OUT_FPS)
     kinds = [k for k, _ in TRANSITIONS if k != "none"]
     if not every:
-        kinds = ["dissolve", "wipeleft", "rotzoomin", "zoomout"]
+        kinds = ["dissolve", "wipeleft", "rotzoomin", "rotzoomout", "zoomout"]
     for kind in kinds:
         # 컷1 원본 0~60(1초) / 컷2 원본 60~110 → 화면이 달라 보이도록 2배속 x
         segs = [Segment(src.id, 0, 60, 1.0), Segment(src.id, 60, 120, 1.0, trans={"type": kind, "dur": 0.5})]
