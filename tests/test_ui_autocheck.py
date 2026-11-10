@@ -62,5 +62,6 @@ r = dlg.list.visualItemRect(dlg.list.item(3))
 QTest.mouseClick(vp, Qt.LeftButton, Qt.NoModifier, QPoint(r.left() + 120, r.center().y())); wait(0.2)
 assert dlg.list.item(3).isSelected() and ck() == [True, True, True, True, False]
 dlg.grab().save(os.path.join(d, "autocheck.png"))
-print("OK test_ui_autocheck")
+dlg.cancel(); wait(0.3)
+print("OK test_ui_autocheck", flush=True)
 os._exit(0)

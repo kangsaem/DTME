@@ -487,8 +487,7 @@ class AutoDialog(DragMove, QDialog):
             self.list.addItem(it)
         self.list.itemSelectionChanged.connect(self._sel_changed)
         self._cdrag = None                 # v0.16.37 체크 쓸기: (시작 줄, 새 상태, 원래 상태들)
-        self._vp = self.list.viewport()
-        self._vp.installEventFilter(self)
+        self._vp = self.list.viewport()          # 필터는 보이는 동안만(showEvent/hideEvent) — 종료 때 지워진 창 호출 방지
         # 오른쪽
         self.grid = PresetGrid()
         self.grid.chosen.connect(self._choose)
@@ -805,6 +804,18 @@ class AutoDialog(DragMove, QDialog):
         self._row_changed()
 
     # ---------------------------------------------------------------- v0.16.37 체크 쓸기
+    def showEvent(self, e):
+        super().showEvent(e)
+        self._vp.installEventFilter(self)
+
+    def hideEvent(self, e):
+        try:
+            self._vp.removeEventFilter(self)
+        except RuntimeError:
+            pass
+        self._cdrag = None
+        super().hideEvent(e)
+
     def eventFilter(self, obj, e):
         # 창이 닫히며 목록이 먼저 지워져도 안전하게(목록 위젯을 다시 부르지 않음: 저장해 둔 viewport 와 비교만)
         if obj is getattr(self, "_vp", None) and e.type() in (QEvent.MouseButtonPress, QEvent.MouseMove,
