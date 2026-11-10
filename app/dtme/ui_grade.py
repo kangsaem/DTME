@@ -8,7 +8,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QEvent, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QPixmap
-from PySide6.QtWidgets import (QButtonGroup, QComboBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
+from PySide6.QtWidgets import (QButtonGroup, QComboBox, QFileDialog, QFrame, QHBoxLayout,
                                QLabel, QLineEdit, QListWidget, QListWidgetItem, QMenu, QPushButton,
                                QScrollArea, QSizePolicy, QSlider, QVBoxLayout, QWidget)
 
@@ -165,6 +165,7 @@ class Section(QWidget):
 
 class GradePanel(QWidget):
     gradeChanged = Signal()
+    liveChanged = Signal()                       # v0.16.40 슬라이더를 끄는 동안: 모니터만 바로바로(샘플·타임라인은 멈춘 뒤)
     viewChanged = Signal(str)                    # "grade" | "raw" | "split"
     splitDirChanged = Signal(bool)               # 반반 방향: True = 좌우 · False = 상하
     scopeToggled = Signal(int)                   # 0 끔 · 1 겹침 · 2 파레이드
@@ -980,6 +981,7 @@ class GradePanel(QWidget):
         self.state.dirty = True
         self._update_labels()
         if slider:
+            self.liveChanged.emit()
             self._debounce.start()
         else:
             self._emit_change()
@@ -1084,6 +1086,8 @@ class GradePanel(QWidget):
             out = sample_dir() / f"{s.id}_{m.frame}{'_raw' if raw else ('' if self.split_v else '_tb')}.png"
 
             def work(s=s, fr=m.frame, out=out, grade=grade, full=full, vertical=self.split_v):
+                if gen != self.gen:                 # 기다리는 사이 값이 또 바뀜 = 안 만듦(v0.16.40)
+                    return None
                 c = ff.cached_frame(s, fr)
                 before = ff.render_preview(c, ff.lut_only(full))        # 보정 전 = LUT만
                 if grade is None:
@@ -1103,7 +1107,7 @@ class GradePanel(QWidget):
             jobs.submit(jobs.PREVIEW_POOL, job, priority=-1)
 
     def _on_png(self, gen, mid, result):
-        if gen != self.gen:
+        if gen != self.gen or result is None:
             return
         data, path = result
         pix = QPixmap()
@@ -1234,6 +1238,3 @@ class LutCombo(QComboBox):
     def showPopup(self):
         self._refill()
         super().showPopup()
-
-
-_ = QGridLayout

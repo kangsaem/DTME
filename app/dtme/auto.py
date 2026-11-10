@@ -20,7 +20,6 @@ SCENES = [("light", "라이트"), ("coral", "산호"), ("shallow", "얕은 수�
           ("bluewater", "블루워터"), ("night", "야간")]
 SCENE_NAME = dict(SCENES)
 STRENGTH = {"weak": 0.6, "mid": 1.0, "strong": 1.3}
-STRENGTH_NAME = {"weak": "약", "mid": "중", "strong": "강"}
 
 SCENE_BASE = {
     # 실제 수중 샘플(2026-11-06, 보홀) 보고 조정. 원칙(사용자): 물속은 원래 파랗고 어느 정도 뿌연 것.
@@ -36,7 +35,6 @@ SCENE_BASE = {
     "bluewater": dict(r=1.00, b=1.00, rmax=1.08, k=0.15, ref=0.30, water=12, gy=40, sat=1.00, nrc=65, nrl=30, dehaze=0, s=0.05, lo=0.975, sh=0.10, wnr=70, sd=0.04, lift=1),
     "night":     dict(r=1.00, b=1.00, rmax=1.10, k=0.25, ref=0.10, water=0, gy=20, sat=1.00, nrc=65, nrl=40, dehaze=0, s=0.04, lo=0.8, sh=0.10, wnr=50),
 }
-SUBJECT_SCENES = ()      # 옛 코드 호환(피사체 구분 없음)
 
 
 def normalize_key(key: str) -> str:
@@ -62,10 +60,6 @@ def follow_blue(r: float, b: float) -> float:
 def preset_keys() -> list[str]:
     """기본 프리셋 6개."""
     return [k for k, _ in SCENES]
-
-
-def split_key(key: str) -> tuple[str, str]:
-    return normalize_key(key), ""
 
 
 def preset_label(key: str, short: bool = False) -> str:

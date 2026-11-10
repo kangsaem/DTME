@@ -5,7 +5,7 @@
 ## 0. 현재 상태
 
 - 저장소: `kangsaem/DTME` (main). push → GitHub Actions Windows 빌드 → Artifacts `DTME-<버전>-windows`.
-- 현재 버전: **v0.16.38** (`app/dtme/__init__.py`).
+- 현재 버전: **v0.16.40** (`app/dtme/__init__.py`).
 - Linux(오프스크린)에서 엔진·화면 검증, Actions(Windows)에서 빌드·exe 점검. 사용자 PC 실기 테스트 단계.
 
 ## 1. 작업 규칙 (사용자 선호 — HANDOFF.md 와 동일)
@@ -53,6 +53,7 @@ MOSCO(kangsaem/MOSCO, 얼굴·간판 블러 + 뷰티)는 DTME 의 UI 를 기준�
 - [x] **(3번) 소스 목록에서 렌더 진행 제거** — v0.16.39(`stage_of(skip=("render",))`, AUTO 창 줄은 유지).
 - [x] 버튼 `setStyleSheet` 점검(v0.16.39): 버튼은 모두 빈 값 또는 `ui_style` bevel — 맞음. 도구줄 QToolButton 패딩만 따로.
 - [ ] 화면 설명 문구: 렌더 설정 저장 폴더 칸 placeholder "렌더할 때 물어봄" 1개 — 뺄지 사용자 결정 대기.
+- [ ] v0.16.40 제안 7건(자동 저장 되살리기 · 다시 실행 · 원본 다시 지정 · 렌더 남은 시간 · 커브 끄는 동안 화면 · 저장 폴더 안내 글 · 상태줄 오류 유지) — `HANDOFF.md` v0.16.40, 사용자 답 대기.
 - [ ] (사용자가 지목할 추가 정리 항목 — 여기에 채워 넣기)
 
 ## 5. 설계 동기화 메모

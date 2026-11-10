@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import threading
 from collections import OrderedDict
 from pathlib import Path
 
@@ -22,7 +23,7 @@ from .state import AppState
 from .ui_bars import LayerBar, SeqTimeline, SourceBar
 from .ui_grade import GradePanel
 from .ui_player import Player
-from .ui_render import (ADD_H, ADD_W, MAIN_H, MAIN_W, RenderPanel, fix_size, item_base, out_dir,
+from .ui_render import (ADD_W, MAIN_H, MAIN_W, RenderPanel, fix_size, item_base, out_dir,
                         render_list_button, unique)
 
 MEDIA_FILTER = ("영상·이미지·음악 (*.mp4 *.MP4 *.mov *.MOV *.jpg *.JPG *.jpeg *.JPEG *.png *.PNG "
@@ -55,6 +56,7 @@ def _btn(text, tip, fn, main=False):
 
 PREVIEW_LRU: "OrderedDict[tuple, tuple]" = OrderedDict()   # 보정 미리보기 PNG (최근 120장 ≈ 200MB)
 PREVIEW_LRU_MAX = 120
+PREVIEW_LOCK = threading.Lock()
 
 
 class SourceDelegate(QStyledItemDelegate):
@@ -449,6 +451,8 @@ class EditTab(QWidget):
         # ================= 보정 / 렌더 리스트
         self.grade = GradePanel(state)
         self.grade.gradeChanged.connect(self._on_grade_changed)
+        self.grade.liveChanged.connect(self._on_grade_live)
+        self._live_busy = self._live_pending = False
         self.grade.viewChanged.connect(lambda _k: self.request_preview())
         self.grade.splitDirChanged.connect(self._set_split_dir)
         self.player.mon.splitFlipped.connect(lambda v: self.grade.set_split_dir(v, emit=False))
@@ -834,16 +838,33 @@ class EditTab(QWidget):
         self._refresh_timeline()
         self.request_preview()
 
-    def request_preview(self):
+    def _on_grade_live(self):
+        """슬라이더를 끄는 동안(v0.16.40): 모니터 보정 화면만 따라감. 한 번에 1개만 만들고, 만드는 사이 또 바뀌면 끝난 뒤 마지막 값으로 1번 더
+        (예전 = 손을 멈추고 0.25초 뒤에야 바뀜). 샘플 타일·타임라인은 예전처럼 멈춘 뒤."""
+        if self._live_busy:
+            self._live_pending = True
+            return
+        self._live_busy = True
+        if not self.request_preview(live=True):
+            self._live_busy = False
+
+    def _live_done(self):
+        self._live_busy = False
+        if self._live_pending:
+            self._live_pending = False
+            self._on_grade_live()
+
+    def request_preview(self, live: bool = False) -> bool:
+        """True = 뒤에서 만드는 중(끝나면 live 는 _live_done)."""
         s = self._cur()
         p = self.player
         if not s or not s.frames or p.is_busy() or (not self.window().isVisible() and not getattr(self, "_allow_hidden", False)):   # 숨김 = 안 만듦([보정+편집] 누른 뒤는 미리)
-            return
+            return False
         if not self.chk_preview.isChecked() and p.has_media:
             p.overlay_frame = None
             p.mon.set_before(None)
             p._grab(p.frame)
-            return
+            return False
         self.pgen += 1
         gen, frame, tok = self.pgen, p.frame, p._token
         self._prefetch_range(s, frame)
@@ -851,32 +872,45 @@ class EditTab(QWidget):
         full = self.state.project.grade_for_source(s.id, frame)
         grade = ff.lut_only(full) if mode == "raw" else full        # [원본] = LUT만
         key = (s.path, frame, mode, json.dumps(grade, sort_keys=True, default=str))
-        hit = PREVIEW_LRU.get(key)
-        if hit is not None:                      # 같은 프레임·같은 보정은 다시 안 만듦
-            try:
+        with PREVIEW_LOCK:
+            hit = PREVIEW_LRU.get(key)
+            if hit is not None:                  # 같은 프레임·같은 보정은 다시 안 만듦
                 PREVIEW_LRU.move_to_end(key)
-            except KeyError:
-                pass
+        if hit is not None:
             self._on_preview(gen, frame, tok, hit)
-            return
+            return False
 
         def work():
+            if gen != self.pgen:                 # 기다리는 사이 다른 화면을 요청함 = 안 만듦(ffmpeg 를 헛돌리지 않음, v0.16.40)
+                return None
             c = ff.cached_frame(s, frame)
             out = ff.render_preview(c, grade)
             res = (out, ff.render_preview(c, ff.lut_only(full))) if mode == "split" else (out, None)
-            PREVIEW_LRU[key] = res
-            while len(PREVIEW_LRU) > PREVIEW_LRU_MAX:
-                try:
+            with PREVIEW_LOCK:                   # 작업 스레드 여러 개가 같이 씀
+                PREVIEW_LRU[key] = res
+                while len(PREVIEW_LRU) > PREVIEW_LRU_MAX:
                     PREVIEW_LRU.popitem(last=False)
-                except KeyError:
-                    break
             return res
+
+        def done(data, g=gen, fr=frame, t=tok):
+            if data is not None:
+                self._on_preview(g, fr, t, data)
+            if live:
+                self._live_done()
+
+        def fail(msg):
+            ff.log_error("미리보기", msg)
+            self._say(f"미리보기 오류: {msg[-160:]}", C_WARN)
+            if live:
+                self._live_done()
         job = jobs.Job(work)
-        job.signals.done.connect(lambda data, g=gen, fr=frame, t=tok: self._on_preview(g, fr, t, data))
-        job.signals.error.connect(lambda msg: (ff.log_error("미리보기", msg), self._say(f"미리보기 오류: {msg[-160:]}", C_WARN)))
+        job.signals.done.connect(done)
+        job.signals.error.connect(fail)
         self._full_shown = None
-        self._quick_preview(s, frame, gen, tok, mode, grade, full)
+        if not live:
+            self._quick_preview(s, frame, gen, tok, mode, grade, full)
         jobs.submit(jobs.PREVIEW_POOL, job, priority=5)
+        return True
 
     def _quick_preview(self, s, frame, gen, tok, mode, grade, full):
         """원본 보정 화면이 오기 전에 카메라 프리뷰(LRF, 폭 1280 이상, 판정 통과)로 같은 보정을 먼저(v0.16.22).
@@ -1799,7 +1833,7 @@ class EditTab(QWidget):
         if self.player.is_playing() and f >= seg.fout - 1:
             idx = next((i for i, c in enumerate(self._tl_cuts) if c[0] is seg), -1)
             if 0 <= idx < len(self._tl_cuts) - 1:
-                nseg, nst, _ln = self._tl_cuts[idx + 1]
+                _nseg, nst, _ln = self._tl_cuts[idx + 1]
                 self.tl_time = max(nst, t)
                 QTimer.singleShot(0, lambda: self.show_timeline(self.tl_time + 1e-3, play=True))
             else:

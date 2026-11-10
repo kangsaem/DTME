@@ -57,8 +57,6 @@ class AppState(QObject):
         self._undo.append(copy.deepcopy(self.project.to_dict()))
         del self._undo[:-80]
 
-    def can_undo(self) -> bool:
-        return bool(self._undo)
 
     def undo(self) -> bool:
         if not self._undo:
@@ -98,8 +96,6 @@ class AppState(QObject):
         self.importProgress.emit()
 
     # ------------------------------------------------------------ 상태 조회
-    def analyzed(self, s: Source) -> bool:
-        return s.frames > 0
 
     def proxy_ready(self, s: Source) -> bool:
         return self.status.get(s.id) == "준비" and bool(s.proxy)

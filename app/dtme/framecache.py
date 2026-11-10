@@ -199,7 +199,8 @@ def cache() -> FrameCache:
 
 
 def qimage(entry):
-    """get() 결과 → QImage(복사본, 1.5MB 복사는 1ms 미만)."""
+    """get() 결과 → QImage(복사본 1번 — 예전엔 tobytes + copy 로 2번)."""
     from PySide6.QtGui import QImage
     a, (w, h) = entry
-    return QImage(a.tobytes(), w, h, w * 3, QImage.Format_RGB888).copy()
+    a = np.ascontiguousarray(a)
+    return QImage(a.data, w, h, w * 3, QImage.Format_RGB888).copy()

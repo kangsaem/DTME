@@ -48,11 +48,6 @@ def sharpen_chain(g: dict, width: int = 1920) -> list[str]:
 LENS_K1 = 0.15      # 렌즈 보정 100 일 때 왜곡 계수(+ = 외곽을 안쪽으로 당김)
 
 
-def lens_zoom(g: dict) -> float:
-    v = float(g.get("lens", 0))
-    return 1.0 + LENS_K1 * v / 100 if v >= 0.5 else 1.0
-
-
 def lens_chain(g: dict, w: int = 0, h: int = 0) -> list[str]:
     """액션캠 외곽 늘어짐 줄이기(원본 크기에서, 크롭·축소 전). 외곽을 안쪽으로 당기고(k1 > 0),
     생기는 검은 모서리는 가운데를 1+k1 배로 살짝 확대해 잘라냄. w·h = 들어오는 화면 크기(정확히 원래 크기로 되돌림).
@@ -443,7 +438,6 @@ def run(cmd: list[str], cwd: str | None = None, data: bytes | None = None) -> by
     """data 가 있으면 stdin 으로 넘김(미리보기: 디스크 파일 없이)."""
     with _slots(cmd):
         if data is not None:
-            cmd = [c for c in cmd]
             p = _popen(cmd, cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             out, err = p.communicate(data)
         else:
@@ -502,6 +496,20 @@ def replace_retry(src, dst, tries: int = 60) -> None:
             if i == tries - 1:
                 raise
             time.sleep(0.1 if i < 20 else 0.3)
+
+
+LOG_MAX = 2 << 20
+
+
+def log_trim() -> None:
+    """시작할 때 한 번: 기록(cache/dtme.log)이 2MB 를 넘으면 뒤 절반만 남김(계속 쌓이기만 하던 것, v0.16.40)."""
+    try:
+        f = paths.cache_dir() / "dtme.log"
+        if f.exists() and f.stat().st_size > LOG_MAX:
+            b = f.read_bytes()[-LOG_MAX // 2:]
+            f.write_bytes(b[b.find(b"\n") + 1:])
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def log_error(where: str, msg: str) -> None:
@@ -695,11 +703,20 @@ def lut_ref(name: str) -> tuple[str, str] | None:
     if not src.exists():
         raise FFError(f"LUT 파일이 없습니다: {src}")
     d = paths.cache_dir() / "lut"
+    st = src.stat()
+    mk = (str(src), st.st_mtime_ns, st.st_size)
+    hit = _lut_memo.get(mk)                    # ffmpeg 마다 LUT 를 통째로 읽어 해시하던 것 → 파일이 그대로면 기억(v0.16.40)
+    if hit is not None and (d / hit).exists():
+        return str(d), hit
     d.mkdir(exist_ok=True)
     h = hashlib.sha1(src.read_bytes()).hexdigest()[:10]
     dst = d / f"lut_{h}.cube"
     _safe_copy(src, dst)
+    _lut_memo[mk] = dst.name
     return str(d), dst.name
+
+
+_lut_memo: dict = {}
 
 
 _copy_lock = threading.Lock()
@@ -1493,11 +1510,20 @@ PREVIEW_LEAD = 4
 _FRAME_CACHE_MAX = 48
 
 
+def last_only(vf: list[str], lead: int) -> list[str]:
+    """한 장만 필요한 체인(멈춘 화면·확대·스틸): 앞 프레임(lead)은 시간축 노이즈 제거(hqdn3d) 예열에만 쓰이므로
+    hqdn3d 바로 뒤에서 마지막 장만 남김 → 그 뒤(LUT·색·물 노이즈…)는 1장만 계산(v0.16.40, 결과 화면은 같음).
+    hqdn3d 가 없으면 맨 앞에서 고름."""
+    k = max((i + 1 for i, f in enumerate(vf) if f.startswith("hqdn3d")), default=0)
+    return vf[:k] + ([f"select=gte(n\\,{lead})"] if lead > 0 else []) + vf[k:]
+
+
 class CachedFrame:
     """미리보기 입력(앞 프레임 + 그 프레임). fmt = 'nut'(ffv1 무손실) | 'raw'(yuv420p10le, 원본 구간 캐시에서 잘라 옴)."""
 
-    def __init__(self, data: bytes, lead: int, size=(0, 0), fmt: str = "nut"):
+    def __init__(self, data: bytes, lead: int, size=(0, 0), fmt: str = "nut", key: str = ""):
         self.data, self.lead, self.size, self.fmt = data, lead, size, fmt
+        self.key = key                # 같은 화면 표시(경로|프레임) — render_preview 결과 기억용. "" = 기억 안 함
 
     def input_args(self) -> list[str]:
         if self.fmt == "raw":
@@ -1579,25 +1605,30 @@ def cached_frame(src: Source, frame: int, gpu: bool = False) -> CachedFrame:
     key = f"{os.path.abspath(src.path)}|{frame}"
     with _cache_lock:
         lk = _frame_locks.setdefault(key, threading.Lock())
-    with lk:                                   # 같은 프레임 동시 생성 방지
-        c = _frame_cache.get(key)
-        if c is not None:
+    try:
+        with lk:                                   # 같은 프레임 동시 생성 방지
+            with _cache_lock:
+                c = _frame_cache.get(key)
+            if c is not None:
+                return c
+            lead = min(PREVIEW_LEAD, frame)
+            hit = range_lookup(src.path, frame - lead, frame)      # 원본 구간 캐시에 있으면 디코딩 없이
+            if hit is not None:
+                data, w, h = hit
+                return CachedFrame(data, lead, (w, h), "raw", key + "|r")
+            data = run([paths.ffmpeg(), "-v", "error", "-ss", _seek(frame - lead, src.fps), "-i", _abs(src.path),
+                        "-frames:v", str(lead + 1), "-an", "-vf", "scale=1280:-2:flags=lanczos,format=yuv420p10le",
+                        "-c:v", "ffv1", "-f", "nut", "-"])
+            c = CachedFrame(data, lead, _preview_size(src), "nut", key)
+            with _cache_lock:
+                _frame_cache[key] = c
+                while len(_frame_cache) > _FRAME_CACHE_MAX:
+                    _frame_cache.pop(next(iter(_frame_cache)))
             return c
-        lead = min(PREVIEW_LEAD, frame)
-        hit = range_lookup(src.path, frame - lead, frame)      # 원본 구간 캐시에 있으면 디코딩 없이
-        if hit is not None:
-            data, w, h = hit
-            return CachedFrame(data, lead, (w, h), "raw")
-        data = run([paths.ffmpeg(), "-v", "error", "-ss", _seek(frame - lead, src.fps), "-i", _abs(src.path),
-                    "-frames:v", str(lead + 1), "-an", "-vf", "scale=1280:-2:flags=lanczos,format=yuv420p10le",
-                    "-c:v", "ffv1", "-f", "nut", "-"])
-        ch = int(round(1280 * (src.height or 2160) / (src.width or 3840) / 2)) * 2
-        c = CachedFrame(data, lead, (1280, ch))
-        with _cache_lock:
-            _frame_cache[key] = c
-            while len(_frame_cache) > _FRAME_CACHE_MAX:
-                _frame_cache.pop(next(iter(_frame_cache)))
-        return c
+    finally:
+        with _cache_lock:                          # 프레임마다 잠금이 계속 쌓이지 않게(v0.16.40)
+            if not lk.locked():
+                _frame_locks.pop(key, None)
 
 
 def frame_ready(src: Source, frame: int) -> bool:
@@ -1623,7 +1654,7 @@ def cached_frame_preview(src: Source, frame: int, pv: dict) -> CachedFrame:
                 "-frames:v", str(lead + 1), "-an", "-vf", "scale=1280:-2:flags=bicubic,format=yuv420p10le",
                 "-c:v", "ffv1", "-f", "nut", "-"])
     ch = int(round(1280 * pv["h"] / pv["w"] / 2)) * 2
-    c = CachedFrame(data, lead, (1280, ch))
+    c = CachedFrame(data, lead, (1280, ch), "nut", key)
     with _cache_lock:
         _frame_cache[key] = c
         while len(_frame_cache) > _FRAME_CACHE_MAX:
@@ -1644,15 +1675,38 @@ def lut_only(g: dict | None) -> dict:
     return {**NEUTRAL, "lut": (g or {}).get("lut", "")}
 
 
+_pv_memo: "dict[tuple, bytes]" = {}        # (화면 표시, 보정값) → PNG. 반반의 '보정 전'·샘플 타일처럼 같은 화면을 되풀이해 만들던 것(v0.16.40)
+_PV_MEMO_MAX = 96
+_pv_memo_lock = threading.Lock()
+
+
 def render_preview(cached: CachedFrame, g: dict | None) -> bytes:
-    """보정 적용 결과(마지막 프레임)를 PNG 바이트로. g=None 이면 보정 전(원본 Log)."""
+    """보정 적용 결과(마지막 프레임)를 PNG 바이트로. g=None 이면 보정 전(원본 Log).
+    같은 화면·같은 보정값은 기억해 둔 것을 돌려줌(최근 96장)."""
+    mk = (cached.key, json.dumps(g, sort_keys=True, default=str), _lut_for(g)[1] if g else None) if cached.key else None
+    if mk is not None:
+        with _pv_memo_lock:
+            hit = _pv_memo.get(mk)
+            if hit is not None:
+                _pv_memo[mk] = _pv_memo.pop(mk)
+                return hit
+    out = _render_preview(cached, g)
+    if mk is not None:
+        with _pv_memo_lock:
+            _pv_memo[mk] = out
+            while len(_pv_memo) > _PV_MEMO_MAX:
+                _pv_memo.pop(next(iter(_pv_memo)))
+    return out
+
+
+def _render_preview(cached: CachedFrame, g: dict | None) -> bytes:
     cwd, lut = (None, None)
     if g is None:
         vf = []
     else:
         cwd, lut = _lut_for(g)
         vf = lens_chain(g, *cached.size) + grade_chain(g, lut, 1280)
-    vf += [f"select=gte(n\\,{cached.lead})", "format=rgb24"]
+    vf = last_only(vf, cached.lead) + ["format=rgb24"]
     return run([paths.ffmpeg(), "-v", "error", *cached.input_args(), "-filter_complex", graph(vf, "[0:v]", "[po]"),
                 "-map", "[po]", "-frames:v", "1", "-f", "image2pipe", "-c:v", "png", "-"], cwd=cwd, data=cached.data)
 
@@ -1671,7 +1725,7 @@ def render_region(src: Source, frame: int, g: dict | None, rect, max_w: int = 25
     if g is not None:
         cwd, lut = _lut_for(g)
         vf += grade_chain(g, lut, 3840)
-    vf += [f"select=gte(n\\,{lead})", "format=rgb24"]
+    vf = last_only(vf, lead) + ["format=rgb24"]
     return run([paths.ffmpeg(), "-v", "error", "-ss", _seek(frame - lead, src.fps), "-i", _abs(src.path),
                 "-frames:v", str(lead + 1), "-an", "-filter_complex", graph(vf, "[0:v]", "[po]"), "-map", "[po]",
                 "-f", "image2pipe", "-c:v", "png", "-"], cwd=cwd)
@@ -2336,7 +2390,7 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orien
     else:
         cmd += ["-c:v", "libx264", "-preset", "medium", "-crf", "18",
                 "-maxrate", f"{int(br * 1.5)}M", "-bufsize", f"{br * 2}M"]
-    cmd += ["-pix_fmt", "yuv420p" if not TEST_LOSSLESS else "yuv420p", "-r", f"{OUT_FPS.numerator}/{OUT_FPS.denominator}",
+    cmd += ["-pix_fmt", "yuv420p", "-r", f"{OUT_FPS.numerator}/{OUT_FPS.denominator}",
             "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709", "-color_range", "tv",
             "-map_metadata", "-1", "-write_tmcd", "0", "-movflags", "+faststart", _abs(out_file)]
     # 모든 LUT 는 같은 캐시 폴더에 있으므로 cwd 하나로 충분
@@ -2458,7 +2512,7 @@ def _render_chunked(project: Project, segs: list, plan: list, out_file: str, on_
         tries = 0
         while True:
             cmd, total, cwd = build_render_cmd(project, [sub], str(f), orientation, False, False, None, head_trim=drop,
-                                               gpu_scale=gscale[0])
+                                               gpu_scale=False if nohw[0] else gscale[0])     # GPU 디코딩 끔 = GPU 축소도 끔
             if nohw[0]:
                 cmd = [c for c in cmd if c not in ("-hwaccel", "cuda")]
             cmd[1:1] = ["-filter_complex_threads", str(thr), "-threads", str(thr)]   # v0.16.28 A: 조각마다 코어 나눔
@@ -2587,7 +2641,7 @@ def export_still(src: Source, frame: int, g: dict, out_file: str, gpu: bool = Fa
     from .project import get_setting
     bits = 16 if str(get_setting("still_bits", 8)) == "16" else 8     # v0.16.2: 기본 8bit(16bit PNG 는 뷰어에 따라 띠가 보임)
     pf = ("rgb48be" if bits == 16 else "rgb24") if is_png else "rgb48le"
-    vf = lens_chain(g, src.width, src.height) + grade_chain(g, lut, 3840) + [SRGB_TAG, f"format={pf}"]
+    vf = last_only(lens_chain(g, src.width, src.height) + grade_chain(g, lut, 3840), lead) + [SRGB_TAG, f"format={pf}"]
     codec = ["-c:v", "png", "-compression_level", "3"] if is_png else ["-c:v", "tiff", "-compression_algo", "deflate"]
     cmd = [paths.ffmpeg(), "-v", "error", "-y", "-ss", _seek(start, src.fps), "-i", _abs(src.path),
            "-frames:v", str(lead + 1), "-an", "-filter_complex", graph(vf, "[0:v]", "[so]"), "-map", "[so]",

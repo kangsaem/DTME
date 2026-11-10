@@ -221,13 +221,8 @@ def ensure_folder(parent, state) -> bool:
     o = state.project.output
     if o.folder.strip():
         return True
-    import json
-    from . import paths
-    sp = paths.settings_path()
-    try:
-        last = json.loads(sp.read_text(encoding="utf-8")).get("last_folder", "") if sp.exists() else ""
-    except Exception:  # noqa: BLE001
-        last = ""
+    from .project import get_setting, set_setting
+    last = get_setting("last_folder", "") or ""
     start = last or (str(Path(state.project.sources[0].path).parent) if state.project.sources else "")
     d = QFileDialog.getExistingDirectory(parent, "저장폴더", start)
     if not d:
@@ -235,9 +230,7 @@ def ensure_folder(parent, state) -> bool:
     o.folder = d
     state.dirty = True
     try:
-        st = json.loads(sp.read_text(encoding="utf-8")) if sp.exists() else {}
-        st["last_folder"] = d
-        sp.write_text(json.dumps(st, ensure_ascii=False, indent=2), encoding="utf-8")
+        set_setting("last_folder", d)
     except Exception:  # noqa: BLE001
         pass
     state.changed.emit("output")
@@ -306,8 +299,11 @@ def free_memory():
         ff.range_clear()
         with ff._cache_lock:
             ff._frame_cache.clear()
+        with ff._pv_memo_lock:
+            ff._pv_memo.clear()
         from . import ui_edit
-        ui_edit.PREVIEW_LRU.clear()
+        with ui_edit.PREVIEW_LOCK:
+            ui_edit.PREVIEW_LRU.clear()
     except Exception as e:  # noqa: BLE001
         ff.log_error("메모리 비우기", str(e))
     gc.collect()

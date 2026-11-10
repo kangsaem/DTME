@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import re
+import threading
+import time
 import uuid
 from dataclasses import asdict, dataclass, field
 from fractions import Fraction
@@ -11,19 +14,15 @@ from pathlib import Path
 
 from . import paths
 
-MAX_SAMPLES = 5
 MAX_CURVE_POINTS = 5          # 양 끝점을 제외한 조정 포인트 수
-OUTPUT_LIMIT_SEC = 30.0
 OUT_FPS = Fraction(30000, 1001)  # 59.94 원본 → 29.97 출력
 
-SPEEDS = [2.0, 1.0, 0.5]
 
 MAX_LAYERS = 3                  # 영상 1개에 얹을 수 있는 이미지 레이어 수
 IMAGE_EXT = {".jpg", ".jpeg", ".png"}
 AUDIO_EXT = {".mp3", ".m4a", ".wav", ".flac", ".aac"}
 VIDEO_EXT = {".mp4", ".mov"}
 
-NR_LEVELS = ["off", "weak", "mid", "strong"]   # strong 은 스틸 전용
 # 옛 디노이즈 단계 → (색 노이즈, 밝기 노이즈) 0~100
 NR_LEGACY = {"off": (0, 0), "weak": (60, 25), "mid": (80, 45), "strong": (100, 70)}
 
@@ -85,7 +84,6 @@ FACTORY_GRADE = {
 # 보정 없음(LUT만) — 새로 불러온 클립 · [리셋]. LUT 는 프로젝트 기본값을 따름(사용자 2026-11-06: 액션을 해야 보정 시작)
 NEUTRAL = {"r_gain": 1.0, "b_gain": 1.0, "hue": 0.0, "sat": 1.0, "water": 0, "gy": 0, "curve": [[0.0, 0.0], [1.0, 1.0]],
            "nr_chroma": 0, "nr_luma": 0, "wnr": 0, "sharpen": 0.0, "dehaze": 0, "lens": 0, "stab": 0}
-OFFABLE = [k for k in NEUTRAL if k not in ("curve", "dehaze")]        # 이름을 눌러 잠시 끌 수 있는 항목(슬라이더)
 
 
 def auto_lut(project, s) -> str | None:
@@ -161,50 +159,92 @@ def load_default_output() -> "OutputSettings":
 
 def load_default_grade() -> dict:
     """사용자가 '새 프로젝트 기본값'으로 저장한 값. 없으면 공장값."""
-    p = paths.settings_path()
     g = dict(FACTORY_GRADE)
     if not (paths.lut_dir() / DEFAULT_LUT).exists():
         g["lut"] = ""
-    if p.exists():
-        try:
-            s = json.loads(p.read_text(encoding="utf-8"))
-            if int(s.get("defaults_rev", 0)) < DEFAULTS_REV:
-                return g
-            g.update({k: v for k, v in upgrade_grade(dict(s.get("default_grade", {}))).items() if k in GRADE_KEYS})
-        except Exception:
-            pass
+    try:
+        s = _settings()
+        if int(s.get("defaults_rev", 0)) < DEFAULTS_REV:
+            return g
+        g.update({k: v for k, v in upgrade_grade(dict(s.get("default_grade", {}))).items() if k in GRADE_KEYS})
+    except Exception:
+        pass
     return g
 
 
-def get_setting(key: str, default=None):
+# settings.json: ffmpeg 를 띄울 때마다 여러 번 읽으므로(자리 수 등) 파일이 그대로면 읽어 둔 것을 씀. 쓰기는 잠금 + 임시 파일 → 이름 바꾸기
+# (작업 스레드와 화면이 동시에 쓰거나 쓰는 중 꺼지면 파일이 깨져 설정이 모두 기본값으로 돌아가던 위험, v0.16.40).
+_set_lock = threading.RLock()
+_set_cache: list = [None, {}]          # [(mtime_ns, size), dict]
+
+
+def _settings() -> dict:
+    """settings.json 내용(읽기 전용으로 쓸 것). 없거나 깨졌으면 {}."""
     p = paths.settings_path()
+    with _set_lock:
+        try:
+            st = p.stat()
+        except OSError:
+            _set_cache[:] = [None, {}]
+            return {}
+        sig = (st.st_mtime_ns, st.st_size)
+        if _set_cache[0] != sig:
+            try:
+                d = json.loads(p.read_text(encoding="utf-8"))
+                d = d if isinstance(d, dict) else {}
+            except Exception:  # noqa: BLE001
+                d = {}
+            _set_cache[:] = [sig, d]
+        return _set_cache[1]
+
+
+def _settings_update(values: dict) -> None:
+    p = paths.settings_path()
+    with _set_lock:
+        s = dict(_settings())
+        s.update(values)
+        tmp = p.with_name(p.name + ".tmp")
+        tmp.write_text(json.dumps(s, ensure_ascii=False, indent=2), encoding="utf-8")
+        for i in range(20):                      # Windows: 백신 등이 잠깐 잡고 있으면 다시
+            try:
+                os.replace(tmp, p)
+                break
+            except PermissionError:
+                if i == 19:
+                    raise
+                time.sleep(0.05)
+        _set_cache[0] = None
+
+
+def get_setting(key: str, default=None):
     try:
-        return json.loads(p.read_text(encoding="utf-8")).get(key, default) if p.exists() else default
+        v = _settings().get(key, default)
+        return copy.deepcopy(v) if isinstance(v, (dict, list)) else v     # 받은 쪽이 고쳐도 읽어 둔 것은 그대로
     except Exception:  # noqa: BLE001
         return default
 
 
 def set_setting(key: str, value) -> None:
-    p = paths.settings_path()
-    try:
-        s = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
-    except Exception:  # noqa: BLE001
-        s = {}
-    s[key] = value
-    p.write_text(json.dumps(s, ensure_ascii=False, indent=2), encoding="utf-8")
+    _settings_update({key: value})
 
 
 def save_default_grade(grade: dict) -> None:
-    p = paths.settings_path()
-    s = {}
-    if p.exists():
+    _settings_update({"default_grade": {k: grade[k] for k in GRADE_KEYS}, "defaults_rev": DEFAULTS_REV})
+
+
+def write_json_atomic(file, data, indent=2) -> None:
+    """프로젝트·자동 저장: 임시 파일에 다 쓴 뒤 바꿔치기(쓰는 중 꺼져도 예전 파일이 남음, v0.16.40)."""
+    f = Path(file)
+    tmp = f.with_name(f.name + ".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=indent), encoding="utf-8")
+    for i in range(20):
         try:
-            s = json.loads(p.read_text(encoding="utf-8"))
-        except Exception:
-            s = {}
-    s["default_grade"] = {k: grade[k] for k in GRADE_KEYS}
-    s["defaults_rev"] = DEFAULTS_REV
-    p.write_text(json.dumps(s, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(tmp, f)
+            return
+        except PermissionError:
+            if i == 19:
+                raise
+            time.sleep(0.05)
 
 
 # ------------------------------------------------------------------ 프리셋 (presets/*.json)
@@ -596,8 +636,6 @@ class Project:
     def image(self, iid: str) -> ImageSource | None:
         return next((m for m in self.images if m.id == iid), None)
 
-    def segments_of(self, sid: str) -> list[Segment]:
-        return [g for g in self.segments if g.src == sid]
 
     # ---- 보정값 병합: 기본값 → 클립 → (스틸) ----
     def grade_for_source(self, sid: str, frame: float | None = None, off=True, seg=None) -> dict:
@@ -696,7 +734,7 @@ class Project:
 
     def save(self, file: str) -> None:
         self.file = file
-        Path(file).write_text(json.dumps(self.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+        write_json_atomic(file, self.to_dict())
 
     @classmethod
     def load(cls, file: str) -> "Project":

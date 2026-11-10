@@ -31,8 +31,41 @@ def purge_frame_cache():
     shutil.rmtree(paths.cache_dir() / "frames", ignore_errors=True)
 
 
+_fault_file = None
+
+
+def crash_log():
+    """화면 코드에서 난 오류·프로그램이 튕길 때의 위치를 기록으로(v0.16.40). 창만 있는 exe 는 오류가 보이지 않고 사라졌음.
+    cache/dtme.log = 파이썬 오류, cache/crash.log = 튕김(접근 위반 등) 때 스레드별 위치."""
+    global _fault_file
+    import faulthandler
+    import threading
+    import traceback
+    from dtme import ff, paths
+    ff.log_trim()
+    try:
+        f = paths.cache_dir() / "crash.log"
+        if f.exists() and f.stat().st_size > (1 << 20):
+            f.unlink()
+        _fault_file = open(f, "a", encoding="utf-8")       # 닫지 않음(튕길 때 여기에 씀)
+        faulthandler.enable(_fault_file)
+    except Exception:  # noqa: BLE001
+        pass
+    old = sys.excepthook
+
+    def hook(tp, val, tb):
+        if not issubclass(tp, KeyboardInterrupt):
+            ff.log_error("오류", "".join(traceback.format_exception(tp, val, tb))[-3000:])
+        old(tp, val, tb)
+    sys.excepthook = hook
+    threading.excepthook = lambda a: ff.log_error(
+        f"오류(스레드 {a.thread.name if a.thread else '?'})",
+        "".join(traceback.format_exception(a.exc_type, a.exc_value, a.exc_traceback))[-3000:])
+
+
 def main():
     purge_frame_cache()
+    crash_log()
     # Qt 멀티미디어는 FFmpeg 백엔드 사용(Windows 기본)
     os.environ.setdefault("QT_MEDIA_BACKEND", "ffmpeg")
     app = QApplication(sys.argv)

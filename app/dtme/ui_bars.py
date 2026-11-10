@@ -455,8 +455,6 @@ class SeqTimeline(QWidget):
         ov_end = max([float(t["t1"]) for t in self.titles] + [float(m["t0"]) + float(m["len"]) for m in self.music] + [0.0])
         return max(cut_end, ov_end)
 
-    def cuts_end(self):
-        return max((it[6] + it[1] for it in self.items), default=0.0)
 
     def _resize(self):
         w = int(self.total() * self.pps + 80)

@@ -1,7 +1,6 @@
 """메인 창: 상단(새 프로젝트·저장·불러오기·실행취소) + 편집·보정·렌더 한 화면, 드래그 앤 드롭."""
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from PySide6.QtCore import QTimer
@@ -146,8 +145,8 @@ class MainWindow(QMainWindow):
     def _do_autosave(self):
         if self.state.dirty and self.state.project.sources:
             try:
-                (paths.cache_dir() / "autosave.dtme.json").write_text(
-                    json.dumps(self.state.project.to_dict(), ensure_ascii=False, indent=1), encoding="utf-8")
+                from .project import write_json_atomic
+                write_json_atomic(paths.cache_dir() / "autosave.dtme.json", self.state.project.to_dict(), indent=1)
             except Exception:  # noqa: BLE001
                 pass
 

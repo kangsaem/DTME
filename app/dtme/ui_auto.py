@@ -22,12 +22,8 @@ from .project import (OUTPUTS, Segment, clamp_out, outputs_for, source_out_h, au
                       short_name)
 
 # ------------------------------------------------------------------ 색·모양 (DTME 공통)
-LIST_BG = "#6b6b6b"          # 목록 바(준비됨)
-LIST_DIM = "#3c3c3c"         # 준비 전 · 제외
 SEL_BLUE = "#2f4f78"         # 선택·켜짐
 EDGE_BLUE = "#4a8fe0"
-AUTO_FILL = "#5d7896"        # 분석 진행(줄 배경)
-REND_FILL = "#8a5a54"        # 렌더 진행(줄 배경)
 YELLOW = "#f2c94c"
 SUB = "#c4cad1"              # 자동 인식 글자(흐린 흰색)
 RED_BTN, LIGHT_BTN, ORANGE_BTN = "red", "light", "orange"    # 버튼 색 이름(ui_style.tone) — 모양은 ui_style 한 곳에서
@@ -694,11 +690,6 @@ class AutoDialog(DragMove, QDialog):
         pct = self.state.proxy_pct.get(r.sid, 0.0)
         return f"로딩 중 {int(pct * 100)}%" if pct > 0 else "로딩 중"
 
-    def _lab(self, t):
-        lab = QLabel(t)
-        lab.setFixedWidth(52)
-        lab.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        return lab
 
     def set_bar_color(self, col):
         self.bar.setStyleSheet(f"QProgressBar{{background:#2a2a2a; border:none; border-radius:3px;}}"
