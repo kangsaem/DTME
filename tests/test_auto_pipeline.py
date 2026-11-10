@@ -46,6 +46,9 @@ L.run_auto(vids)
 t0 = time.time()
 while not quits and time.time() - t0 < 600:
     app.processEvents(); time.sleep(0.02)
+    dd = getattr(L, "_done_dlg", None)           # v0.16.33: 완료 팝업 [확인] = 종료
+    if dd is not None and dd.isVisible():
+        dd.b_ok.click()
 outs = sorted(os.listdir(out))
 print("결과:", outs, "종료:", bool(quits), "상태:", list(w.edit.render_panel.status.values()))
 print("첫 렌더 시작 → 모든 분석 끝: %.2f초 먼저" % (log["analysis_done"] - log["first_render"]) if log["first_render"] and log["analysis_done"] else log)

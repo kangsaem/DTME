@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (QButtonGroup, QComboBox, QFileDialog, QFrame, QGr
                                QScrollArea, QSizePolicy, QSlider, QVBoxLayout, QWidget)
 
 from . import ff, jobs, paths, ui_style
-from .project import (KEYABLE, OUTPUTS, delete_preset, get_setting, grade_at, keep_lut, list_presets, load_preset,
+from .project import (CURVE_KEY, KEYABLE, OUTPUTS, delete_preset, get_setting, grade_at, keep_lut, list_presets, load_preset,
                       rename_preset, save_default_grade, save_preset, set_setting, timecode)
 from .state import AppState
 from .ui_curve import CurveEditor
@@ -288,6 +288,13 @@ class GradePanel(QWidget):
         s_col.lay.addWidget(self.curve)
         crow = QHBoxLayout()
         crow.addStretch(1)
+        kc = QPushButton("◆")                          # v0.16.34 커브 ◆(다른 ◆ 와 같은 동작)
+        kc.setFixedSize(22, 20)
+        kc.setFocusPolicy(Qt.NoFocus)
+        kc.setToolTip("이 프레임에 커브 키프레임 (다시 누르면 삭제)")
+        kc.clicked.connect(lambda _=False: self._toggle_key(CURVE_KEY))
+        self.kbtn[CURVE_KEY] = kc
+        crow.addWidget(kc)
         b3 = fix_size(QPushButton("커브리셋"))
         b3.setFocusPolicy(Qt.NoFocus)
         b3.clicked.connect(self.curve.reset)
@@ -443,7 +450,8 @@ class GradePanel(QWidget):
         if hit:
             ks.remove(hit)
         else:
-            ks.append({"f": self.frame, "v": float(self._shown()[key])})
+            cur = self._shown()[key]
+            ks.append({"f": self.frame, "v": [list(q) for q in cur] if key == CURVE_KEY else float(cur)})
             ks.sort(key=lambda k: k["f"])
         if not ks:
             s.gkeys.pop(key, None)
@@ -462,13 +470,14 @@ class GradePanel(QWidget):
         """키프레임이 있는 항목이면 현재 프레임 키를 만들거나 고침, 아니면 클립 값."""
         self._turn_on(key)
         s = self._src()
-        if s and key in KEYABLE and s.gkeys.get(key):
+        if s and key in KEYABLE + [CURVE_KEY] and s.gkeys.get(key):
             ks = s.gkeys[key]
+            v = [list(q) for q in value] if key == CURVE_KEY else float(value)
             hit = next((k for k in ks if k["f"] == self.frame), None)
             if hit:
-                hit["v"] = float(value)
+                hit["v"] = v
             else:
-                ks.append({"f": self.frame, "v": float(value)})
+                ks.append({"f": self.frame, "v": v})
                 ks.sort(key=lambda k: k["f"])
                 self.keysChanged.emit()
         else:
@@ -702,13 +711,13 @@ class GradePanel(QWidget):
                 return
             base = dict(p.grade)
             base["lut"] = p.grade_for_source(sid, off=False).get("lut", "")      # 클립 LUT 그대로
-            r = auto.recommend(smp, base, sc, sb, strength)
+            r = auto.recommend(smp, base, sc, sb, strength, fps=float(s.fps))
             rec = r["preset"] if key == "auto" else auto.recommend(smp, base)["preset"]
             s.grade = {k: v for k, v in r["grade"].items() if p.grade.get(k) != v}
             s.gkeys = r["gkeys"]
             s.off = []
             s.auto = {"preset": r["preset"], "by": "auto" if key == "auto" else "user", "rec": rec,
-                      "nkeys": len(r["gkeys"].get("r_gain", []))}
+                      "nkeys": len({k["f"] for ks in r["gkeys"].values() for k in ks})}
             self.state.dirty = True
             self.keysChanged.emit()
             if sid == self.cur_sid:
@@ -716,7 +725,7 @@ class GradePanel(QWidget):
                 self.set_view("split")
             self._emit_change()
             if self._rec_jobs <= 0:
-                self.message.emit(f"추천 → {auto.preset_label(r['preset'])}" + (f"  ◆{len(r['gkeys']['r_gain'])}" if r["gkeys"] else ""),
+                self.message.emit(f"추천 → {auto.preset_label(r['preset'])}" + (f"  ◆{len({k['f'] for ks in r['gkeys'].values() for k in ks})}" if r["gkeys"] else ""),
                                   "#7fd18b")
 
         def err(msg):

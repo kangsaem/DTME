@@ -336,7 +336,8 @@ def ease(u: float) -> float:
     return u * u * (3 - 2 * u)
 
 
-KEYABLE = ["r_gain", "b_gain", "hue", "sat", "water", "gy"]     # 시간에 따라 바뀌는 보정(◆)
+KEYABLE = ["r_gain", "b_gain", "hue", "sat", "water", "gy"]     # 시간에 따라 바뀌는 보정(◆, 숫자)
+CURVE_KEY = "curve"                                              # 커브 ◆(v0.16.34): {"f", "v": [[x, y], …]}
 
 
 def key_at(keys: list, f: float, field_: str = "v") -> float | None:
@@ -351,8 +352,69 @@ def key_at(keys: list, f: float, field_: str = "v") -> float | None:
     return float(keys[-1][field_])
 
 
+def spline_eval(pts, xs) -> list:
+    """커브 점(ffmpeg curves 와 같은 natural spline)을 xs 에서 계산. 0~1 로 자름."""
+    pts = sorted((float(x), float(y)) for x, y in pts)
+    k = len(pts)
+    if k < 2:
+        return [max(0.0, min(1.0, x)) for x in xs]
+    px = [q[0] for q in pts]
+    py = [q[1] for q in pts]
+    h = [max(1e-6, px[i + 1] - px[i]) for i in range(k - 1)]
+    M = [0.0] * k
+    if k > 2:
+        a, b, c, d = [0.0] * k, [1.0] * k, [0.0] * k, [0.0] * k
+        for i in range(1, k - 1):
+            a[i], b[i], c[i] = h[i - 1], 2 * (h[i - 1] + h[i]), h[i]
+            d[i] = 6 * ((py[i + 1] - py[i]) / h[i] - (py[i] - py[i - 1]) / h[i - 1])
+        for i in range(1, k):
+            m = a[i] / b[i - 1]
+            b[i] -= m * c[i - 1]
+            d[i] -= m * d[i - 1]
+        M[-1] = d[-1] / b[-1]
+        for i in range(k - 2, -1, -1):
+            M[i] = (d[i] - c[i] * M[i + 1]) / b[i]
+    out = []
+    for x in xs:
+        if x <= px[0]:
+            out.append(max(0.0, min(1.0, py[0])))
+            continue
+        if x >= px[-1]:
+            out.append(max(0.0, min(1.0, py[-1])))
+            continue
+        i = next(j for j in range(k - 1) if x <= px[j + 1])
+        dx, hi = x - px[i], h[i]
+        y = (py[i] + ((py[i + 1] - py[i]) / hi - hi * (2 * M[i] + M[i + 1]) / 6) * dx + M[i] / 2 * dx * dx
+             + (M[i + 1] - M[i]) / (6 * hi) * dx ** 3)
+        out.append(max(0.0, min(1.0, y)))
+    return out
+
+
+def blend_curves(ca, cb, t: float) -> list:
+    """두 커브 사이(t 0~1): 두 커브의 점 x 를 합친 위치에서 각자 계산해 섞음(점 개수가 달라도 됨)."""
+    if t <= 0:
+        return [list(q) for q in ca]
+    if t >= 1:
+        return [list(q) for q in cb]
+    xs = sorted({round(float(q[0]), 4) for q in list(ca) + list(cb)} | {0.0, 1.0})
+    ya, yb = spline_eval(ca, xs), spline_eval(cb, xs)
+    return [[x, round(a + (b - a) * t, 4)] for x, a, b in zip(xs, ya, yb)]
+
+
+def curve_at(keys: list, f: float):
+    """커브 ◆(v0.16.34): 키 사이 smoothstep 으로 섞은 커브. 첫 키 전·마지막 키 뒤는 그 커브."""
+    if not keys:
+        return None
+    if f <= keys[0]["f"]:
+        return [list(q) for q in keys[0]["v"]]
+    for a, b in zip(keys, keys[1:]):
+        if f < b["f"]:
+            return blend_curves(a["v"], b["v"], ease((f - a["f"]) / max(1, b["f"] - a["f"])))
+    return [list(q) for q in keys[-1]["v"]]
+
+
 def grade_at(g: dict, gkeys: dict, f: float) -> dict:
-    """프레임 f 의 보정값(색 키프레임 반영)."""
+    """프레임 f 의 보정값(색 키프레임 · 커브 ◆ 반영)."""
     if not gkeys:
         return g
     g = dict(g)
@@ -360,6 +422,9 @@ def grade_at(g: dict, gkeys: dict, f: float) -> dict:
         v = key_at(gkeys.get(k) or [], f)
         if v is not None:
             g[k] = v
+    c = curve_at(gkeys.get(CURVE_KEY) or [], f)
+    if c is not None:
+        g["curve"] = c
     return g
 
 
@@ -376,11 +441,12 @@ def reframe_at(keys: list, f: float) -> float:
 
 
 # 화면 전환: (종류, 이름). 첫 컷에는 페이드(검정·흰색)만 = 검정/흰 화면에서 들어옴
+# v0.16.34 이름 = 새 화면이 들어오는 방향(ffmpeg 시험: wipeleft = 오른쪽에서 들어옴)
 TRANSITIONS = [("none", "없음"), ("dissolve", "디졸브"),
-               ("wipeleft", "커튼 ←"), ("wiperight", "커튼 →"), ("wipeup", "커튼 ↑"), ("wipedown", "커튼 ↓"),
-               ("zoomin", "빠른 줌인"), ("zoomout", "빠른 줌아웃"),
+               ("wipeleft", "우 → 좌"), ("wiperight", "좌 → 우"), ("wipeup", "아래 → 위"), ("wipedown", "위 → 아래"),
+               ("zoomin", "줌인"), ("zoomout", "줌아웃"),
                ("rotzoomin", "회전 줌인"), ("rotzoomout", "회전 줌아웃"),
-               ("fadeblack", "페이드아웃·인"), ("fadewhite", "화이트아웃·인")]
+               ("fadeblack", "검정 페이드"), ("fadewhite", "흰색 페이드")]
 TRANS_NAME = dict(TRANSITIONS)
 FIRST_OK = {"fadeblack", "fadewhite"}
 TRANS_DEFAULT_SEC = 0.5
@@ -437,6 +503,12 @@ def new_text(t0: float, t1: float, text: str = "") -> dict:
 def new_title_image(img: str, t0: float, t1: float, scale: float = 1.0) -> dict:
     return {"id": _id(), "kind": "image", "img": img, "t0": float(t0), "t1": float(t1), "fade": TITLE_FADE,
             "cx": 0.5, "cy": 0.5, "scale": float(scale)}
+
+
+def new_rect(t0: float, t1: float) -> dict:
+    """사각형 레이어(v0.16.34, 글자 배경용). cx·cy·w·h = 출력 화면 비율, radius = 1080 기준 px, opacity 0~1."""
+    return {"id": _id(), "kind": "rect", "t0": float(t0), "t1": float(t1), "fade": TITLE_FADE,
+            "cx": 0.5, "cy": 0.82, "w": 0.6, "h": 0.16, "color": "#000000", "opacity": 0.5, "radius": 0}
 
 
 def new_music(path: str, t0: float, dur: float) -> dict:

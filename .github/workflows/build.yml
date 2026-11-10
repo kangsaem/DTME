@@ -143,6 +143,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
           python tests/test_launch_done.py
           if ($LASTEXITCODE -ne 0) { exit 1 }
+          python tests/test_curvekeys.py
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          python tests/test_ui_v1634.py
+          if ($LASTEXITCODE -ne 0) { exit 1 }
 
       - name: Smoke test (exe 실행)
         shell: pwsh

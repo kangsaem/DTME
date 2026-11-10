@@ -11,6 +11,8 @@ from . import fonts
 from .ui_render import Popup
 
 SWATCHES = ["#ffffff", "#ffe28a", "#9fd8ff", "#111111"]
+SIZE_MIN, SIZE_MAX = 16, 600          # 글자 크기(1080 화면 기준 px)
+RECT_SWATCHES = ["#000000", "#ffffff", "#1f3a5f", "#7a1f1f"]
 
 
 def _slider(lo, hi, v):
@@ -77,9 +79,12 @@ class TextDialog(_Undoable):
         lay.addLayout(ar)
         g = QGridLayout()
         g.addWidget(QLabel("크기"), 0, 0)
-        self.size = _slider(16, 240, int(title.get("size", 64)))
-        self.size_v = QLabel(str(self.size.value()))
-        self.size.valueChanged.connect(lambda v: (self.size_v.setText(str(v)), self._set("size", v)))
+        from .ui_grade import ValueEdit
+        self.size = _slider(SIZE_MIN, SIZE_MAX, int(title.get("size", 64)))      # v0.16.34: 최대 240 → 600
+        self.size_v = ValueEdit()                                            # 숫자 칸 클릭 = 직접 입력(Enter)
+        self.size_v.show_value(str(self.size.value()))
+        self.size.valueChanged.connect(lambda v: (self.size_v.show_value(str(v)), self._set("size", v)))
+        self.size_v.submitted.connect(lambda v: self.size.setValue(int(max(SIZE_MIN, min(SIZE_MAX, round(v))))))
         g.addWidget(self.size, 0, 1)
         g.addWidget(self.size_v, 0, 2)
         g.addWidget(QLabel("색"), 1, 0)
@@ -150,6 +155,70 @@ class TextDialog(_Undoable):
 
     def _pick(self):
         c = QColorDialog.getColor(QColor(self.t.get("color", "#ffffff")), self, "글자색")
+        if c.isValid():
+            self._color(c.name())
+
+    def _set(self, k, v):
+        self.t[k] = v
+        self.changed.emit()
+
+
+class RectDialog(_Undoable):
+    """사각형 레이어(v0.16.34): 색 · 불투명도 · 모서리 둥글기 · 페이드. 위치·크기는 모니터에서 끌기(모서리 = 크기)."""
+
+    def __init__(self, rect: dict, parent=None):
+        super().__init__(rect, parent)
+        self.t = rect
+        self.setMinimumWidth(320)
+        g = QGridLayout()
+        g.addWidget(QLabel("색"), 0, 0)
+        crow = QHBoxLayout()
+        self.sw = []
+        for c in RECT_SWATCHES:
+            b = QPushButton("")
+            b.setFixedSize(24, 22)
+            b.clicked.connect(lambda _=False, c=c: self._color(c))
+            self.sw.append((c, b))
+            crow.addWidget(b)
+        more = QPushButton("…")
+        more.setFixedSize(30, 22)
+        more.setToolTip("다른 색")
+        more.clicked.connect(self._pick)
+        crow.addWidget(more)
+        crow.addStretch(1)
+        g.addLayout(crow, 0, 1, 1, 2)
+        rows = (("불투명도", "opacity", 0, 100, 100, "%"), ("둥글기", "radius", 0, 80, 1, ""), ("페이드", "fade", 0, 20, 10, "초"))
+        self.vals = {}
+        for i, (name, key, lo, hi, sc, unit) in enumerate(rows, 1):
+            g.addWidget(QLabel(name), i, 0)
+            sl = _slider(lo, hi, int(round(float(rect.get(key, 0)) * sc)))
+            lab = QLabel()
+            lab.setMinimumWidth(40)
+
+            def show(v, lab=lab, sc=sc, unit=unit, key=key):
+                lab.setText(f"{v / sc:.1f}{unit}" if key == "fade" else f"{v}{unit}")
+            show(sl.value())
+            sl.valueChanged.connect(lambda v, key=key, sc=sc, show=show: (show(v), self._set(key, v / sc if sc != 1 else v)))
+            g.addWidget(sl, i, 1)
+            g.addWidget(lab, i, 2)
+            self.vals[key] = sl
+        g.setColumnStretch(1, 1)
+        self.body.addLayout(g)
+        self._paint_swatches()
+        self.add_buttons()
+
+    def _paint_swatches(self):
+        from . import ui_style
+        cur = (self.t.get("color") or "#000000").lower()
+        for c, b in self.sw:
+            ui_style.tone(b, color=c, sel=c == cur)
+
+    def _color(self, c):
+        self._set("color", c)
+        self._paint_swatches()
+
+    def _pick(self):
+        c = QColorDialog.getColor(QColor(self.t.get("color", "#000000")), self, "사각형 색")
         if c.isValid():
             self._color(c.name())
 

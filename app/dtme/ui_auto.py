@@ -725,7 +725,7 @@ class AutoDialog(DragMove, QDialog):
         if fixed and row.rec and row.result and row.rec != row.result["preset"]:
             sub.append(f"인식: {auto.preset_label(row.rec)}")
         if row.result and row.result["gkeys"] and self.keys.value() == "auto":
-            sub.append(f"◆{len(next(iter(row.result['gkeys'].values())))}")
+            sub.append(f"◆{len({k['f'] for ks in row.result['gkeys'].values() for k in ks})}")
         return label, fixed, "  ".join(sub)
 
     def _name_preview(self, *_):
@@ -821,7 +821,7 @@ class AutoDialog(DragMove, QDialog):
         base.update({k: v for k, v in s.grade.items() if k in ("sharpen", "lens")})
         base["lut"] = lut
         sc, sb = choice_args(r.choice)
-        r.result = auto.recommend(smp, base, sc, sb, self.strength.value() or "mid")
+        r.result = auto.recommend(smp, base, sc, sb, self.strength.value() or "mid", fps=float(s.fps))
         r.result["grade"]["lens"] = self.lens_s.value()
         r.result["grade"]["stab"] = self.stab_s.value()
         r.rec = auto.recommend(smp, base)["preset"]

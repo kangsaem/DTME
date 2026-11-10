@@ -74,6 +74,7 @@ class Monitor(QWidget):
         self.titles = []                        # 타임라인 모드: [(title, alpha, QImage|None, (w, h) | None)]
         self.sel_title = ""
         self._tdrag = None
+        self._tresize = None                    # 사각형 모서리 끌기(v0.16.34)
         self._build_zoom_ui()
         self._build_mode_ui()
         self._build_scope_ui()
@@ -117,7 +118,9 @@ class Monitor(QWidget):
     def _title_rect(self, t, img_wh, fm=None) -> QRectF:
         c = self._out_rect
         k = c.width() / self.out_wh[0]
-        if t.get("kind") == "image":
+        if t.get("kind") == "rect":                    # v0.16.34 사각형 = 출력 화면 비율
+            w, h = float(t.get("w", 0.6)) * c.width(), float(t.get("h", 0.16)) * c.height()
+        elif t.get("kind") == "image":
             w, h = img_wh[0] * float(t.get("scale", 1)) * k, img_wh[1] * float(t.get("scale", 1)) * k
         else:
             from PySide6.QtGui import QFontMetricsF
@@ -156,6 +159,14 @@ class Monitor(QWidget):
         p.setClipRect(c)
         for t, alpha, img, wh in self.titles:
             p.setOpacity(max(0.0, min(1.0, alpha)))
+            if t.get("kind") == "rect":
+                col = QColor(t.get("color", "#000000"))
+                col.setAlphaF(max(0.0, min(1.0, float(t.get("opacity", 0.5)))))
+                p.setPen(Qt.NoPen)
+                p.setBrush(col)
+                rad = float(t.get("radius", 0)) * min(self.out_wh) / 1080 * k     # 렌더와 같은 기준(1080 px)
+                p.drawRoundedRect(self._title_rect(t, None), rad, rad)
+                continue
             if t.get("kind") == "image":
                 if img is not None:
                     p.drawImage(self._title_rect(t, wh), img)
@@ -185,6 +196,22 @@ class Monitor(QWidget):
                 p.setPen(QPen(QColor(255, 255, 255, 200), 1, Qt.DashLine))
                 p.setBrush(Qt.NoBrush)
                 p.drawRect(r)
+                if t.get("kind") == "rect":            # 모서리 손잡이(끌면 크기)
+                    p.setPen(QPen(QColor("#ffffff"), 1))
+                    p.setBrush(QColor("#4a8fe0"))
+                    for q in (r.topLeft(), r.topRight(), r.bottomLeft(), r.bottomRight()):
+                        p.drawRect(QRectF(q.x() - 4, q.y() - 4, 8, 8))
+
+    def _rect_corner(self, pos):
+        """고른 사각형의 모서리 근처면 (사각형, 반대쪽 모서리 점) — 크기 끌기용."""
+        for t, _a, _img, wh in self.titles:
+            if t["id"] == self.sel_title and t.get("kind") == "rect":
+                r = self._title_rect(t, wh)
+                for q, opp in ((r.topLeft(), r.bottomRight()), (r.topRight(), r.bottomLeft()),
+                               (r.bottomLeft(), r.topRight()), (r.bottomRight(), r.topLeft())):
+                    if abs(pos.x() - q.x()) <= 9 and abs(pos.y() - q.y()) <= 9:
+                        return t, opp
+        return None
 
     def _title_hit(self, pos):
         for t, _a, img, wh in reversed(self.titles):
@@ -444,6 +471,11 @@ class Monitor(QWidget):
         if self._split_hit(pos):
             self._split_drag = True
             return
+        rc = self._rect_corner(pos) if self.titles else None
+        if rc is not None:
+            self.titlePressed.emit(rc[0]["id"])
+            self._tresize = rc
+            return
         tt = self._title_hit(pos) if self.titles else None
         if tt is not None:
             self.titlePressed.emit(tt["id"])
@@ -473,6 +505,20 @@ class Monitor(QWidget):
         if self.space_pan:
             self.setCursor(Qt.OpenHandCursor)
             return
+        if getattr(self, "_tresize", None) is not None and (e.buttons() & Qt.LeftButton):
+            t, opp = self._tresize
+            c = self._out_rect
+            x0, x1 = sorted((opp.x(), pos.x()))
+            y0, y1 = sorted((opp.y(), pos.y()))
+            w, h = max(6.0, x1 - x0), max(6.0, y1 - y0)
+            t["w"], t["h"] = min(2.0, w / c.width()), min(2.0, h / c.height())
+            t["cx"] = ((x0 + x1) / 2 - c.left()) / c.width()
+            t["cy"] = ((y0 + y1) / 2 - c.top()) / c.height()
+            self.update()
+            self.titleChanged.emit()
+            return
+        if self.titles and self._rect_corner(pos) is not None and not (e.buttons() & Qt.LeftButton):
+            self.setCursor(Qt.SizeFDiagCursor)
         if self._tdrag is not None and (e.buttons() & Qt.LeftButton):
             t, p0, cx, cy = self._tdrag
             c = self._out_rect
@@ -551,6 +597,7 @@ class Monitor(QWidget):
         self._drag = None
         self._split_drag = False
         self._tdrag = None
+        self._tresize = None
 
     def wheelEvent(self, e):
         """레이어 위에서 휠 = 레이어 크기 ±5%, 그 밖 = 마우스 위치 기준 확대·축소"""
@@ -564,8 +611,11 @@ class Monitor(QWidget):
             f = 1.05 if e.angleDelta().y() > 0 else 1 / 1.05
             if tt.get("kind") == "image":
                 tt["scale"] = max(0.02, min(20.0, float(tt.get("scale", 1)) * f))
+            elif tt.get("kind") == "rect":
+                tt["w"] = max(0.01, min(2.0, float(tt.get("w", 0.6)) * f))
+                tt["h"] = max(0.01, min(2.0, float(tt.get("h", 0.16)) * f))
             else:
-                tt["size"] = int(max(8, min(400, round(float(tt.get("size", 64)) * f))))
+                tt["size"] = int(max(8, min(600, round(float(tt.get("size", 64)) * f))))
             self.update()
             self.titleChanged.emit()
             return

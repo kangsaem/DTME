@@ -8,7 +8,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
 from dtme import ff, paths  # noqa: E402
-from dtme.project import (ImageSource, Project, Segment, Source, default_mix, new_music, new_text,  # noqa: E402
+from dtme.project import (ImageSource, Project, Segment, Source, default_mix, new_music, new_rect, new_text,  # noqa: E402
                           new_title_image)
 
 
@@ -50,7 +50,9 @@ def main(sample, work):
     t1.update(cy=0.3, bg="band", fade=0.2)
     img = new_title_image(im.id, 0.5, 1.2)
     img.update(cx=0.85, cy=0.8, fade=0.05)
-    extras = {"titles": [t1, img], "music": [new_music(str(mus), 0.3, ff.probe_audio(str(mus)))], "mix": default_mix()}
+    rc = new_rect(0.2, 1.4)                       # v0.16.34 사각형(글자 배경) — 흰색 불투명, 왼쪽 아래
+    rc.update(cx=0.2, cy=0.8, w=0.2, h=0.1, color="#ffffff", opacity=1.0, radius=20, fade=0.0)
+    extras = {"titles": [rc, t1, img], "music": [new_music(str(mus), 0.3, ff.probe_audio(str(mus)))], "mix": default_mix()}
     for orient, (W, H) in (("horizontal", (1920, 1080)), ("horizontal2160", (3840, 2160))):
         f = d / f"titles_{orient}.mp4"
         ff.render_video(p, segs, str(f), orientation=orient, extras=extras)
@@ -61,6 +63,9 @@ def main(sample, work):
         k = W / 1920
         red = fr[int(0.8 * H) - int(20 * k):int(0.8 * H) + int(20 * k), int(0.85 * W) - int(40 * k):int(0.85 * W) + int(40 * k)].reshape(-1, 3).mean(0)
         late = frame(f, int(1.4 * 29.97), W, H)[int(0.8 * H) - 10:int(0.8 * H) + 10, int(0.85 * W) - 20:int(0.85 * W) + 20].reshape(-1, 3).mean(0)
+        box = fr[int(0.8 * H) - int(20 * k):int(0.8 * H) + int(20 * k), int(0.2 * W) - int(80 * k):int(0.2 * W) + int(80 * k)].reshape(-1, 3).mean(0)
+        print(orient, "사각형", box.round(0))
+        assert box.min() > 235, box
         print(orient, r["width"], r["height"], r["frames"], "띠 평균", band.round(0), "이미지", red.round(0), "1.4초 이미지 자리", late.round(0))
         assert np.abs(red - (230, 40, 30)).max() < 12 and np.abs(late - (230, 40, 30)).max() > 40
     v_pre, v_mus, v_end = loud(f, 0.0, 0.25), loud(f, 0.6, 0.6), loud(f, 1.45, 0.08)

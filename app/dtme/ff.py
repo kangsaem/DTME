@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import paths
-from .project import (KEYABLE, OUT_FPS, ImageSource, Marker, Project, Segment, Source, apply_off, grade_at, layer_box,
+from .project import (CURVE_KEY, KEYABLE, OUT_FPS, ImageSource, Marker, Project, Segment, Source, apply_off, grade_at, layer_box,
                       orig_volume, plan_transitions, reframe_max)
 
 NO_WINDOW = 0x08000000 if os.name == "nt" else 0   # Windows 콘솔창 숨김
@@ -812,7 +812,9 @@ def _grade_named(g, lut_file, width):
         f.append(f"lut3d=file={lut_file}:interp=tetrahedral")
     f.append(f"colorchannelmixer@g=rr={float(g.get('r_gain', 1)):.4f}:bb={float(g.get('b_gain', 1)):.4f}")
     curve = sorted(g.get("curve") or [[0, 0], [1, 1]])
-    if not curve_is_identity(curve):
+    if g.get("_ck"):                               # 커브 ◆ = 이름 붙여 늘 넣음(프레임마다 바꿈)
+        f.append(f"curves@g=m='{_curve_arg(curve)}'")
+    elif not curve_is_identity(curve):
         f.append(f"curves=m='{' '.join(f'{x:.4f}/{y:.4f}' for x, y in curve)}'")
     f.append(f"huesaturation@g=hue={float(g.get('hue', 0)):.2f}")
     f.append(f"huesaturation@w={WATER_OPT}:hue={float(g.get('water', 0)):.2f}")
@@ -822,23 +824,30 @@ def _grade_named(g, lut_file, width):
 
 
 def has_gkeys(seg) -> bool:
-    return any(seg.gkeys.get(k) for k in KEYABLE) if getattr(seg, "gkeys", None) else False
+    return any(seg.gkeys.get(k) for k in KEYABLE + [CURVE_KEY]) if getattr(seg, "gkeys", None) else False
+
+
+def _curve_arg(curve) -> str:
+    return " ".join(f"{float(x):.4f}/{float(y):.4f}" for x, y in sorted(curve or [[0, 0], [1, 1]]))
 
 
 def gkey_cmds(g: dict, seg: Segment, src: Source, n_out: int, frames_per_sec: float) -> str:
-    """sendcmd 명령: 출력 프레임마다 색 키프레임 보간값(바뀔 때만)."""
+    """sendcmd 명령: 출력 프레임마다 색 키프레임 보간값(바뀔 때만). 커브 ◆ 가 있으면 curves@g 도(v0.16.34)."""
     lines, last = [], None
+    ck = bool(seg.gkeys.get(CURVE_KEY))
     for n in range(n_out):
         t = n / float(OUT_FPS)
         v = apply_off(grade_at(g, seg.gkeys, seg.fin + t * frames_per_sec), getattr(seg, "off", None))
         cur = (round(v["r_gain"], 4), round(v["b_gain"], 4), round(v["hue"], 2), round(max(-2, min(2, v["sat"] - 1)), 3),
-               round(float(v.get("water", 0)), 2), round(-float(v.get("gy", 0)) / 100, 4))
+               round(float(v.get("water", 0)), 2), round(-float(v.get("gy", 0)) / 100, 4),
+               _curve_arg(v.get("curve")) if ck else "")
         if cur == last:
             continue
         last = cur
         lines.append(f"{max(0.0, t - 0.25 / float(OUT_FPS)):.6f} [enter] colorchannelmixer@g rr {cur[0]}, "
                      f"colorchannelmixer@g bb {cur[1]}, huesaturation@g hue {cur[2]}, vibrance@g intensity {cur[3]}, "
-                     f"huesaturation@w hue {cur[4]}, huesaturation@y saturation {cur[5]};")
+                     f"huesaturation@w hue {cur[4]}, huesaturation@y saturation {cur[5]}"
+                     + (f", curves@g m '{cur[6]}'" if ck else "") + ";")
     return "\n".join(lines) + "\n"
 
 
@@ -1986,6 +1995,53 @@ def text_filter(t: dict, ow: int, oh: int) -> str | None:
     return "drawtext=" + ":".join(o)
 
 
+def rect_box(t: dict, ow: int, oh: int) -> tuple[int, int, int, int]:
+    """사각형 레이어 → (x, y, w, h) 출력 px."""
+    w = max(2, int(round(float(t.get("w", 0.6)) * ow)))
+    h = max(2, int(round(float(t.get("h", 0.16)) * oh)))
+    x = int(round(float(t.get("cx", 0.5)) * ow - w / 2))
+    y = int(round(float(t.get("cy", 0.5)) * oh - h / 2))
+    return x, y, w, h
+
+
+def rect_png(t: dict, w: int, h: int, k: float) -> str:
+    """사각형 레이어 그림(PNG, 색·불투명도·둥근 모서리, 가장자리 부드럽게) → 캐시 파일 경로. Qt 없이(작업 스레드 안전)."""
+    import hashlib
+    import struct
+    import zlib
+    import numpy as np
+    col = (t.get("color") or "#000000").lstrip("#")
+    op = max(0.0, min(1.0, float(t.get("opacity", 0.5))))
+    rad = max(0.0, min(min(w, h) / 2, float(t.get("radius", 0)) * k))
+    key = hashlib.md5(f"{col}|{op:.3f}|{rad:.2f}|{w}|{h}".encode()).hexdigest()[:16]
+    d = paths.cache_dir() / "rects"
+    d.mkdir(parents=True, exist_ok=True)
+    f = d / f"rect_{key}.png"
+    if f.exists():
+        return str(f)
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32) + 0.5
+    if rad > 0.5:
+        cx = np.clip(xx, rad, w - rad)
+        cy = np.clip(yy, rad, h - rad)
+        dist = np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2)
+        a = np.clip(rad + 0.5 - dist, 0.0, 1.0)
+    else:
+        a = np.ones((h, w), np.float32)
+    rgba = np.zeros((h, w, 4), np.uint8)
+    rgba[..., 0], rgba[..., 1], rgba[..., 2] = int(col[0:2], 16), int(col[2:4], 16), int(col[4:6], 16)
+    rgba[..., 3] = np.round(a * op * 255).astype(np.uint8)
+    raw = b"".join(b"\x00" + rgba[r].tobytes() for r in range(h))
+
+    def chunk(tag, data):
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+    png = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0))
+           + chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b""))
+    tmp = f.with_suffix(".tmp")
+    tmp.write_bytes(png)
+    os.replace(tmp, f)
+    return str(f)
+
+
 def post_graph(fparts: list, cmd: list, project: Project, extras: dict, total: float, orientation: str,
                audio: bool, n_inputs: int) -> None:
     """[vm][am] → 타임라인 글자·이미지(아래→위) + 음악/원본 볼륨 → [vo][ao]."""
@@ -2001,6 +2057,20 @@ def post_graph(fparts: list, cmd: list, project: Project, extras: dict, total: f
             if not f:
                 continue
             fparts.append(f"{cur}{f}{nxt}")
+        elif t.get("kind") == "rect":                     # v0.16.34 사각형 = 그림으로 그려 얹기(페이드 포함)
+            t0, t1 = float(t["t0"]), float(t["t1"])
+            x, y, w, h = rect_box(t, ow, oh)
+            png = rect_png(t, w, h, min(ow, oh) / 1080)
+            cmd += ["-loop", "1", "-framerate", f"{OUT_FPS.numerator}/{OUT_FPS.denominator}", "-t", f"{total + 1:.3f}",
+                    "-i", _abs(png)]
+            fd = min(float(t.get("fade", 0.5)), (t1 - t0) / 2)
+            chain = ["format=yuva420p"]
+            if fd > 0.01:
+                chain += [f"fade=t=in:st={t0:.4f}:d={fd:.4f}:alpha=1", f"fade=t=out:st={t1 - fd:.4f}:d={fd:.4f}:alpha=1"]
+            fparts.append(f"[{ii}:v:0]{','.join(chain)}[ti{k}]")
+            fparts.append(f"{cur}[ti{k}]overlay=x={x}:y={y}:format=yuv420:eof_action=pass"
+                          f":enable='between(t,{t0:.4f},{t1:.4f})'{nxt}")
+            ii += 1
         else:
             img = project.image(t.get("img", ""))
             if img is None or not img.width or not os.path.exists(img.path):
@@ -2111,7 +2181,8 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orien
             cfile.write_text(cmdtxt, encoding="utf-8")
             cwd = cwd or str(cfile.parent)
             v.append(f"sendcmd=f={cfile.name}")
-            v += grade_chain(g, lut, min(out_size(orientation)) * 16 // 9, named=True)
+            gn = dict(g, _ck=True) if seg.gkeys.get(CURVE_KEY) else g
+            v += grade_chain(gn, lut, min(out_size(orientation)) * 16 // 9, named=True)
         else:
             v += grade_chain(g, lut, min(out_size(orientation)) * 16 // 9)
         lays = seg_layers(project, seg)

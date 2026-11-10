@@ -358,7 +358,8 @@ class EditTab(QWidget):
         cut.addSpacing(12)
         cut.addWidget(_btn("샘플", "G", lambda: self._key("g")))
         cut.addWidget(_btn("★", "장면 표시 (M) · 다시 누르면 지움", lambda: self._key("m")))
-        cut.addWidget(_btn("글자", "타임라인 재생 위치에 글자 추가", self.add_text))
+        cut.addWidget(_btn("글자", "타임라인 맨 앞에 글자 추가", self.add_text))
+        cut.addWidget(_btn("사각형", "글자 배경용 사각형(타임라인 맨 앞, 글자 아래)", self.add_rect))
         cut.addSpacing(12)
         b_still = _btn("스틸", "S", lambda: self._key("s"))         # 빨강, ➜ 바로 왼쪽(v0.16.8)
         ui_style.tone(b_still, "red")
@@ -412,6 +413,8 @@ class EditTab(QWidget):
         self.timeline.transSelected.connect(self._on_trans_selected)
         self.timeline.transRemove.connect(self.remove_transition)
         self.timeline.transActivated.connect(self.edit_transition)
+        self.timeline.transDurStart.connect(lambda _cid: self.state.checkpoint())
+        self.timeline.transDurEdited.connect(self._trans_dur)
         from .ui_trans import TransPreview
         self.trans_prev = TransPreview(self.player.mon)
         self.sel_trans = ""
@@ -1272,6 +1275,20 @@ class EditTab(QWidget):
         self._refresh_timeline()
         self.preview_transition(cid)
 
+    def _trans_dur(self, cid, d):
+        """타임라인에서 전환 구간 끝 끌기(v0.16.34) — 0.2~2.0초(앞뒤 컷 길이 절반까지는 렌더·표시에서 맞춤)."""
+        from .project import TRANS_RANGE
+        seg = next((g for g in self.state.project.segments if g.id == cid), None)
+        if seg is None or not seg.trans:
+            return
+        d = max(TRANS_RANGE[0], min(TRANS_RANGE[1], d))
+        if abs(float(seg.trans.get("dur", 0)) - d) < 1e-6:
+            return
+        seg.trans = dict(seg.trans, dur=d)
+        self.trans_prev.stop()
+        self._tp_key = None
+        self.state.touch("segments")
+
     def remove_transition(self, cid):
         seg = next((g for g in self.state.project.segments if g.id == cid), None)
         if seg is None or not seg.trans:
@@ -1761,8 +1778,8 @@ class EditTab(QWidget):
                 continue
             fd = min(float(d.get("fade", 0.5)), (t1 - t0) / 2)
             a = 1.0 if fd <= 0.01 else max(0.0, min(1.0, (t - t0) / fd, (t1 - t) / fd))
-            if not self.player.is_playing() and self.sel_ov == ("title", d["id"]):
-                a = 1.0                                  # 멈춤 + 고른 글자 = 페이드 무시(0초 시작 글자도 보이게)
+            if not self.player.is_playing():
+                a = 1.0                                  # 멈춤 = 페이드 무시(0초 시작 글자·사각형도 보이게), 페이드는 재생할 때만
             img, wh = None, None
             if d.get("kind") == "image":
                 m = p.image(d.get("img", ""))
@@ -1837,7 +1854,7 @@ class EditTab(QWidget):
     def edit_ov(self, kind, oid, new: bool = False):
         """글자·음악 설정 = 떠 있는 창(v0.16.19). 열린 채로 타임라인·모니터 조작 가능.
         [확인] = 등록하고 닫기(빈 글자면 없앰) / [취소]·Esc = 열기 전으로(새 글자면 없앰). 다른 창을 열면 앞 창은 [확인]."""
-        from .ui_titles import MusicDialog, TextDialog
+        from .ui_titles import MusicDialog, RectDialog, TextDialog
         d = self._ov(kind, oid)
         if d is None:
             return
@@ -1850,6 +1867,12 @@ class EditTab(QWidget):
             if not new:                             # 새 글자는 add_text 에서 이미 실행취소 지점
                 self.state.checkpoint()
             dlg = TextDialog(d, self)
+        elif kind == "title" and d.get("kind") == "rect":
+            if self.state.project.segments:
+                self.set_mode("timeline")
+            if not new:
+                self.state.checkpoint()
+            dlg = RectDialog(d, self)
         elif kind == "music":
             self.state.checkpoint()
             dlg = MusicDialog(self.state.project.mix, self)
@@ -1866,7 +1889,7 @@ class EditTab(QWidget):
                 self.state.touch("titles")
 
         def ok():
-            if kind == "title" and not (d.get("text") or "").strip():
+            if kind == "title" and d.get("kind") == "text" and not (d.get("text") or "").strip():   # 빈 글자만(사각형 X)
                 drop()
             else:
                 self.state.touch("titles")
@@ -1883,7 +1906,7 @@ class EditTab(QWidget):
         dlg.show()
         dlg.raise_()
         dlg.activateWindow()
-        if kind == "title":
+        if kind == "title" and hasattr(dlg, "text"):
             dlg.text.setFocus()
 
     def add_text(self):
@@ -1901,6 +1924,23 @@ class EditTab(QWidget):
             self.timeline.set_time(t0)
             self.set_mode("timeline", load=False)
             self.show_timeline(t0)
+        self.edit_ov("title", d["id"], new=True)
+
+    def add_rect(self):
+        """[사각형] = 타임라인 맨 앞(0초), 글자 아래(맨 아래 = 목록 맨 앞)에 만들고 설정 창(v0.16.34)."""
+        from .project import new_rect
+        p = self.state.project
+        self.state.checkpoint()
+        d = new_rect(0.0, TITLE_DEFAULT_SEC)
+        p.titles.insert(0, d)
+        self.sel_ov = ("title", d["id"])
+        self._del_target = "ov"
+        self.state.touch("titles")
+        if p.segments:
+            self.tl_time = 0.0
+            self.timeline.set_time(0.0)
+            self.set_mode("timeline", load=False)
+            self.show_timeline(0.0)
         self.edit_ov("title", d["id"], new=True)
 
     def _img_menu(self, pos):
@@ -2116,7 +2156,7 @@ class EditTab(QWidget):
             if st["keys"] == "auto":
                 s.gkeys = copy.deepcopy(res["gkeys"])
             s.auto = {"preset": res["preset"], "by": "auto" if r.choice == "auto" else "user", "rec": r.rec,
-                      "nkeys": len(res["gkeys"].get("r_gain", [])) if st["keys"] == "auto" else 0}
+                      "nkeys": len({k["f"] for ks in res["gkeys"].values() for k in ks}) if st["keys"] == "auto" else 0}
             s.out = r.out
             self.state.ensure_proxy(s)               # LUT 가 바뀌었으면 그 LUT 로 프록시(시작 창 AUTO = 미룸)
         self.state.dirty = True

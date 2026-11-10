@@ -12,6 +12,7 @@ from .project import FIRST_OK, TRANS_DEFAULT_SEC, TRANS_RANGE, TRANSITIONS
 from .ui_render import Popup
 
 W, H = 120, 68
+LABEL_H = 16           # 샘플 위 이름 줄
 ROT_SUBS = 8           # 샘플 그림 모션블러 장수(렌더는 ff.ROT_BLUR)
 ROT_ND = 15            # 샘플 기준 전환 프레임 수(0.5초)
 A, B = "#3f6fa8", "#d9822b"
@@ -25,11 +26,12 @@ class TransTile(QWidget):
     def __init__(self, kind, name, a: QPixmap, b: QPixmap, parent=None):
         super().__init__(parent)
         self.kind, self.a, self.b = kind, a, b
+        self.name = name
         self.t = 0.0
         self.checked = False
         self.hover = False
         self.setToolTip(name)
-        self.setFixedSize(W + 8, H + 8)
+        self.setFixedSize(W + 8, H + 8 + LABEL_H)          # v0.16.34: 위에 이름
         self.setCursor(Qt.PointingHandCursor)
 
     def tick(self, t):
@@ -86,10 +88,17 @@ class TransTile(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.SmoothPixmapTransform)
         p.setRenderHint(QPainter.Antialiasing)
+        f = p.font()
+        f.setPixelSize(11)
+        f.setBold(self.checked)
+        p.setFont(f)
+        p.setPen(QColor("#ffffff" if self.checked else "#9a9a9a" if self.isEnabled() else "#555555"))
+        p.drawText(QRectF(0, 0, self.width(), LABEL_H), Qt.AlignCenter, self.name)      # 샘플 위 이름
+        p.translate(0, LABEL_H)
         border = QColor("#4a8fe0") if self.checked else QColor("#777") if self.hover and self.isEnabled() else None
         if border:
             p.setPen(QPen(border, 2))
-            p.drawRoundedRect(QRectF(1, 1, self.width() - 2, self.height() - 2), 3, 3)
+            p.drawRoundedRect(QRectF(1, 1, self.width() - 2, self.height() - LABEL_H - 2), 3, 3)
         p.translate(4, 4)
         p.setClipRect(QRectF(0, 0, W, H))
         if not self.isEnabled():

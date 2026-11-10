@@ -321,6 +321,8 @@ class SeqTimeline(QWidget):
     ovEdited = Signal(str, str)
     ovRemove = Signal(str, str)
     transSelected = Signal(str)       # 나비(화면 전환) 클릭 = 그 컷 id
+    transDurStart = Signal(str)       # v0.16.34 전환 구간 끝 끌기 시작(실행취소 지점)
+    transDurEdited = Signal(str, float)   # 끌면서 바뀐 전환 길이(초)
     transRemove = Signal(str)         # 나비 우클릭 = 빼기
     transActivated = Signal(str)      # 나비 더블클릭 = 컷편집 창
 
@@ -343,6 +345,7 @@ class SeqTimeline(QWidget):
         self._press = None            # 컷: (index, x)
         self._drag_x = None
         self._ov = None               # (kind, dict, mode, x0, snapshot)
+        self._tdur = None             # 전환 구간 끝 끌기: (컷 id, 앞 컷 끝 x)
         self.setMouseTracking(True)
 
     # ---------------------------------------------------------------- 데이터
@@ -440,6 +443,13 @@ class SeqTimeline(QWidget):
                 out.append((it[0], QRectF(r.left(), r.top(), tw, r.height())))
         return out
 
+    def _trans_edge(self, pos):
+        """전환 구간 양 끝 근처면 (컷 id, 앞 컷 끝 x). 앞 컷 끝은 길이를 바꿔도 그대로라 기준점."""
+        for cid, r in self._trans_rects():
+            if r.top() <= pos.y() <= r.bottom() and (abs(pos.x() - r.left()) <= 5 or abs(pos.x() - r.right()) <= 5):
+                return cid, r.right()
+        return None
+
     def _trans_at(self, pos):
         for cid, r in self._trans_rects():
             if r.adjusted(-3, 0, 3, 0).contains(pos):
@@ -505,11 +515,32 @@ class SeqTimeline(QWidget):
                 p.drawText(rr.adjusted(4, 2, -4, -2), Qt.AlignHCenter | Qt.AlignVCenter,
                            f"{speed_text(sp)}\n{label}" if rr.width() > 90 else speed_text(sp))
             draw_tag(p, rr, tag)
-        for cid, r in self._trans_rects():     # 화면 전환 나비: 파랑, 영상 줄 전체 높이(선택 = 흰 테두리)
-            p.setPen(QPen(QColor("white"), 2) if cid == self.trans_sel else Qt.NoPen)
+        for cid, r in self._trans_rects():     # 화면 전환 = 앞뒤 컷이 실제로 섞이는 구간(앞 컷 끝 d = 뒤 컷 앞 d)
+            sel = cid == self.trans_sel
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(15, 30, 60, 150))        # 섞이는 구간 칠하기(v0.16.34, 컷 파랑과 구분되게 어둡게)
+            p.drawRect(r)
+            p.setPen(QPen(QColor("white"), 2) if sel else Qt.NoPen)
             p.setBrush(QColor(74, 143, 224, 215))
             x0, x1, y0, y1 = r.left(), r.right(), r.top() + 2, r.bottom() - 2
             p.drawPolygon(QPolygonF([QPointF(x0, y0), QPointF(x1, y1), QPointF(x1, y0), QPointF(x0, y1)]))
+            p.setPen(QPen(QColor("#cfe3ff"), 2))       # 양 끝 = 끌어서 길이
+            p.drawLine(QPointF(x0, r.top()), QPointF(x0, r.bottom()))
+            p.drawLine(QPointF(x1, r.top()), QPointF(x1, r.bottom()))
+            it = next((x for x in self.items if x[0] == cid), None)
+            if it and it[5]:
+                fl = QFont(self.font())
+                fl.setBold(True)
+                fl.setPointSizeF(8)
+                p.setFont(fl)
+                txt = f"{it[5][1]:.1f}초"
+                tw = p.fontMetrics().horizontalAdvance(txt) + 6
+                box = QRectF(r.center().x() - tw / 2, r.top() + 2, tw, 14)
+                p.setPen(Qt.NoPen)
+                p.setBrush(QColor(20, 30, 45, 210))
+                p.drawRoundedRect(box, 3, 3)
+                p.setPen(QColor("#ffffff"))
+                p.drawText(box, Qt.AlignCenter, txt)
         if self._press is not None and self._drag_x is not None:
             j = self._drop_index(self._drag_x)
             xs = [r.left() for r in rects] + [rects[-1].right() + 2 if rects else 4]
@@ -522,8 +553,9 @@ class SeqTimeline(QWidget):
         p.setFont(f)
         for kind, d, r in self._ov_rects():
             if kind == "title":
-                c = QColor("#7a5fb0") if d.get("kind") == "text" else QColor("#5f7f9e")
-                label = (d.get("text") or "").split("\n")[0] if d.get("kind") == "text" else "▣"
+                kd = d.get("kind")
+                c = QColor({"text": "#7a5fb0", "rect": "#6a6a6a"}.get(kd, "#5f7f9e"))
+                label = (d.get("text") or "").split("\n")[0] if kd == "text" else ("▭" if kd == "rect" else "▣")
             else:
                 c = QColor("#2f6b4a")
                 label = Path(d.get("path", "")).stem
@@ -580,6 +612,13 @@ class SeqTimeline(QWidget):
     # ---------------------------------------------------------------- 마우스
     def mousePressEvent(self, e):
         pos = e.position()
+        te = self._trans_edge(pos) if e.button() == Qt.LeftButton else None
+        if te:                                   # 전환 구간 끝 = 끌어서 길이(v0.16.34)
+            self._tdur = te
+            self.trans_sel = te[0]
+            self.transDurStart.emit(te[0])
+            self.update()
+            return
         tid = self._trans_at(pos)
         if tid:
             if e.button() == Qt.RightButton:
@@ -615,6 +654,11 @@ class SeqTimeline(QWidget):
 
     def mouseMoveEvent(self, e):
         pos = e.position()
+        if getattr(self, "_tdur", None) and (e.buttons() & Qt.LeftButton):
+            cid, xend = self._tdur
+            d = round(max(0.0, (xend - pos.x()) / self.pps) * 10) / 10      # 0.1초 단위(범위는 받는 쪽이 맞춤)
+            self.transDurEdited.emit(cid, d)
+            return
         if self._ov is not None and (e.buttons() & Qt.LeftButton):
             kind, d, mode, x0, o = self._ov
             dt = (pos.x() - x0) / self.pps
@@ -649,7 +693,9 @@ class SeqTimeline(QWidget):
         if not e.buttons():
             hit = self._ov_at(pos)
             tid = self._trans_at(pos)
-            self.setCursor(Qt.PointingHandCursor if tid else Qt.SizeHorCursor if hit and hit[2] in ("l", "r") else
+            te = self._trans_edge(pos)
+            self.setCursor(Qt.SizeHorCursor if te else Qt.PointingHandCursor if tid else
+                           Qt.SizeHorCursor if hit and hit[2] in ("l", "r") else
                            Qt.OpenHandCursor if hit else Qt.ArrowCursor)
             self.setToolTip(self._trans_tip(tid) if tid else self.tooltip_at(pos.x()) if not hit else "")
         if self._press is not None and (e.buttons() & Qt.LeftButton):
@@ -662,6 +708,9 @@ class SeqTimeline(QWidget):
             self.update()
 
     def mouseReleaseEvent(self, e):
+        if getattr(self, "_tdur", None):
+            self._tdur = None
+            return
         if self._ov is not None:
             self._ov = None
             return

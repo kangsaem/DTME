@@ -133,6 +133,12 @@ SAMPLE_EVERY_SEC = 2.0
 SAMPLE_MAX = 12          # v0.16.17: 20 → 12 (분석 시간 ≈60%, 사용자 확정). v0.16.29 부터 + 맨 앞 1장
 
 
+EARLY_SEC = (1, 2, 3, 5)          # v0.16.34 시작 구간 샘플(초)
+EARLY_WIN = 6.0                   # 이 초 안을 시작 구간으로 봄
+CURVE_TOL = 0.04                  # 시작 구간 밝기 양끝이 뒤쪽과 이만큼 넘게 다르면 커브 ◆
+CURVE_KEYS_MAX = 3
+
+
 def sample_frames(src: Source, every: float = SAMPLE_EVERY_SEC, n_max: int = SAMPLE_MAX,
                   a: int | None = None, b: int | None = None) -> list[int]:
     """구간 [a, b) 에서 every 초마다 1장(최대 n_max, 넘으면 고르게). 가운데 정렬.
@@ -146,7 +152,12 @@ def sample_frames(src: Source, every: float = SAMPLE_EVERY_SEC, n_max: int = SAM
         fr[0] = int(a)
     else:                                         # 1초 이상 뒤 = 인점을 맨 앞에 더함
         fr.insert(0, int(a))
-    return fr
+    fps = float(src.fps)                          # v0.16.34: 시작 구간(카메라가 밝기를 잡는 동안) 1·2·3·5초 더
+    for t in EARLY_SEC:
+        f = int(a + t * fps)
+        if f < b - 1 and all(abs(f - x) > fps * 0.4 for x in fr):
+            fr.append(f)
+    return sorted(fr)
 
 
 def grab_small(src: Source, frame: int, lut: str, gpu: bool = False, w: int = SAMPLE_W,
@@ -374,8 +385,30 @@ def _med3(v: list[float]) -> list[float]:
 KEY_TOL_R, KEY_TOL_B = 0.08, 0.05       # 이보다 크게 변하면 키프레임(빨강을 조금만 쓰는 값에 맞춤)
 
 
+def settle_index(frames: list[int], ends: list[tuple[float, float]], fps: float | None) -> int:
+    """시작 구간(인점~EARLY_WIN초)에서 밝기 양끝(p2/p98)이 뒤쪽 중앙값과 CURVE_TOL 안으로 들어온 첫 샘플 번호.
+    0 = 처음부터 안정(커브 ◆ 없음). 뒤쪽 샘플이 없거나 fps 모름 = 0."""
+    if not fps or len(frames) < 3:
+        return 0
+    early = [i for i, f in enumerate(frames) if f - frames[0] <= EARLY_WIN * fps]
+    late = [i for i in range(len(frames)) if i not in early][:3]     # 기준 = 시작 구간 바로 뒤 3장
+    if not late or len(early) < 2:
+        return 0
+    for k in (0, 1):            # 기준 샘플끼리 다르면(장면이 바뀌는 중) 판단 안 함 — 장면 변화를 카메라 적응으로 오인 방지
+        v = [ends[i][k] for i in late]
+        if max(v) - min(v) > 2 * CURVE_TOL:
+            return 0
+    rl = float(np.median([ends[i][0] for i in late]))
+    rh = float(np.median([ends[i][1] for i in late]))
+    off = [abs(ends[i][0] - rl) > CURVE_TOL or abs(ends[i][1] - rh) > CURVE_TOL for i in early]
+    if not any(off):
+        return 0
+    last = max(k for k, o in enumerate(off) if o)
+    return early[last + 1] if last + 1 < len(early) else late[0]
+
+
 def recommend(samples: list[tuple[int, np.ndarray]], base: dict, scene: str | None = None, subject: str | None = None,
-              strength: str = "mid") -> dict:
+              strength: str = "mid", fps: float | None = None) -> dict:
     """샘플 → {"grade": 클립 값(전체), "gkeys": 색 키프레임 또는 {}, "scene", "subject", "preset"}"""
     sts = [stats(a) for _f, a in samples]
     scene = normalize_key(scene or "")
@@ -389,7 +422,10 @@ def recommend(samples: list[tuple[int, np.ndarray]], base: dict, scene: str | No
     sb = ""
     p = scene_params(sc, None, strength)
     gains = [gains_for(s, p) for s in sts]
-    lo, hi = tone_for(samples, gains)
+    frames = [f for f, _a in samples]
+    ends = [tone_ends(np.clip(a * np.array([r, 1.0, b], np.float32), 0, 1)) for (_f, a), (r, b) in zip(samples, gains)]
+    si = settle_index(frames, ends, fps)          # v0.16.34: 시작 구간이 안정되기 전 샘플은 클립 커브 계산에서 뺌
+    lo, hi = tone_for(samples[si:], gains[si:])
     # 커브는 클립 전체 1개 → 깊은 구간이 섞여 있으면 깊은 곳 기준(S·검정점 약하게). 깊은 곳은 빨강이 암부에 있음
     mixed = any(classify([x]) == "deep" for x in sts) and sc != "deep"
     pd = SCENE_BASE["deep"] if mixed else p
@@ -402,21 +438,35 @@ def recommend(samples: list[tuple[int, np.ndarray]], base: dict, scene: str | No
              curve=s_curve(lo - 0.01, hi + 0.01, s_amt * st, sd=p.get("sd", 0) * st))
     if p.get("lift"):
         g["curve"] = lift_curve(g["curve"])
+
+    def mk(lo_, hi_):
+        c = s_curve(lo_ * pd.get("lo", 0.9) - 0.01, hi_ + 0.01, s_amt * st, sd=p.get("sd", 0) * st)
+        return lift_curve(c) if p.get("lift") else c
+
     gkeys = {}
-    frames = [f for f, _a in samples]
     if len(frames) >= 2 and (max(rs) - min(rs) > KEY_TOL_R or max(bs) - min(bs) > KEY_TOL_B):
         idx = sorted(set(pick_keys(frames, rs, KEY_TOL_R / 3)) | set(pick_keys(frames, bs, KEY_TOL_B / 3)))
         if len(idx) > 6:      # 두 값의 키 위치를 합쳐 6개 넘으면 고르게 줄임
             idx = [idx[int(round(i * (len(idx) - 1) / 5))] for i in range(6)]
         gkeys = {"r_gain": [{"f": frames[i], "v": round(rs[i], 3)} for i in idx],
                  "b_gain": [{"f": frames[i], "v": round(bs[i], 3)} for i in idx]}
+    if si > 0:          # v0.16.34 커브 ◆: 인점 · (가운데 1개) · 안정 지점(= 클립 커브), 최대 3개. 뒤는 클립 커브 그대로
+        ck = [0]
+        if si >= 2 and CURVE_KEYS_MAX >= 3:
+            def dev(i):
+                t = (frames[i] - frames[0]) / max(1, frames[si] - frames[0])
+                return max(abs(ends[i][k] - (ends[0][k] + (ends[si][k] - ends[0][k]) * t)) for k in (0, 1))
+            j = max(range(1, si), key=dev)
+            if dev(j) > CURVE_TOL:
+                ck.append(j)
+        gkeys["curve"] = [{"f": frames[i], "v": mk(*ends[i])} for i in ck] + [{"f": frames[si], "v": g["curve"]}]
     return {"grade": g, "gkeys": gkeys, "scene": sc, "subject": sb, "preset": sc}
 
 
 def analyze_source(src: Source, base: dict, scene=None, subject=None, strength="mid", gpu=False,
                    cancel=None, on_progress=None) -> dict:
     samples = grab_samples(src, base.get("lut", ""), gpu, cancel=cancel, on_progress=on_progress)
-    return recommend(samples, base, scene, subject, strength)
+    return recommend(samples, base, scene, subject, strength, fps=float(src.fps))
 
 
 # ------------------------------------------------------------------ RGB 그래프 도움: 한 번에 맞추기 (현재 화면 1장)
