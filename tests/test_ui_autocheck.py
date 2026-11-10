@@ -62,6 +62,9 @@ r = dlg.list.visualItemRect(dlg.list.item(3))
 QTest.mouseClick(vp, Qt.LeftButton, Qt.NoModifier, QPoint(r.left() + 120, r.center().y())); wait(0.2)
 assert dlg.list.item(3).isSelected() and ck() == [True, True, True, True, False]
 dlg.grab().save(os.path.join(d, "autocheck.png"))
+wait(60, lambda: not dlg.pending())              # 뒤에서 미리 분석 끝날 때까지(종료 중 스레드 정리)
 dlg.cancel(); wait(0.3)
+from dtme import jobs  # noqa: E402
+jobs.shutdown(); wait(0.5)
 print("OK test_ui_autocheck", flush=True)
 os._exit(0)
