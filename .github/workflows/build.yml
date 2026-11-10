@@ -153,6 +153,7 @@ jobs:
           $o = python tests/test_ui_autocheck.py 2>&1 | Out-String
           Write-Output $o
           if ($o -notmatch "OK test_ui_autocheck") { exit 1 }
+          $global:LASTEXITCODE = 0
 
       - name: Smoke test (exe 실행)
         shell: pwsh
