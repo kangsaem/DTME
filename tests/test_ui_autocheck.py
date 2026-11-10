@@ -29,6 +29,8 @@ def wait(sec, cond=None):
 st, e = w.state, w.edit
 e.import_files(vids); wait(60, lambda: len(st.project.sources) == 5 and all(st.status.get(x.id) == "준비" for x in st.project.sources))
 print("소스", len(st.project.sources), [st.status.get(x.id) for x in st.project.sources], flush=True)
+from dtme import ui_auto  # noqa: E402
+ui_auto.AutoDialog.analyze_all = lambda self: None     # 체크 쓸기만 봄 — 뒤 분석 스레드 없이(Windows 종료 때 접근 위반 방지)
 dlg = e.make_auto_dialog(); dlg.show(); wait(1)
 print("창", dlg.list.count(), flush=True)
 assert dlg.ver_lab.text() == f"DTME {__version__}"
@@ -61,12 +63,7 @@ r = dlg.list.visualItemRect(dlg.list.item(3))
 QTest.mouseClick(vp, Qt.LeftButton, Qt.NoModifier, QPoint(r.left() + 120, r.center().y())); wait(0.2)
 assert dlg.list.item(3).isSelected() and ck() == [True, True, True, True, False]
 dlg.grab().save(os.path.join(d, "autocheck.png"))
-wait(60, lambda: not dlg.pending())              # 뒤에서 미리 분석 끝날 때까지(종료 중 스레드 정리)
-dlg.cancel(); wait(0.3)
-from dtme import jobs  # noqa: E402
-jobs.shutdown(); wait(0.5)
-e._auto_dlg = None                                # os._exit 전에 창 지움(파이썬 eventFilter 가 남은 위젯 = Windows 종료 때 접근 위반)
-dlg.deleteLater(); del dlg; wait(0.5)
+dlg.hide(); wait(0.3)
 print("OK test_ui_autocheck", flush=True)
 sys.stderr.flush()
 if os.name == "nt":      # Windows: ExitProcess 의 DLL 정리 중 Qt 가 가끔 접근 위반(테스트 끝난 뒤) → 바로 끝냄
