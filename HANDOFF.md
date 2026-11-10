@@ -221,6 +221,8 @@ UI 시안: Claude Design 캔버스 https://claude.ai/artifact/C4YHhA1vrZEKLp76BF
 ### v0.16.37 (2026-11-10, 사용자 'AUTO 창 소스목록 클릭한 채 쓸어내리면 선택·해제 이어지게(체크) · 버전 표시 좌하단')
 - ✓ 칸(줄 왼쪽 32px) 누름 = 그 줄 상태 뒤집고, 누른 채 위아래로 = 시작 줄~커서 줄을 같은 상태로 칠함, 되돌리면 지나간 줄은 원래대로, 놓을 때 바뀐 게 있으면 `_row_changed` 1번(`AutoDialog._check_drag` · viewport eventFilter). 쓸기 중 줄 선택(파란 테두리)은 안 바뀜. 이름 쪽 클릭·끌기 = 예전처럼 줄 선택
 - 왼쪽 아래(진행 글자 앞) 회색 `DTME 버전`(`ver_lab`)
+- 창이 닫히며 목록이 먼저 지워질 때 eventFilter RuntimeError 반복 → 저장한 viewport 와 비교만·RuntimeError 무시로 막음
+- test_ui_auto: v0.16.35 덮어쓰기 확인 창에서 멈추던 것 → 확인 = [전체 바꾸기]로 대신
 - 테스트: 새 `tests/test_ui_autocheck.py`(CI), test_ui_auto 통과
 
 ### v0.16.36 (2026-11-10, 사용자 '스틸 합성·글자 합성이 프리뷰에서 잘 보이는지 확인' → 추천대로)

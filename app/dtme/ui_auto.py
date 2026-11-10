@@ -487,7 +487,8 @@ class AutoDialog(DragMove, QDialog):
             self.list.addItem(it)
         self.list.itemSelectionChanged.connect(self._sel_changed)
         self._cdrag = None                 # v0.16.37 체크 쓸기: (시작 줄, 새 상태, 원래 상태들)
-        self.list.viewport().installEventFilter(self)
+        self._vp = self.list.viewport()
+        self._vp.installEventFilter(self)
         # 오른쪽
         self.grid = PresetGrid()
         self.grid.chosen.connect(self._choose)
@@ -805,11 +806,16 @@ class AutoDialog(DragMove, QDialog):
 
     # ---------------------------------------------------------------- v0.16.37 체크 쓸기
     def eventFilter(self, obj, e):
-        if obj is self.list.viewport() and e.type() in (QEvent.MouseButtonPress, QEvent.MouseMove,
-                                                         QEvent.MouseButtonRelease, QEvent.MouseButtonDblClick):
-            if self._check_drag(e):
-                return True
-        return super().eventFilter(obj, e)
+        # 창이 닫히며 목록이 먼저 지워져도 안전하게(목록 위젯을 다시 부르지 않음: 저장해 둔 viewport 와 비교만)
+        if obj is getattr(self, "_vp", None) and e.type() in (QEvent.MouseButtonPress, QEvent.MouseMove,
+                                                                QEvent.MouseButtonRelease, QEvent.MouseButtonDblClick):
+            try:
+                if self._check_drag(e):
+                    return True
+            except RuntimeError:      # 지워진 위젯
+                self._cdrag = None
+            return False
+        return False
 
     def _row_at(self, y):
         it = self.list.itemAt(8, int(y))

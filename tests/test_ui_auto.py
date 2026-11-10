@@ -127,6 +127,8 @@ w.grab().save(str(work / "shot_main_auto.png"))
 
 # ---------------- 보정 탭 프리셋 창(고정값) · 추천(자동)
 e._select_source(p.sources[1].id); wait(1.0)
+from dtme import ui_style  # noqa: E402
+ui_style.confirm = lambda *a, **k: "all"         # v0.16.35: AUTO·◆ 있는 클립 = 덮어쓰기 확인 창 → [전체 바꾸기]
 gp.apply_choice("night", "mid"); wait(0.3)
 g = p.grade_for_source(p.sources[1].id)
 print("프리셋 야간:", g["r_gain"], g["water"], g["nr_chroma"], gp.preset.text())
