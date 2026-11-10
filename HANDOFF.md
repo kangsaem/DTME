@@ -230,6 +230,7 @@ UI 시안: Claude Design 캔버스 https://claude.ai/artifact/C4YHhA1vrZEKLp76BF
 - **활성 칩**: X 없앰(지우기로 오해), `◆ 빨강` 이름만, 누르면 전체 ◆ 보기. 보정 항목을 만져도 그 종류 ◆ 가 이 클립에 있을 때만 활성. 마지막 ◆ 지우면 그 종류 활성 풀림
 - **타임라인 글자 줄 순서**(`_title_rows`): 위 레이어(목록 뒤쪽)부터 윗줄, 겹치는 위 레이어들보다 아래 줄 → 사각형(맨 아래)은 겹치는 글자 아래 줄
 - 그대로(사용자): 영상보다 긴 글자·사각형 = 영상 끝에서 잘림, 글자 페이드 = 인·아웃 같은 길이
+- CI: test_ui_autocheck 는 끝난 뒤 Windows 종료 때 가끔 접근 위반(뒤 분석 끄고 TerminateProcess 해도 남음, 원인 미확인) → CI 는 "OK" 줄로 판정. 실제 앱 종료 때 튕김 보고가 있으면 이것부터 의심
 - CI 안정화: test_shutdown 의 '긴' ffmpeg 가 빠른 러너에서 몇 초 만에 끝나 가끔 실패 → `-re`(실시간)로 진짜 길게. test_ui_autocheck 가 Windows 종료 때 가끔 접근 위반(뒤 분석 스레드가 남은 채 끝남으로 추정) → 이 테스트는 뒤 분석 끔(체크 쓸기만 봄) + 끝나면 TerminateProcess. 실제 앱에서 AUTO 창 분석 중 창을 바꿀 때 같은 문제가 있는지는 확인 못 함(재현 안 됨)
 - 테스트: test_curvekeys(색 ◆) · test_ui_v1635(칩·줄 순서) · test_transitions(CI 에 회전 줌아웃 추가) 통과, test_auto · test_ui_trans 통과
 
