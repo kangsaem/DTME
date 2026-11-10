@@ -73,7 +73,7 @@ class SourceDelegate(QStyledItemDelegate):
         from . import stage as SG
         from .ui_auto import YELLOW, short_preset
         sid = index.data(Qt.UserRole)
-        st = SG.stage_of(self.tab.state, sid)
+        st = SG.stage_of(self.tab.state, sid, skip=("render",))     # v0.16.39 렌더 진행 = 렌더 목록 바에만(MOSCO 와 같음)
         err = st is not None and st[0] == "error"
         src = self.tab.state.project.source(sid)
         r = QRectF(option.rect).adjusted(2, 2, -2, -2)

@@ -116,5 +116,13 @@ from dtme.project import new_rect, new_text  # noqa: E402
 st.project.titles = [new_rect(0.0, 3.0), new_text(0.5, 2.5, "A")]; st.touch("titles"); wait(0.2)
 rows = {t["kind"]: r for t, r in e.timeline._title_rows()[0]}
 print("타임라인 줄:", rows); assert rows["text"] == 0 and rows["rect"] == 1
+# v0.16.39: 렌더 진행 = 렌더 목록 바에만(소스 목록 줄 = 표시 안 함), AUTO 창 줄은 그대로
+from dtme import stage as SG  # noqa: E402
+s = e._cur(); st.work[s.id] = ("render", 0.4, "")
+assert SG.stage_of(st, s.id, skip=("render",)) is None and SG.stage_of(st, s.id)[0] == "render"
+st.work[s.id] = ("render", None, "")
+assert SG.stage_of(st, s.id, skip=("render",)) is None
+st.work.pop(s.id, None)
+e.src_list.viewport().repaint()
 print("UI V1635 OK")
 os._exit(0)

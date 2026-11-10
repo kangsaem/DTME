@@ -25,13 +25,16 @@ STAGE = {
 ERRORS = {"읽기 오류": "읽기 실패", "원본 없음": "원본 없음", "프록시 오류": "프록시 실패"}
 
 
-def stage_of(state, sid: str):
+def stage_of(state, sid: str, skip: tuple = ()):
     """(단계, 진행 0~1 | None = 대기, 글자) | ("error", None, 글자) | None.
-    우선순위: 오류 > 진행 중인 작업(분석·샘플·렌더) > 진행 중인 프록시 > 작업 대기 > 정보 읽기·프록시 대기."""
+    우선순위: 오류 > 진행 중인 작업(분석·샘플·렌더) > 진행 중인 프록시 > 작업 대기 > 정보 읽기·프록시 대기.
+    skip = 표시하지 않을 작업 종류(v0.16.39 소스 목록 = ("render",) — 렌더 진행은 렌더 목록 바에만)."""
     st = state.status.get(sid, "")
     if st in ERRORS:
         return "error", None, ERRORS[st]
     w = state.work.get(sid)
+    if w and w[0] in skip:
+        w = None
     if w and w[1] is not None and w[1] >= 0:
         kind, v, txt = w
         return kind, max(0.0, min(1.0, v)), txt or f"{STAGE[kind][2]} {int(v * 100)}%"
