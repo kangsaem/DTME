@@ -29,6 +29,7 @@ class Monitor(QWidget):
     viewChanged = Signal()               # 확대·이동 바뀜(→ 확대 영역 고화질 다시 만들기)
     splitFlipped = Signal(bool)          # 반반 선 우클릭 → 방향(True = 좌우)
     titlePressed = Signal(str)           # 타임라인 모드: 글자·이미지를 잡음(실행취소 지점)
+    titleActivated = Signal(str)         # 글자 더블클릭 = 글자 창(v0.16.33)
     titleChanged = Signal()
     modeRequested = Signal(str)          # "source" | "timeline"
     contrastRequested = Signal()         # RGB 그래프 [명암]
@@ -330,6 +331,11 @@ class Monitor(QWidget):
         self.update()
 
     def mouseDoubleClickEvent(self, e):
+        tt = self._title_hit(e.position()) if self.titles else None
+        if tt is not None and e.button() == Qt.LeftButton:     # v0.16.33: 모니터의 글자·이미지 더블클릭 = 설정 창
+            self._tdrag = None
+            self.titleActivated.emit(tt["id"])
+            return
         if self.zoom > 1.0001:
             self.set_zoom(1.0)
 

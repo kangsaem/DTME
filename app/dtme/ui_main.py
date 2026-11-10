@@ -76,35 +76,17 @@ class MainWindow(QMainWindow):
 
     def _render_finished(self, ok: int, bad: int, sec: float, folder: str):
         from . import taskbar
+        from .ui_render import show_done_popup
         self._rtext = ""
         self._title()
         taskbar.clear(self)
+        if not self.isVisible():                      # 시작 창 [보정+렌더](편집 화면 숨김) = 시작 창이 팝업
+            return
         taskbar.flash(self)
-        m, s_ = divmod(int(round(sec)), 60)
-        h, m = divmod(m, 60)
-        took = (f"{h}시간 " if h else "") + (f"{m}분 " if m or h else "") + f"{s_}초"
-        self._done_popup(f"렌더 완료 {ok}개 · 실패 {bad}개 · {took}", folder, bad)
-
-    def _done_popup(self, text: str, folder: str, bad: int):
-        """다른 팝업과 같은 모양, 떠 있는 창(닫지 않아도 다른 조작 가능). [폴더 열기] [확인]."""
-        from PySide6.QtWidgets import QLabel
-        from .ui_render import Popup, open_file
         old = getattr(self, "_done_dlg", None)
         if old is not None:
             old.close()
-        d = Popup(self, floating=True)
-        lb = QLabel(text)
-        lb.setStyleSheet(f"color:{'#ff8a80' if bad else '#e6e6e6'}; font-size:13px;")
-        d.body.addWidget(lb)
-        d.add_buttons("확인", "폴더 열기")
-        d.b_cancel.clicked.disconnect()
-        d.b_cancel.clicked.connect(lambda: (open_file(folder), d.close()))
-        d.b_ok.clicked.disconnect()
-        d.b_ok.clicked.connect(d.close)
-        d.center_on(self)
-        d.show()
-        d.raise_()
-        self._done_dlg = d
+        self._done_dlg = show_done_popup(self, ok, bad, sec, folder)
 
     # ------------------------------------------------------------ 실행취소
     def undo(self):

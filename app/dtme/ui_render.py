@@ -244,6 +244,43 @@ def ensure_folder(parent, state) -> bool:
     return True
 
 
+def took_text(sec: float) -> str:
+    m, s_ = divmod(int(round(sec)), 60)
+    h, m = divmod(m, 60)
+    return (f"{h}시간 " if h else "") + (f"{m}분 " if m or h else "") + f"{s_}초"
+
+
+def show_done_popup(parent, ok: int, bad: int, sec: float, folder: str, on_close=None):
+    """렌더 끝 팝업(v0.16.31·33 공용): '렌더 완료 n개 · 실패 m개 · 시간' [폴더 열기][확인]. 떠 있는 창.
+    on_close = 둘 중 무엇을 눌러도 닫힐 때 부름(시작 창 = 프로그램 종료)."""
+    from PySide6.QtWidgets import QLabel
+    d = Popup(parent, floating=True)
+    lb = QLabel(f"렌더 완료 {ok}개 · 실패 {bad}개 · {took_text(sec)}")
+    lb.setStyleSheet(f"color:{'#ff8a80' if bad else '#e6e6e6'}; font-size:13px;")
+    d.body.addWidget(lb)
+    d.add_buttons("확인", "폴더 열기")
+    done = [False]
+
+    def close(open_folder=False):
+        if done[0]:
+            return
+        done[0] = True
+        if open_folder:
+            open_file(folder)
+        d.close()
+        if on_close:
+            on_close()
+    d.b_cancel.clicked.disconnect()
+    d.b_cancel.clicked.connect(lambda: close(True))
+    d.b_ok.clicked.disconnect()
+    d.b_ok.clicked.connect(lambda: close(False))
+    d.rejected_.connect(lambda: close(False))            # Esc
+    d.center_on(parent)
+    d.show()
+    d.raise_()
+    return d
+
+
 def precache_item(p, it, cancel=None):
     """렌더 항목의 원본 구간들을 미리 읽음(HDD·SD 만, ff.precache)."""
     for g in it.segs:

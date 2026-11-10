@@ -455,6 +455,7 @@ class EditTab(QWidget):
         self.player.mon.whitePicked.connect(self._white_picked)
         self.player.mon.modeRequested.connect(self.set_mode)
         self.player.mon.titlePressed.connect(self._on_title_pressed)
+        self.player.mon.titleActivated.connect(lambda tid: self.edit_ov("title", tid))
         self.player.mon.titleChanged.connect(lambda: (setattr(self.state, "dirty", True), self.timeline.update()))
         self._zoom_timer = QTimer(self)
         self._zoom_timer.setSingleShot(True)
@@ -1311,7 +1312,29 @@ class EditTab(QWidget):
             return c
         pick = ([part(segs[i - 1], True)] if i > 0 else []) + [part(segs[i], False)]
         orient = "preview_v" if p.output.orientation == "vertical" else "preview"
-        key = repr([({k: v for k, v in vars(c).items() if k != "id"}, p.grade_for_source(c.src, seg=c)) for c in pick]) + orient
+        # v0.16.33: 그 구간의 타임라인 글자·이미지도 같이(예전 = 전환 미리보기에 글자·PNG 가 안 보임)
+        starts, st = [], 0.0
+        for k, g in enumerate(segs):
+            pt = plan_transitions(segs, lens)[k]
+            if k > 0 and pt:
+                st -= pt[1]
+            starts.append(st)
+            st += lens[k]
+        if i > 0:
+            w0 = starts[i] + d - p.seg_out_seconds(pick[0], p.source(pick[0].src).fps)
+        else:
+            w0 = starts[i]
+        w1 = w0 + sum(p.seg_out_seconds(c, p.source(c.src).fps) for c in pick) - (d if i > 0 else 0.0)
+        tts = []
+        for tt in p.titles:
+            a, b = float(tt["t0"]), float(tt["t1"])
+            if b > w0 and a < w1:
+                c = dict(tt)
+                c["t0"], c["t1"] = a - w0, b - w0
+                tts.append(c)
+        extras = {"titles": tts, "music": [], "mix": p.mix} if tts else None
+        key = (repr([({k: v for k, v in vars(c).items() if k != "id"}, p.grade_for_source(c.src, seg=c)) for c in pick])
+               + orient + repr(tts))
         if key == self._tp_key and self._tp_frames:
             self.trans_prev.play(self._tp_frames)
             return
@@ -1327,7 +1350,7 @@ class EditTab(QWidget):
         out = pdir / f"trans_{abs(hash(key)) % 10**10}.mp4"
 
         def work(prog, cancel):
-            ff.render_video(p, pick, str(out), prog, cancel, orient, False, fast=True)
+            ff.render_video(p, pick, str(out), prog, cancel, orient, False, fast=True, extras=extras)
             return decode_frames(str(out))
         job = jobs.Job(work, with_progress=True)
         self._tp_job = job
@@ -1738,6 +1761,8 @@ class EditTab(QWidget):
                 continue
             fd = min(float(d.get("fade", 0.5)), (t1 - t0) / 2)
             a = 1.0 if fd <= 0.01 else max(0.0, min(1.0, (t - t0) / fd, (t1 - t) / fd))
+            if not self.player.is_playing() and self.sel_ov == ("title", d["id"]):
+                a = 1.0                                  # 멈춤 + 고른 글자 = 페이드 무시(0초 시작 글자도 보이게)
             img, wh = None, None
             if d.get("kind") == "image":
                 m = p.image(d.get("img", ""))
@@ -1862,14 +1887,20 @@ class EditTab(QWidget):
             dlg.text.setFocus()
 
     def add_text(self):
+        """[글자] = 늘 타임라인 맨 앞(0초)에 만들고 재생 위치도 0초로(v0.16.33, 사용자 — 예전 = 마지막 타임라인 위치라 클립 뒤에 생김)."""
         p = self.state.project
-        t0 = self.tl_time
+        t0 = 0.0
         self.state.checkpoint()
         d = new_text(t0, t0 + TITLE_DEFAULT_SEC, "")
         p.titles.append(d)
         self.sel_ov = ("title", d["id"])
         self._del_target = "ov"
         self.state.touch("titles")
+        if p.segments:
+            self.tl_time = t0
+            self.timeline.set_time(t0)
+            self.set_mode("timeline", load=False)
+            self.show_timeline(t0)
         self.edit_ov("title", d["id"], new=True)
 
     def _img_menu(self, pos):

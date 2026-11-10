@@ -84,7 +84,9 @@ class Launcher(QWidget):
         r.addStretch(1)
         v.addLayout(r)
         self.rendering = False
-        mw.edit.autoRenderProgress.connect(self._render_progress)
+        rp = mw.edit.render_panel
+        rp.runProgress.connect(self._render_progress)      # v0.16.33: 편집 화면 [렌더] 버튼과 같은 전체 진행(영상 길이 기준)
+        rp.runFinished.connect(self._render_finished)
 
     def _style(self, hot):
         self.setStyleSheet("#Launcher{background:#232323;}" if not hot else
@@ -166,21 +168,34 @@ class Launcher(QWidget):
         self.bar.setVisible(True)
         self._say("렌더 중…")
 
-    def _render_progress(self, v, running):
+    def _render_progress(self, frac, text, bad):
         if not self.rendering:
             return
-        self.bar.setValue(int(v * 100))
-        if not running:
-            self.rendering = False
-            self.b_auto.setEnabled(True)
-            self.bar.setVisible(False)
-            st = self.mw.edit.render_panel.status
-            ok = sum(1 for t in st.values() if t.startswith("완료"))
-            bad = sum(1 for t in st.values() if t.startswith("실패"))
-            self._say(f"완료 {ok}개" + (f" · 실패 {bad}개" if bad else ""), "#7fd18b" if not bad else "#f2c94c")
-            self.b_folder.setVisible(ok > 0)
-            if not self.mw.isVisible() and not bad:   # [보정+렌더] 끝 = 프로그램 종료(실패가 있으면 남겨 둠)
-                self._quit()
+        from . import taskbar
+        self.bar.setValue(int(frac * 100))
+        self._say(f"렌더 {text}")
+        self.setWindowTitle(f"DTME {__version__} — 렌더 {text}")
+        taskbar.set_progress(self, frac, bad)          # 시작 창을 내려 둬도 작업 표시줄에 진행
+
+    def _render_finished(self, ok, bad, sec, folder):
+        """[보정+렌더] 끝(v0.16.33): 완료 팝업 → [확인]·[폴더 열기] 누르면 프로그램 종료(예전 = 바로 종료)."""
+        if not self.rendering:
+            return
+        from . import taskbar
+        from .ui_render import show_done_popup
+        self.rendering = False
+        self.b_auto.setEnabled(True)
+        self.bar.setVisible(False)
+        self.setWindowTitle(f"DTME {__version__}")
+        taskbar.clear(self)
+        self._say(f"완료 {ok}개" + (f" · 실패 {bad}개" if bad else ""), "#7fd18b" if not bad else "#f2c94c")
+        self.b_folder.setVisible(ok > 0)
+        if self.mw.isVisible():                           # 그새 편집 화면으로 갔으면 거기 팝업
+            return
+        self.show()
+        taskbar.flash(self)
+        self._done_dlg = show_done_popup(self, ok, bad, sec, folder,
+                                         on_close=None if bad else self._quit)   # 실패가 있으면 시작 창에 남김(예전과 같음)
 
     def _quit(self):
         from PySide6.QtWidgets import QApplication
