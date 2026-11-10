@@ -321,10 +321,16 @@ class EditTab(QWidget):
                               "padding:2px 10px; border-radius:2px;")
         tbar = QHBoxLayout()
         tbar.setSpacing(4)
+        self.b_kprev = _btn("key◀", "이전 ◆ (보정 항목을 만지면 그 종류만)", lambda: self.goto_gkey(-1))
+        self.b_knext = _btn("key▶", "다음 ◆ (보정 항목을 만지면 그 종류만)", lambda: self.goto_gkey(1))
+        for b in (self.b_kprev, self.b_knext):
+            ui_style.tone(b, fg="#f2c94c")
+        tbar.addWidget(self.b_kprev)
         for text, tip, k in (("I◀", "인 점으로 (Shift+I)", "goto_in"), ("◀◀", "J", "j"), ("◀|", "←  (Shift: 1초)", "left"),
                              ("▶ / ❚❚", "Space", "space"), ("|▶", "→  (Shift: 1초)", "right"), ("▶▶", "L", "l"),
                              ("▶I", "아웃 점으로 (Shift+O)", "goto_out")):
             tbar.addWidget(_btn(text, tip, lambda _=False, k=k: self._key(k), main=(k == "space")))
+        tbar.addWidget(self.b_knext)
         r1 = QGridLayout()
         r1.addWidget(self.chk_preview, 0, 0, Qt.AlignLeft)
         r1.addLayout(tbar, 0, 1)
@@ -455,6 +461,9 @@ class EditTab(QWidget):
         self.player.mon.contrastRequested.connect(self.fix_contrast)
         self.player.mon.balanceRequested.connect(self.fix_balance)
         self.sbar.gkeyDeleteRequested.connect(self._delete_gkeys)
+        self.sbar.gkeyClicked.connect(self._gkey_clicked)                    # v0.16.35 ◆ → 그 보정 줄
+        self.sbar.activeCleared.connect(self.grade.clear_active)
+        self.grade.activeChanged.connect(self.sbar.set_active)
         self.player.mon.whitePicked.connect(self._white_picked)
         self.player.mon.modeRequested.connect(self.set_mode)
         self.player.mon.titlePressed.connect(self._on_title_pressed)
@@ -994,6 +1003,34 @@ class EditTab(QWidget):
         self.state.dirty = True
         self._refresh_marks()
 
+    # ---------------------------------------------------------------- v0.16.35 ◆ 이동 · 종류
+    def _gtypes_at(self, s, f):
+        return [k for k, ks in s.gkeys.items() if any(x["f"] == f for x in ks)]
+
+    def goto_gkey(self, d):
+        """key◀ / key▶: 이전·다음 ◆ (활성 종류가 있으면 그 종류만). 도착 = 그 보정 줄 테두리."""
+        s = self._cur()
+        if not s or not s.gkeys:
+            return
+        act = self.grade.active
+        fs = sorted({x["f"] for k, ks in s.gkeys.items() if not act or k in act for x in ks})
+        f0 = self.player.frame
+        cand = [f for f in fs if f > f0] if d > 0 else [f for f in fs if f < f0]
+        if not cand:
+            return
+        f = cand[0] if d > 0 else cand[-1]
+        self.player.pause()
+        self.player.seek(f)
+        if act:
+            self.grade.set_active(act)
+        else:
+            self.grade.set_active(self._gtypes_at(s, f), filt=False)
+
+    def _gkey_clicked(self, f):
+        s = self._cur()
+        if s:
+            self.grade.set_active(self._gtypes_at(s, f))
+
     def _delete_gkeys(self, f):
         s = self._cur()
         if not s:
@@ -1014,8 +1051,8 @@ class EditTab(QWidget):
         if not s:
             self.sbar.set_marks([], [])
             return
-        fs = sorted({k["f"] for ks in s.gkeys.values() for k in ks})
-        self.sbar.set_marks(fs, list(s.stars))
+        self.sbar.set_marks({k: [x["f"] for x in ks] for k, ks in s.gkeys.items() if ks}, list(s.stars))
+        self.sbar.set_active(self.grade.active)
 
     def _selected_sids(self):
         return [it.data(Qt.UserRole) for it in self.src_list.selectedItems()]

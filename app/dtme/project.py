@@ -337,7 +337,11 @@ def ease(u: float) -> float:
 
 
 KEYABLE = ["r_gain", "b_gain", "hue", "sat", "water", "gy"]     # 시간에 따라 바뀌는 보정(◆, 숫자)
-CURVE_KEY = "curve"                                              # 커브 ◆(v0.16.34): {"f", "v": [[x, y], …]}
+CURVE_KEY = "curve"
+# v0.16.35 ◆ 종류별 (이름, 색) — 소스 바 ◆ · 보정 패널 ◆ 버튼 같은 색
+GKEY_STYLE = {"r_gain": ("빨강", "#e05555"), "b_gain": ("파랑", "#4a90e2"), "hue": ("색조", "#b07cff"),
+              "sat": ("채도", "#ff9f43"), "water": ("물빛", "#2ec4b6"), "gy": ("녹황 빼기", "#a3d65c"),
+              "curve": ("커브", "#f0f0f0")}                                              # 커브 ◆(v0.16.34): {"f", "v": [[x, y], …]}
 
 
 def key_at(keys: list, f: float, field_: str = "v") -> float | None:

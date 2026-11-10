@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (QButtonGroup, QComboBox, QFileDialog, QFrame, QGr
                                QScrollArea, QSizePolicy, QSlider, QVBoxLayout, QWidget)
 
 from . import ff, jobs, paths, ui_style
-from .project import (CURVE_KEY, KEYABLE, OUTPUTS, delete_preset, get_setting, grade_at, keep_lut, list_presets, load_preset,
+from .project import (CURVE_KEY, GKEY_STYLE, KEYABLE, OUTPUTS, delete_preset, get_setting, grade_at, keep_lut, list_presets, load_preset,
                       rename_preset, save_default_grade, save_preset, set_setting, timecode)
 from .state import AppState
 from .ui_curve import CurveEditor
@@ -140,7 +140,11 @@ class Section(QWidget):
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(3)
-        v.addWidget(self.head)
+        self.hrow = QHBoxLayout()
+        self.hrow.setContentsMargins(0, 0, 0, 0)
+        self.hrow.setSpacing(3)
+        self.hrow.addWidget(self.head, 1)
+        v.addLayout(self.hrow)
         v.addWidget(self.body)
         opened = (get_setting("sections", {}) or {}).get(key, True)
         self.head.setChecked(opened)
@@ -168,6 +172,7 @@ class GradePanel(QWidget):
     whitePickToggled = Signal(bool)
     sampleClicked = Signal(str, int, QPixmap)   # 모니터에 그대로 띄움(이동·재렌더 없음)
     keysChanged = Signal()                      # 색 키프레임 추가·삭제·이동
+    activeChanged = Signal(list)                # v0.16.35 활성 ◆ 종류(소스 바 진하게) — [] = 전체
 
     def __init__(self, state: AppState, parent=None):
         super().__init__(parent)
@@ -182,6 +187,9 @@ class GradePanel(QWidget):
         self.sliders: dict[str, QSlider] = {}
         self.vals: dict[str, ValueEdit] = {}
         self.names: dict[str, NameLabel] = {}
+        self.rowbox: dict[str, QFrame] = {}       # v0.16.35 ◆ 종류별 줄(활성 테두리)
+        self.active: list = []                    # 활성 종류(key◀▶ 범위 · 소스 바 진하게)
+        self.marked: list = []                    # 테두리 표시 종류
 
         # --- 머리: 리셋 · 기본값 ··· 기본값으로 저장
         head = QHBoxLayout()
@@ -260,6 +268,14 @@ class GradePanel(QWidget):
 
         # --- 묶음: 색
         s_col = Section("color", "색")
+        self.s_col = s_col
+        self.b_all = QPushButton("전체◆")                # v0.16.35 켜면 슬라이더 = 그 항목 ◆ 전체(Shift 누른 동안도)
+        self.b_all.setCheckable(True)
+        self.b_all.setFixedHeight(22)
+        self.b_all.setFocusPolicy(Qt.NoFocus)
+        self.b_all.setStyleSheet(ON_STYLE)
+        self.b_all.setToolTip("켜면 슬라이더 = 이 항목 전체 ◆\nShift 누른 동안도 같음")
+        s_col.hrow.addWidget(self.b_all)
         self.lut = LutCombo(self._fill_luts)
         self.lut.setToolTip("LUT")
         self.lut.setFocusPolicy(Qt.NoFocus)
@@ -281,11 +297,13 @@ class GradePanel(QWidget):
         s_col.lay.addLayout(lb)
         for key, name, tip in (("r_gain", "빨강", ""), ("b_gain", "파랑", ""), ("hue", "색조", ""), ("sat", "채도", ""),
                                ("water", "물빛", "청록·녹색만 파랑 쪽으로"), ("gy", "녹황 빼기", "녹색·노란색 채도만 줄임(클수록 더 뺌)")):
-            s_col.lay.addLayout(self._row(key, name, 54, Qt.AlignLeft, tip))
+            s_col.lay.addWidget(self._box(key, self._row(key, name, 54, Qt.AlignLeft, tip)))
         s_col.lay.setSpacing(3)
         self.curve = CurveEditor()
         self.curve.changed.connect(lambda pts: self._set("curve", pts))
-        s_col.lay.addWidget(self.curve)
+        cv = QVBoxLayout()
+        cv.setSpacing(3)
+        cv.addWidget(self.curve)
         crow = QHBoxLayout()
         crow.addStretch(1)
         kc = QPushButton("◆")                          # v0.16.34 커브 ◆(다른 ◆ 와 같은 동작)
@@ -299,7 +317,8 @@ class GradePanel(QWidget):
         b3.setFocusPolicy(Qt.NoFocus)
         b3.clicked.connect(self.curve.reset)
         crow.addWidget(b3)
-        s_col.lay.addLayout(crow)
+        cv.addLayout(crow)
+        s_col.lay.addWidget(self._box(CURVE_KEY, cv))
 
         # --- 묶음: 디테일 / 렌즈·흔들림
         s_det = Section("detail", "디테일")
@@ -375,6 +394,51 @@ class GradePanel(QWidget):
             b.setStyleSheet(ON_STYLE)
         return b
 
+    def _box(self, key, lay):
+        """◆ 종류 한 줄을 테두리 칠할 수 있는 칸으로(v0.16.35)."""
+        f = QFrame()
+        f.setObjectName("KRow")
+        lay.setContentsMargins(2, 1, 2, 1)
+        f.setLayout(lay)
+        self.rowbox[key] = f
+        self._paint_box(key, False)
+        return f
+
+    def _paint_box(self, key, on):
+        f = self.rowbox.get(key)
+        if f is not None:
+            c = GKEY_STYLE.get(key, ("", "#f2c94c"))[1]
+            f.setStyleSheet(f"#KRow{{border:2px solid {c}; border-radius:3px;}}" if on else
+                            "#KRow{border:2px solid transparent;}")
+
+    # ------------------------------------------------------------ v0.16.35 활성 ◆ 종류
+    def set_active(self, types, filt=True, emit=True):
+        """types = 테두리 칠할 종류. filt = key◀▶·소스 바도 그 종류만(아니면 테두리만)."""
+        types = [k for k in (types or []) if k in self.rowbox]
+        self.marked = types
+        for k in self.rowbox:
+            self._paint_box(k, k in types)
+        if filt:
+            self.active = types
+            if emit:
+                self.activeChanged.emit(list(types))
+        if types:
+            if not self.s_col.head.isChecked():
+                self.s_col.head.setChecked(True)
+            QTimer.singleShot(0, lambda w=self.rowbox[types[0]]: self._scroll.ensureWidgetVisible(w, 0, 20))
+
+    def clear_active(self):
+        self.set_active([])
+
+    def _touch(self, key):
+        """보정 항목을 만지면 그 종류 활성."""
+        if key in self.rowbox and self.active != [key]:
+            self.set_active([key])
+
+    def _all_mode(self) -> bool:
+        from PySide6.QtWidgets import QApplication
+        return self.b_all.isChecked() or bool(QApplication.keyboardModifiers() & Qt.ShiftModifier)
+
     def _row(self, key, name, lw, align, tip=""):
         lo, hi, sc, _fmt = SLIDERS[key]
         row = QHBoxLayout()
@@ -444,6 +508,7 @@ class GradePanel(QWidget):
         s = self._src()
         if not s:
             return
+        self._touch(key)
         self.state.checkpoint()
         ks = s.gkeys.setdefault(key, [])
         hit = next((k for k in ks if k["f"] == self.frame), None)
@@ -470,6 +535,12 @@ class GradePanel(QWidget):
         """키프레임이 있는 항목이면 현재 프레임 키를 만들거나 고침, 아니면 클립 값."""
         self._turn_on(key)
         s = self._src()
+        if s and key in KEYABLE and s.gkeys.get(key) and self._all_mode():     # v0.16.35 전체◆: 그 항목 ◆ 모두 같은 양
+            lo, hi, sc, _f = SLIDERS[key]
+            d = float(value) - float(self._shown()[key])
+            for k in s.gkeys[key]:
+                k["v"] = round(max(lo / sc, min(hi / sc, float(k["v"]) + d)), 4)
+            return
         if s and key in KEYABLE + [CURVE_KEY] and s.gkeys.get(key):
             ks = s.gkeys[key]
             v = [list(q) for q in value] if key == CURVE_KEY else float(value)
@@ -485,6 +556,7 @@ class GradePanel(QWidget):
 
     def _typed(self, key, v):
         lo, hi, sc, _f = SLIDERS[key]
+        self._touch(key)
         self.state.checkpoint()
         v = max(lo / sc, min(hi / sc, v))
         self._write(key, v if sc != 1 else int(round(v)))
@@ -494,6 +566,10 @@ class GradePanel(QWidget):
 
     # ------------------------------------------------------------ 대상
     def set_current_source(self, sid: str):
+        if sid != self.cur_sid:                    # v0.16.35 클립 바뀜 = 전체◆ 끔 · 활성 없앰
+            self.b_all.setChecked(False)
+            if self.marked or self.active:
+                self.set_active([])
         self.cur_sid = sid
         self.target = ("src", sid) if sid and self.state.project.source(sid) else BASE
         self._load_controls()
@@ -662,6 +738,9 @@ class GradePanel(QWidget):
         except Exception:  # noqa: BLE001
             pass
         sids = [sid for sid in self._sids() if p.source(sid)]
+        how = self._ask_overwrite(sids, allow_frame=(key != "auto"))     # v0.16.35 AUTO·◆ 있으면 물어봄
+        if how == "cancel":
+            return
         if key == "auto":
             self.recommend(sids, key, strength)
             return
@@ -675,6 +754,9 @@ class GradePanel(QWidget):
                 return
         else:
             g = auto.builtin_grade(key, {**FACTORY_GRADE, **p.grade}, strength)
+        if how == "frame":
+            self._preset_at_frame(p.source(sids[0]), {**p.grade, **(g or {})})
+            return
         self.state.checkpoint()
         if sids:
             for sid in sids:
@@ -690,6 +772,54 @@ class GradePanel(QWidget):
             p.grade.update(g)
         self.state.dirty = True
         self._load_controls()
+        self._emit_change()
+
+    def _ask_overwrite(self, sids, allow_frame=True) -> str:
+        """프리셋 누를 때(v0.16.35): AUTO 보정·◆ 있는 클립이면 [취소][이 프레임에 ◆][전체 바꾸기].
+        반환 all | frame | cancel. 없으면 all(묻지 않음). 이 프레임에 ◆ = 클립 1개 · ◆ 되는 항목만."""
+        p = self.state.project
+        hit = [p.source(x) for x in sids if p.source(x) and (p.source(x).gkeys or (p.source(x).auto or {}).get("by") == "auto")]
+        if not hit:
+            return "all"
+        if len(sids) == 1:
+            s = hit[0]
+            n = len({k["f"] for ks in s.gkeys.values() for k in ks})
+            a = (s.auto or {}).get("by") == "auto"
+            what = "AUTO 보정·◆ %d개가" % n if (a and n) else ("◆ %d개가" % n if n else "AUTO 보정이")
+            text = f"이 클립에 {what} 있습니다."
+        else:
+            text = f"고른 클립 중 {len(hit)}개에 AUTO 보정·◆가 있습니다."
+        btns = [("cancel", "취소", 72, None)]
+        if allow_frame and len(sids) == 1:
+            btns.append(("frame", "이 프레임에 ◆", 120, None))
+        btns.append(("all", "전체 바꾸기", 104, "red"))
+        return ui_style.confirm(self, text, btns)
+
+    def _preset_at_frame(self, s, g: dict):
+        """프리셋 값을 지금 프레임 ◆ 로(빨강·파랑·색조·채도·물빛·녹황·커브). 나머지 항목·다른 ◆ 그대로."""
+        if s is None:
+            return
+        self.state.checkpoint()
+        cur = self._shown()
+        for k in KEYABLE + [CURVE_KEY]:
+            if k not in g:
+                continue
+            v = [list(q) for q in g[k]] if k == CURVE_KEY else float(g[k])
+            same = (v == [list(q) for q in cur.get(k, [])]) if k == CURVE_KEY else abs(v - float(cur.get(k, 0))) < 1e-6
+            if same:                  # 지금 보이는 값과 같으면 ◆ 안 만듦
+                continue
+            ks = s.gkeys.setdefault(k, [])
+            hit = next((x for x in ks if x["f"] == self.frame), None)
+            if hit:
+                hit["v"] = v
+            else:
+                ks.append({"f": self.frame, "v": v})
+                ks.sort(key=lambda x: x["f"])
+        if s.auto:
+            s.auto = dict(s.auto, nkeys=len({k["f"] for ks in s.gkeys.values() for k in ks}))
+        self.state.dirty = True
+        self._load_controls()
+        self.keysChanged.emit()
         self._emit_change()
 
     def recommend(self, sids, key="auto", strength="mid"):
@@ -808,7 +938,11 @@ class GradePanel(QWidget):
         for k, b in self.kbtn.items():
             ks = (s.gkeys.get(k) or []) if s else []
             on = any(x["f"] == self.frame for x in ks)
-            ui_style.tone(b, "key_on") if on else ui_style.tone(b, fg="#f2c94c" if ks else "#777777")
+            c = GKEY_STYLE.get(k, ("", "#f2c94c"))[1]           # v0.16.35 종류별 색: 이 프레임 키 = 바탕 색 / 키 있음 = 글자 색
+            ui_style.tone(b, color=c, fg="#111111") if on else ui_style.tone(b, fg=c if ks else "#777777")
+        self.b_all.setEnabled(bool(s and any(s.gkeys.get(k) for k in KEYABLE)))
+        if not self.b_all.isEnabled():
+            self.b_all.setChecked(False)
         widgets = [self.lut, *self.sliders.values()]
         for w in widgets:
             w.blockSignals(True)
@@ -836,6 +970,7 @@ class GradePanel(QWidget):
 
     def _set(self, key, value, slider=False):
         # 슬라이더: 손잡이·홈 클릭·휠 어느 쪽이든 실행취소 지점(연속 조작은 1번으로 합침)
+        self._touch(key)
         self.state.checkpoint(f"slider:{key}" if slider else "")
         self._write(key, value)
         self.state.dirty = True

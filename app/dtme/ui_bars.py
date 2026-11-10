@@ -41,6 +41,8 @@ class SourceBar(QWidget):
     ioDragFinished = Signal()
     keyDeleteRequested = Signal(int)   # 세로 크롭 키프레임 우클릭
     gkeyDeleteRequested = Signal(int)  # 색 키프레임 우클릭(그 프레임의 색 키 모두)
+    gkeyClicked = Signal(int)          # v0.16.35 ◆ 클릭(그 프레임 종류 → 보정 줄 활성)
+    activeCleared = Signal()           # v0.16.35 칩 X = 전체 ◆ 보기
 
     GRAB = 7   # 끝 잡는 범위(px)
 
@@ -56,7 +58,9 @@ class SourceBar(QWidget):
         self.stills: list[int] = []
         self.samples: list[int] = []
         self.keys: list[int] = []      # 세로 크롭 키프레임(세로 출력일 때만 표시)
-        self.gkeys: list[int] = []     # 색 키프레임(노란 ◆)
+        self.gkeys: list[int] = []     # 색 키프레임 프레임(종류 합침)
+        self.gtypes: dict = {}         # v0.16.35 {종류: [프레임]} — 종류별 색
+        self.active: list = []         # 활성 종류(진하게, 나머지 흐리게). [] = 전체
         self.stars: list[int] = []     # ★ 장면 표시
         self._drag = False
         self._edge = ""
@@ -76,8 +80,31 @@ class SourceBar(QWidget):
         self.update()
 
     def set_marks(self, gkeys, stars):
-        self.gkeys, self.stars = gkeys, stars
+        """gkeys = {종류: [프레임]}(v0.16.35) 또는 프레임 목록(예전)."""
+        if isinstance(gkeys, dict):
+            self.gtypes = {k: sorted(set(v)) for k, v in gkeys.items() if v}
+            self.gkeys = sorted({f for v in self.gtypes.values() for f in v})
+        else:
+            self.gtypes, self.gkeys = {}, list(gkeys)
+        self.stars = stars
         self.update()
+
+    def set_active(self, types):
+        self.active = list(types or [])
+        self.update()
+
+    def _gx(self, f):
+        """◆ 그리는 x(양 끝에서 잘리지 않게, v0.16.35)."""
+        return max(6.0, min(self.width() - 6.0, self._x(f)))
+
+    def _chip_rect(self):
+        if not self.active:
+            return None
+        from .project import GKEY_STYLE
+        fm = self.fontMetrics()
+        t = "·".join(GKEY_STYLE.get(k, (k, ""))[0] for k in self.active)
+        w = 14 + fm.horizontalAdvance(t) + 22
+        return QRectF(self.width() - w - 4, 4, w, self.height() - 8), t
 
     def _key_at(self, x):
         for f in self.keys:
@@ -86,10 +113,12 @@ class SourceBar(QWidget):
         return None
 
     def _gkey_at(self, x):
+        best = None
         for f in self.gkeys:
-            if abs(self._x(f) - x) <= 6:
-                return f
-        return None
+            d = abs(self._gx(f) - x)
+            if d <= 6 and (best is None or d < best[0]):
+                best = (d, f)
+        return best[1] if best else None
 
     def _x(self, f):
         return f / max(1, self.frames) * self.width()
@@ -125,11 +154,7 @@ class SourceBar(QWidget):
         for fr in self.samples:
             p.setBrush(QColor("#e8e8e8"))
             p.drawEllipse(QPointF(self._x(fr), h - 4), 2.5, 2.5)
-        for fr in self.gkeys:         # ◆ 색 키프레임(노랑)
-            x = self._x(fr)
-            p.setPen(QPen(QColor("#111"), 1))
-            p.setBrush(QColor("#f2c94c"))
-            p.drawPolygon(QPolygonF([QPointF(x, 1), QPointF(x + 5, 6), QPointF(x, 11), QPointF(x - 5, 6)]))
+        self._paint_gkeys(p, h)
         f2 = QFont(self.font())
         f2.setPointSizeF(9)
         p.setFont(f2)
@@ -145,6 +170,56 @@ class SourceBar(QWidget):
         x = self._x(self.playhead)
         p.setPen(QPen(QColor("#e5484d"), 2))
         p.drawLine(QPointF(x, 0), QPointF(x, h))
+        cr = self._chip_rect()
+        if cr:                        # 활성 종류 칩 [◆ 빨강 X]
+            from .project import GKEY_STYLE
+            r, t = cr
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(30, 30, 30, 230))
+            p.drawRoundedRect(r, 4, 4)
+            c = QColor(GKEY_STYLE.get(self.active[0], ("", "#f2c94c"))[1])
+            cy = r.center().y()
+            p.setBrush(c)
+            p.setPen(QPen(QColor("#111"), 1))
+            p.drawPolygon(QPolygonF([QPointF(r.left() + 8, cy - 5), QPointF(r.left() + 13, cy), QPointF(r.left() + 8, cy + 5),
+                                     QPointF(r.left() + 3, cy)]))
+            p.setPen(QColor("#e8e8e8"))
+            p.setFont(self.font())
+            p.drawText(QRectF(r.left() + 16, r.top(), r.width() - 36, r.height()), Qt.AlignVCenter | Qt.AlignLeft, t)
+            xr = QRectF(r.right() - 16, cy - 5, 10, 10)
+            p.setPen(QPen(QColor("#cfcfcf"), 1.6))
+            p.drawLine(xr.topLeft(), xr.bottomRight())
+            p.drawLine(xr.topRight(), xr.bottomLeft())
+
+    def _paint_gkeys(self, p, h):
+        """◆ 종류별 색. 같은 프레임 여러 종류 = 위아래로 나눔(작게). 활성 있으면 그 종류만 진하게."""
+        from .project import GKEY_STYLE
+        order = [k for k in GKEY_STYLE if k in self.gtypes] + [k for k in self.gtypes if k not in GKEY_STYLE]
+        if not order:                 # 예전 형식 = 노랑
+            for fr in self.gkeys:
+                x = self._gx(fr)
+                p.setPen(QPen(QColor("#111"), 1))
+                p.setBrush(QColor("#f2c94c"))
+                p.drawPolygon(QPolygonF([QPointF(x, 1), QPointF(x + 5, 6), QPointF(x, 11), QPointF(x - 5, 6)]))
+            return
+        at: dict[int, list] = {}
+        for k in order:
+            for f in self.gtypes[k]:
+                at.setdefault(f, []).append(k)
+        for f, ks in at.items():
+            if self.active:           # 활성 종류를 위로
+                ks = [k for k in ks if k in self.active] + [k for k in ks if k not in self.active]
+            ks = ks[:3]
+            x = self._gx(f)
+            sz = 5.0 if len(ks) <= 2 else 4.0
+            for i, k in enumerate(ks):
+                cy = (6.0 + i * 11.0) if len(ks) <= 2 else (5.0 + i * 9.0)
+                c = QColor(GKEY_STYLE.get(k, ("", "#f2c94c"))[1])
+                if self.active and k not in self.active:
+                    c.setAlpha(70)
+                p.setPen(QPen(QColor(17, 17, 17, c.alpha()), 1))
+                p.setBrush(c)
+                p.drawPolygon(QPolygonF([QPointF(x, cy - sz), QPointF(x + sz, cy), QPointF(x, cy + sz), QPointF(x - sz, cy)]))
 
     def _frame_at(self, x):
         return int(max(0, min(self.frames, round(x / max(1, self.width()) * self.frames))))
@@ -164,8 +239,12 @@ class SourceBar(QWidget):
 
     def mousePressEvent(self, e):
         x = e.position().x()
+        cr = self._chip_rect()
+        if cr and cr[0].contains(e.position()):       # 칩 = 전체 ◆ 보기
+            self.activeCleared.emit()
+            return
         k = self._key_at(x) if e.position().y() <= 14 else None
-        gk = self._gkey_at(x) if e.position().y() <= 14 else None
+        gk = self._gkey_at(x) if e.position().y() <= 24 else None
         if e.button() == Qt.RightButton:
             if k is not None:
                 self.keyDeleteRequested.emit(k)
@@ -173,7 +252,10 @@ class SourceBar(QWidget):
                 self.gkeyDeleteRequested.emit(gk)
             return
         if k is None and gk is not None:
-            k = gk
+            self._drag, self._edge = False, ""
+            self.seekRequested.emit(gk)
+            self.gkeyClicked.emit(gk)
+            return
         if k is not None:            # ◇ 클릭 = 그 키프레임 위치로
             self._drag, self._edge = False, ""
             self.seekRequested.emit(k)
