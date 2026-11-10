@@ -94,5 +94,20 @@ ui_style.confirm = lambda *a: (asked.append(1), "cancel")[1]
 gp.apply_choice("light", "mid"); wait(0.2)
 ui_style.confirm = orig
 assert len(asked) == n
+# v0.16.36: 스틸 → 타임라인 = 0초, 재생 중 = 고른 틀 숨김
+import numpy as np  # noqa: E402
+png = os.path.join(d, "dot.png")
+a = np.zeros((60, 60, 4), np.uint8); a[10:50, 10:50] = (230, 40, 30, 255)
+subprocess.run([paths.ffmpeg(), "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", "60x60", "-i", "-",
+                "-frames:v", "1", png], input=a.tobytes(), check=True)
+st.import_images([png]); wait(3, lambda: st.project.images and st.project.images[0].width)
+s = e._cur(); s.sel_in, s.sel_out = 0, 300; e.send_to_timeline(); wait(0.3)
+e.tl_time = 5.0
+e.add_title_image(st.project.images[0].id); wait(0.5)
+im = st.project.titles[-1]
+assert im["kind"] == "image" and im["t0"] == 0.0 and abs(e.tl_time) < 1e-6, (im["t0"], e.tl_time)
+e.player.play(); wait(0.8)
+print("재생 중 틀 숨김:", e.player.mon.playing); assert e.player.mon.playing
+e.player.pause(); wait(0.3); assert not e.player.mon.playing
 print("UI V1635 OK")
 os._exit(0)

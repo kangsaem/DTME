@@ -1999,15 +1999,23 @@ class EditTab(QWidget):
             self.add_title_image(it.data(Qt.UserRole))
 
     def add_title_image(self, iid):
+        """스틸 → 타임라인 = 글자·사각형과 같이 맨 앞(0초) + 재생 위치 0초(v0.16.36, 예전 = 지금 타임라인 위치)."""
         m = self.state.project.image(iid)
         if m is None or not m.width:
             return
-        ow, oh = ff.out_size("vertical" if self.state.project.output.orientation == "vertical" else "horizontal")
+        p = self.state.project
+        ow, oh = ff.out_size("vertical" if p.output.orientation == "vertical" else "horizontal")
         self.state.checkpoint()
-        d = new_title_image(iid, self.tl_time, self.tl_time + TITLE_DEFAULT_SEC, min(1.0, ow / m.width, oh / m.height))
-        self.state.project.titles.append(d)
+        d = new_title_image(iid, 0.0, TITLE_DEFAULT_SEC, min(1.0, ow / m.width, oh / m.height))
+        p.titles.append(d)
         self.sel_ov = ("title", d["id"])
+        self._del_target = "ov"
         self.state.touch("titles")
+        if p.segments:
+            self.tl_time = 0.0
+            self.timeline.set_time(0.0)
+            self.set_mode("timeline", load=False)
+            self.show_timeline(0.0)
 
     def _refresh_audios(self):
         self.mus_list.clear()

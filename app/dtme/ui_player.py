@@ -73,6 +73,7 @@ class Monitor(QWidget):
         self.patch_rect = None                  # (x, y, w, h) 영상 기준 0~1
         self.titles = []                        # 타임라인 모드: [(title, alpha, QImage|None, (w, h) | None)]
         self.sel_title = ""
+        self.playing = False          # v0.16.36 재생 중 = 고른 레이어·글자 틀(점선·손잡이) 숨김
         self._tdrag = None
         self._tresize = None                    # 사각형 모서리 끌기(v0.16.34)
         self._build_zoom_ui()
@@ -191,7 +192,7 @@ class Monitor(QWidget):
                 y += fm.lineSpacing() + 8 * k
         p.restore()
         for t, _a, img, wh in self.titles:
-            if t["id"] == self.sel_title:
+            if t["id"] == self.sel_title and not self.playing:
                 r = self._title_rect(t, wh)
                 p.setPen(QPen(QColor(255, 255, 255, 200), 1, Qt.DashLine))
                 p.setBrush(Qt.NoBrush)
@@ -805,7 +806,7 @@ class Monitor(QWidget):
             p.drawImage(self._layer_rect(lay, wh), img)
         p.restore()
         for lay, _img, wh in self.layers:
-            if lay["id"] != self.sel_layer:
+            if lay["id"] != self.sel_layer or self.playing:
                 continue
             r = self._layer_rect(lay, wh)
             p.setPen(QPen(QColor(255, 255, 255, 200), 1, Qt.DashLine))
@@ -852,6 +853,8 @@ class Player(QWidget):
         self._pending_seek: int | None = None
         self.rate = 1.0
         self._back = QTimer(self)
+        self.playingChanged.connect(self._mon_playing)
+        self.player.playbackStateChanged.connect(self._mon_playing)
         self._back.setInterval(50)
         self._back.timeout.connect(self._back_tick)
         self._grab_busy = False
@@ -968,6 +971,12 @@ class Player(QWidget):
 
     def is_playing(self) -> bool:
         return self.player.playbackState() == QMediaPlayer.PlayingState
+
+    def _mon_playing(self, *_a):
+        on = self.is_busy()
+        if self.mon.playing != on:
+            self.mon.playing = on
+            self.mon.update()
 
     def is_busy(self) -> bool:
         return self.is_playing() or self._back.isActive()
