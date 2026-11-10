@@ -66,5 +66,7 @@ wait(60, lambda: not dlg.pending())              # 뒤에서 미리 분석 끝�
 dlg.cancel(); wait(0.3)
 from dtme import jobs  # noqa: E402
 jobs.shutdown(); wait(0.5)
+e._auto_dlg = None                                # os._exit 전에 창 지움(파이썬 eventFilter 가 남은 위젯 = Windows 종료 때 접근 위반)
+dlg.deleteLater(); del dlg; wait(0.5)
 print("OK test_ui_autocheck", flush=True)
 os._exit(0)
