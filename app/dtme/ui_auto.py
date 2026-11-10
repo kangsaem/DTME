@@ -444,13 +444,7 @@ class AutoDelegate(QStyledItemDelegate):
         p.restore()
 
     def editorEvent(self, event, model, option, index):
-        if event.type() == QEvent.MouseButtonRelease and event.position().x() < option.rect.left() + 32:
-            row = self.dlg.rows[index.row()]
-            row.checked = not row.checked
-            self.dlg.list.viewport().update()
-            self.dlg._row_changed()
-            return True
-        return False
+        return False            # v0.16.37 체크 = AutoDialog._check_drag(누른 채 쓸기)
 
 
 class AutoDialog(DragMove, QDialog):
@@ -492,6 +486,8 @@ class AutoDialog(DragMove, QDialog):
             it = QListWidgetItem(display_name(s.path))
             self.list.addItem(it)
         self.list.itemSelectionChanged.connect(self._sel_changed)
+        self._cdrag = None                 # v0.16.37 체크 쓸기: (시작 줄, 새 상태, 원래 상태들)
+        self.list.viewport().installEventFilter(self)
         # 오른쪽
         self.grid = PresetGrid()
         self.grid.chosen.connect(self._choose)
@@ -598,6 +594,10 @@ class AutoDialog(DragMove, QDialog):
         self.state_lab = QLabel("")             # MOSCO 처럼 왼쪽 아래 = 지금 진행(단계 색)
         r1 = QHBoxLayout()
         r1.setSpacing(16)
+        from . import __version__
+        self.ver_lab = QLabel(f"DTME {__version__}")     # v0.16.37 왼쪽 아래 버전
+        self.ver_lab.setStyleSheet("color:#6f6f6f; font-size:11px;")
+        r1.addWidget(self.ver_lab)
         r1.addWidget(self.state_lab)
         r1.addStretch(1)
         r1.addWidget(rbw)
@@ -802,6 +802,60 @@ class AutoDialog(DragMove, QDialog):
                 r.checked = k != "keep"
         self.list.viewport().update()
         self._row_changed()
+
+    # ---------------------------------------------------------------- v0.16.37 체크 쓸기
+    def eventFilter(self, obj, e):
+        if obj is self.list.viewport() and e.type() in (QEvent.MouseButtonPress, QEvent.MouseMove,
+                                                         QEvent.MouseButtonRelease, QEvent.MouseButtonDblClick):
+            if self._check_drag(e):
+                return True
+        return super().eventFilter(obj, e)
+
+    def _row_at(self, y):
+        it = self.list.itemAt(8, int(y))
+        if it is not None:
+            return self.list.row(it)
+        n = self.list.count()
+        if not n:
+            return -1
+        return 0 if y < self.list.visualItemRect(self.list.item(0)).top() else n - 1
+
+    def _check_drag(self, e) -> bool:
+        """✓ 칸(왼쪽 32px)을 누른 채 위아래로 쓸기 = 처음 줄의 바뀐 상태를 지나간 줄에 칠함. 되돌리면 원래대로."""
+        t = e.type()
+        if t in (QEvent.MouseButtonPress, QEvent.MouseButtonDblClick):
+            if e.button() != Qt.LeftButton:
+                return False
+            it = self.list.itemAt(e.position().toPoint())
+            if it is None or e.position().x() >= self.list.visualItemRect(it).left() + 32:
+                return False
+            i = self.list.row(it)
+            if i >= len(self.rows):
+                return False
+            self._cdrag = (i, not self.rows[i].checked, [r.checked for r in self.rows])
+            self._paint_checks(i)
+            return True
+        if self._cdrag is None:
+            return False
+        if t == QEvent.MouseMove:
+            self._paint_checks(self._row_at(e.position().y()))
+            return True
+        if t == QEvent.MouseButtonRelease:
+            _i, _v, orig = self._cdrag
+            self._cdrag = None
+            if [r.checked for r in self.rows] != orig:
+                self._row_changed()
+            return True
+        return False
+
+    def _paint_checks(self, j):
+        i, v, orig = self._cdrag
+        if j < 0:
+            return
+        a, b = min(i, j), max(i, j)
+        for k, r in enumerate(self.rows):
+            r.checked = v if a <= k <= b else orig[k]
+        self.list.viewport().update()
 
     def _row_changed(self):
         self._name_preview()
