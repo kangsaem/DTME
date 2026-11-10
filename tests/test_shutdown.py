@@ -6,7 +6,7 @@ import os, sys, time, subprocess, textwrap
 HERE = os.path.dirname(os.path.abspath(__file__))
 APP = os.path.join(HERE, "..", "app")
 TAG = f"dtmeshutdown{os.getpid()}"            # ffmpeg 명령 안의 표시 → 남은 프로세스 찾기
-LONG = ["-v", "error", "-f", "lavfi", "-i", "testsrc2=s=640x360:d=600", "-metadata", f"comment={TAG}", "-f", "null", "-"]
+LONG = ["-v", "error", "-re", "-f", "lavfi", "-i", "testsrc2=s=640x360:d=600", "-metadata", f"comment={TAG}", "-f", "null", "-"]
 
 
 def leftover() -> int:

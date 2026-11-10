@@ -1,7 +1,6 @@
 """v0.16.37 AUTO 창: ✓ 칸 누른 채 쓸기(칠하기·되돌리면 원래대로) · 왼쪽 아래 버전.
 사용: python tests/test_ui_autocheck.py"""
-import faulthandler, os, subprocess, sys, tempfile, time  # noqa: E401
-faulthandler.enable()
+import os, subprocess, sys, tempfile, time  # noqa: E401
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "app"))
 os.environ["QT_QPA_PLATFORM"] = "offscreen"; os.environ["DTME_NO_AUDIO"] = "1"
 from PySide6.QtCore import QPoint, Qt
@@ -69,4 +68,8 @@ jobs.shutdown(); wait(0.5)
 e._auto_dlg = None                                # os._exit 전에 창 지움(파이썬 eventFilter 가 남은 위젯 = Windows 종료 때 접근 위반)
 dlg.deleteLater(); del dlg; wait(0.5)
 print("OK test_ui_autocheck", flush=True)
+sys.stderr.flush()
+if os.name == "nt":      # Windows: ExitProcess 의 DLL 정리 중 Qt 가 가끔 접근 위반(테스트 끝난 뒤) → 바로 끝냄
+    import ctypes
+    ctypes.windll.kernel32.TerminateProcess(ctypes.windll.kernel32.GetCurrentProcess(), 0)
 os._exit(0)
