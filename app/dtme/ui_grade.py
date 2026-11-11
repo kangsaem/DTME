@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (QButtonGroup, QComboBox, QFileDialog, QFrame, QHB
                                QScrollArea, QSizePolicy, QSlider, QVBoxLayout, QWidget)
 
 from . import ff, jobs, paths, ui_style
-from .project import (CURVE_KEY, GKEY_STYLE, KEYABLE, OUTPUTS, delete_preset, get_setting, grade_at, keep_lut, list_presets, load_preset,
+from .project import (CURVE_KEY, GKEY_STYLE, KEYABLE, OUTPUTS, stab_limit, delete_preset, get_setting, grade_at, keep_lut, list_presets, load_preset,
                       rename_preset, save_default_grade, save_preset, set_setting, timecode)
 from .state import AppState
 from .ui_curve import CurveEditor
@@ -956,6 +956,11 @@ class GradePanel(QWidget):
         if e["lut"] and self.lut.findData(e["lut"]) < 0:
             self.lut.addItem(f"{e['lut']} (파일 없음)", e["lut"])
         self.lut.setCurrentIndex(max(0, self.lut.findData(e["lut"])))
+        lim = stab_limit(self._src()) if self._src() else SLIDERS["stab"][1]      # v0.16.45 프리셋별 한계(블루워터 끔 · 산호 100 · 나머지 50)
+        st = self.sliders["stab"]
+        st.setMaximum(max(1, lim))
+        st.setEnabled(lim > 0)
+        st.setToolTip("블루워터 = 흔들림 보정 안 씀" if lim <= 0 else f"렌더에만 적용 · 이 프리셋 최대 {lim}")
         for k, s in self.sliders.items():
             lo, hi, sc, _f = SLIDERS[k]
             s.setValue(int(round(float(e.get(k, 0)) * sc)))

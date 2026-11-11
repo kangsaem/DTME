@@ -376,6 +376,26 @@ def ease(u: float) -> float:
     return u * u * (3 - 2 * u)
 
 
+STAB_LIMIT = {"bluewater": 0, "coral": 100}      # v0.16.45 흔들림 보정 한계(사용자): 블루워터 = 끔 · 산호 = 100 · 나머지 = 50
+STAB_LIMIT_ELSE = 50                             # 화면만 보고 흔들림을 찾아서, 고정된 무늬가 없는 장면(물·물고기 떼)은 오히려 더 흔들림(1218 실측)
+
+
+def stab_limit(src) -> int:
+    """이 클립에서 쓸 수 있는 흔들림 보정 최대값(프리셋 기준). 프리셋 없음·사용자 프리셋 = 나머지(50)."""
+    k = ((getattr(src, "auto", None) or {}).get("preset", "") or "") if src is not None else ""
+    if k.startswith("scene:"):
+        k = k[6:]
+    sc, _, sb = k.partition("/")
+    return STAB_LIMIT.get("coral" if sb == "coral" else sc, STAB_LIMIT_ELSE)
+
+
+def _stab_cap(g: dict, src) -> dict:
+    lim = stab_limit(src)
+    if float(g.get("stab", 0) or 0) > lim:
+        g["stab"] = lim
+    return g
+
+
 KEYABLE = ["r_gain", "b_gain", "hue", "sat", "water", "gy"]     # 시간에 따라 바뀌는 보정(◆, 숫자)
 CURVE_KEY = "curve"
 # v0.16.35 ◆ 종류별 (이름, 색) — 소스 바 ◆ · 보정 패널 ◆ 버튼 같은 색
@@ -645,9 +665,11 @@ class Project:
         s = self.source(sid)
         if s and seg is not None and getattr(seg, "grade", None):     # 렌더 리스트 = 보낼 때 사본
             g.update(copy.deepcopy(seg.grade))
+            _stab_cap(g, s)
             return apply_off(g, seg.off) if off else g
         if s:
             g.update(s.grade)
+            _stab_cap(g, s)                   # 흔들림 보정 한계(프리셋별) — 저장된 값이 커도 여기서 자름
             if frame is not None and s.gkeys:
                 g = grade_at(g, s.gkeys, frame)
             if off:

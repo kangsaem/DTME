@@ -98,5 +98,13 @@ try:
 finally:
     if keep is not None:
         af.write_bytes(keep)
+# 8) v0.16.45 흔들림 보정 한계: 블루워터 = 슬라이더 꺼짐 · 산호 100 · 나머지 50
+s0 = st.project.sources[0]; e._select_source(s0.id); wait(0.5)
+sl = gp.sliders["stab"]
+for pk, lim in (("coral", 100), ("deep", 50), ("bluewater", 0)):
+    s0.auto = {"preset": pk}; s0.grade["stab"] = 100; gp._load_controls()
+    assert sl.isEnabled() == (lim > 0) and (sl.maximum() == lim or lim == 0), (pk, sl.maximum(), sl.isEnabled())
+    assert st.project.grade_for_source(s0.id)["stab"] == lim and sl.value() == min(lim, sl.maximum()), (pk, sl.value())
+s0.auto = {}; s0.grade.pop("stab", None); gp._load_controls()
 print("UI V1641 OK")
 os._exit(0)
