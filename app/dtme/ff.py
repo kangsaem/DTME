@@ -547,7 +547,7 @@ def _abs(p) -> str:
 def _hw(gpu: bool) -> list[str]:
     """GPU 디코딩. v0.16.24: 4K 원본을 길게 읽는 작업(렌더·원본 프록시·흔들림 분석·원본 구간 캐시)에만.
     사진 1장·작은 영상은 CPU(ffmpeg 마다 CUDA 준비 비용이 더 크고 화면이 끊기던 원인으로 추정)."""
-    return ["-hwaccel", "cuda"] if gpu else []
+    return ["-hwaccel", "cuda"] if gpu and has_cuda() else []      # v0.16.48: NVIDIA 가 없으면 CPU 디코딩(헛도는 시도 없이)
 
 
 def _seek(frame: float, fps: Fraction) -> str:
@@ -1469,7 +1469,7 @@ def make_proxy(src: Source, lut: str, gpu: bool, on_progress=None, cancel=None) 
              "-g", "1", "-crf", "23", "-colorspace", "bt709", "-color_primaries", "bt709",
              "-color_trc", "bt709", "-color_range", "tv", "-movflags", "+faststart", _abs(tmp)]
     tries = []
-    if gpu:
+    if gpu and has_cuda():
         dl = "p010le" if "10" in _proxy_pix(src.path) else "nv12"
         tries.append(("GPU 축소", ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"],
                       [f"scale_cuda={pw}:{ph}:interp_algo=bilinear", "hwdownload", f"format={dl}"]))
@@ -2276,7 +2276,7 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orien
     None = GPU 디코딩 켜짐이면 사용. 조건이 안 맞는 컷(크롭 필요·렌즈·흔들림·리프레임)은 그 컷만 CPU 축소."""
     o = project.output
     if gpu_scale is None:
-        gpu_scale = bool(o.gpu_decode) and not fast and _setting_int("gpu_scale", 1) != 0
+        gpu_scale = bool(o.gpu_decode) and has_cuda() and not fast and _setting_int("gpu_scale", 1) != 0
     orientation = orientation or o.orientation
     audio = o.audio if audio is None else audio
     cmd = [paths.ffmpeg(), "-y"]
@@ -2389,7 +2389,8 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orien
         fparts[:] = [f.replace("[vo]", "[vm]").replace("[ao]", "[am]") for f in fparts]
         post_graph(fparts, cmd, project, extras, total, orientation, audio, len(segs) + len(img_inputs))
         cwd = cwd or str(paths.cache_dir() / "lut")
-    ten = is_10bit(o.encoder) and not fast and not TEST_LOSSLESS
+    enc = eff_encoder(o.encoder)     # 설정한 인코더를 이 PC 에서 되는 것으로(v0.16.48)
+    ten = is_10bit(enc) and not fast and not TEST_LOSSLESS
     if ten:                          # 10bit 출력(v0.16.41): 컷 끝·합성·전환 뒤 형식을 10bit 로(보정은 원래 16bit 계산)
         fparts[:] = [f.replace("format=yuv420p,", "format=yuv420p10le,").replace("format=yuv420p[", "format=yuv420p10le[")
                      .replace(":format=yuv420:", ":format=yuv420p10:") for f in fparts]
@@ -2403,19 +2404,22 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orien
         cmd += ["-c:v", "libx264", "-preset", "ultrafast", "-qp", "0"]
     elif fast:                       # 미리보기 렌더: 작고 빠르게
         cmd += ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "26"]
-    elif o.encoder == "nvenc":
+    elif enc == "qsv":               # 인텔 내장 그래픽(Quick Sync, v0.16.48) — 이 환경에서 못 돌려 봄(노트북 로그로 확인)
+        pix = "nv12"
+        cmd += ["-c:v", "h264_qsv", *qsv_args(br), "-profile:v", "high"]
+    elif enc == "nvenc":
         cmd += ["-c:v", "h264_nvenc", "-preset", "p6", "-tune", "hq", "-rc", "vbr", "-cq", "19",
                 "-b:v", f"{br}M", *rate, "-profile:v", "high", *nvenc_aq("h264_nvenc")]
-    elif o.encoder == "nvenc_hevc10":
+    elif enc == "nvenc_hevc10":
         pix = "p010le"
         cmd += ["-c:v", "hevc_nvenc", "-preset", "p6", "-tune", "hq", "-rc", "vbr", "-cq", "21",
                 "-b:v", f"{br}M", *rate, "-profile:v", "main10", "-tag:v", "hvc1", *nvenc_aq("hevc_nvenc")]
-    elif o.encoder == "x265_10":
+    elif enc == "x265_10":
         pix = "yuv420p10le"
         cmd += ["-c:v", "libx265", "-preset", "medium", "-crf", "20", *rate, "-tag:v", "hvc1",
                 "-x265-params", "log-level=error"]
-    else:
-        cmd += ["-c:v", "libx264", "-preset", "medium", "-crf", "18", *rate]
+    else:                            # 저사양(v0.16.48) = faster(사용자 PC 는 medium 그대로)
+        cmd += ["-c:v", "libx264", "-preset", "faster" if low_spec() else "medium", "-crf", "18", *rate]
     cmd += ["-pix_fmt", pix, "-r", f"{OUT_FPS.numerator}/{OUT_FPS.denominator}",
             "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709", "-color_range", "tv",
             "-map_metadata", "-1", "-write_tmcd", "0", "-movflags", "+faststart", _abs(out_file)]
@@ -2424,7 +2428,107 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orien
 
 
 # ------------------------------------------------------------------ 인코더(v0.16.41)
-ENCODERS = [("nvenc", "NVENC (GPU)"), ("x264", "x264 (CPU)"), ("nvenc_hevc10", "NVENC HEVC 10bit (GPU)"), ("x265_10", "x265 10bit (CPU)")]
+ENCODERS = [("nvenc", "NVENC (GPU)"), ("x264", "x264 (CPU)"), ("nvenc_hevc10", "NVENC HEVC 10bit (GPU)"), ("x265_10", "x265 10bit (CPU)"),
+            ("qsv", "Quick Sync (인텔 GPU)")]
+
+# ---- 이 PC 의 그래픽 판별(v0.16.48, 사용자: 사무용 노트북 i5-1335U · Iris Xe · 16GB 에서도 돌게)
+# 실행마다 1번, 아주 짧게 인코딩해 봄: NVENC → Quick Sync → 없음. 결과는 cache/dtme.log.
+#   nvenc = 지금까지와 같음 / qsv = 인코딩만 인텔 GPU(디코딩은 CPU — 다음 단계) / none = 전부 CPU
+# 설정의 인코더는 '바라는 것': GPU 인코더를 골랐는데 그 GPU 가 없으면 되는 쪽으로 바꿔 씀(x264 를 직접 고른 것은 그대로).
+_hw_lock = threading.Lock()
+_hw_kind: list = [None]
+_qsv_mode: list = ["icq"]
+QSV_MODES = {"icq": ["-preset", "medium", "-global_quality", "21"],                       # 품질 기준(cq 와 비슷)
+             "vbr": ["-preset", "medium"]}                                              # 안 되면 비트레이트 기준
+
+
+def qsv_args(br: int) -> list[str]:
+    if _qsv_mode[0] == "vbr":
+        return [*QSV_MODES["vbr"], "-b:v", f"{br}M", "-maxrate", f"{int(br * 1.5)}M", "-bufsize", f"{br * 2}M"]
+    return list(QSV_MODES["icq"])
+
+
+def _enc_probe(codec: str, extra: list[str], pix: str) -> tuple[bool, str]:
+    try:
+        p = _popen([paths.ffmpeg(), "-v", "error", "-f", "lavfi", "-i", "testsrc2=s=640x360:r=30:d=0.5", "-frames:v", "8",
+                    "-c:v", codec, *extra, "-pix_fmt", pix, "-f", "null", "-"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        _out, err = p.communicate(timeout=30)
+        return p.returncode == 0, err.decode("utf-8", "replace")[-160:].strip().replace("\n", " / ")
+    except Cancelled:
+        raise
+    except Exception as e:  # noqa: BLE001
+        return False, str(e)[-160:]
+
+
+def hw_kind() -> str:
+    """'nvenc' | 'qsv' | 'none'. 환경 변수 DTME_HW 로 강제(시험)."""
+    if _hw_kind[0] is not None:
+        return _hw_kind[0]
+    with _hw_lock:
+        if _hw_kind[0] is not None:
+            return _hw_kind[0]
+        forced = os.environ.get("DTME_HW", "")
+        if forced in ("nvenc", "qsv", "none"):
+            _hw_kind[0] = forced
+            return forced
+        ok, m1 = _enc_probe("h264_nvenc", ["-preset", "p6"], "yuv420p")
+        kind, m2 = ("nvenc" if ok else "none"), ""
+        if not ok:
+            for mode in ("icq", "vbr"):
+                extra = QSV_MODES[mode] + (["-b:v", "8M", "-maxrate", "12M", "-bufsize", "16M"] if mode == "vbr" else [])
+                ok2, m2 = _enc_probe("h264_qsv", extra, "nv12")
+                if ok2:
+                    kind, _qsv_mode[0] = "qsv", mode
+                    break
+        _hw_kind[0] = kind
+        try:
+            ram = __import__("dtme.framecache", fromlist=["total_ram"]).total_ram() / (1 << 30)
+        except Exception:  # noqa: BLE001
+            ram = 0.0
+        note = {"nvenc": "NVIDIA(NVENC) — 인코딩·디코딩 GPU",
+                "qsv": f"인텔 Quick Sync({_qsv_mode[0]}) — 인코딩 GPU · 디코딩 CPU",
+                "none": "GPU 인코더 없음 — 전부 CPU(x264)"}[kind]
+        log_info(f"그래픽 확인: {note} · 코어 {os.cpu_count()} · 메모리 {ram:.0f}GB · 저사양 {'예' if low_spec() else '아니오'}"
+                 + (f" · NVENC 안 됨({m1})" if kind != "nvenc" else "") + (f" · QSV 안 됨({m2})" if kind == "none" else ""))
+        return kind
+
+
+def has_cuda() -> bool:
+    return hw_kind() == "nvenc"
+
+
+def hw_downgrade(to: str, why: str) -> None:
+    """렌더 중 GPU 인코더가 실패 → 이 실행 동안 한 단계 내림(qsv → none)."""
+    with _hw_lock:
+        if _hw_kind[0] != to:
+            log_info(f"그래픽 전환: {_hw_kind[0]} → {to} ({why[-200:]})")
+            _hw_kind[0] = to
+
+
+def eff_encoder(enc: str) -> str:
+    """설정 인코더 → 이 PC 에서 실제로 쓸 인코더."""
+    k = hw_kind()
+    if enc in ("nvenc", "qsv"):
+        return {"nvenc": "nvenc", "qsv": "qsv"}.get(k, "x264")
+    if enc == "nvenc_hevc10":
+        return "nvenc_hevc10" if k == "nvenc" else "x265_10"
+    return enc
+
+
+def low_spec() -> bool:
+    """저사양: NVIDIA 없음 + (논리 코어 12 이하 또는 메모리 17GB 이하). 설정 low_spec = 1 강제 켬 · 2 강제 끔(0·없음 = 자동).
+    바뀌는 것 = 미리보기 동시 2 · 프록시 1 · 조각 렌더 안 함 · x264 faster."""
+    v = _setting_int("low_spec", 0)
+    if v in (1, 2):
+        return v == 1
+    if _hw_kind[0] in (None, "nvenc"):
+        return False
+    try:
+        from .framecache import total_ram
+        ram = total_ram() / (1 << 30)
+    except Exception:  # noqa: BLE001
+        ram = 64.0
+    return (os.cpu_count() or 8) <= 12 or ram <= 17
 AQ_ARGS = ["-spatial-aq", "1", "-temporal-aq", "1", "-aq-strength", "8", "-rc-lookahead", "20"]
 _aq_lock = threading.Lock()
 _aq_known: dict = {}                  # 인코더 이름 → True/False(이번 실행 동안). 판단 못 함(GPU 가 바쁨·없음)은 60초 뒤 다시
@@ -2494,6 +2598,8 @@ def chunk_plan(project: Project, segs: list, orientation: str, extras: dict | No
     import dataclasses
     import math
     if fast or len(segs) != 1 or (extras and (extras.get("titles") or extras.get("music"))):
+        return None
+    if low_spec():                    # 코어가 적으면 나눠도 이득 없음(v0.16.48)
         return None
     seg = segs[0]
     src = project.source(seg.src)
@@ -2649,7 +2755,7 @@ def _render_chunked(project: Project, segs: list, plan: list, out_file: str, on_
             run(_audio_cmd(project, segs[0], str(parts / "a.m4a")))
             cmd += ["-i", "a.m4a"]
             maps += ["-map", "1:a:0"]
-        if is_hevc(project.output.encoder):
+        if is_hevc(eff_encoder(project.output.encoder)):
             maps += ["-tag:v", "hvc1"]
         cmd += [*maps, "-c", "copy", "-map_metadata", "-1", "-write_tmcd", "0", "-movflags", "+faststart", _abs(out_file)]
         run(cmd, cwd=str(parts))
@@ -2693,7 +2799,15 @@ def render_video(project: Project, segs: list[Segment], out_file: str, on_progre
     try:
         run_progress(cmd, total, on_progress, cancel, cwd=cwd)
     except FFError as e:
-        if not project.output.gpu_decode or (cancel is not None and cancel.is_set()):
+        if cancel is not None and cancel.is_set():
+            raise
+        if "h264_qsv" in cmd:                                  # Quick Sync 실패 → 이 실행 동안 x264 로(v0.16.48)
+            log_error("Quick Sync 렌더 실패 → x264", str(e)[-400:])
+            hw_downgrade("none", str(e))
+            cmd, total, cwd = build_render_cmd(project, segs, out_file, orientation, audio, fast, extras)
+            run_progress(cmd, total, on_progress, cancel, cwd=cwd)
+            return
+        if not project.output.gpu_decode or not has_cuda():
             raise
         if "scale_cuda" in " ".join(map(str, cmd)):            # GPU 축소 실패 → CPU 축소(GPU 디코딩은 유지)
             log_error("GPU 축소 실패 → CPU 축소", str(e)[-300:])

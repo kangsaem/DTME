@@ -128,6 +128,14 @@ PRECACHE_POOL = make_pool(1)   # v0.16.26: 렌더 다음 항목 원본 미리 �
 DRIVE = "unknown"              # 원본 저장장치(가장 느린 것) — tune()
 
 
+def apply_hw() -> None:
+    """그래픽 확인 뒤 한 번(v0.16.48): 저사양이면 미리보기 동시 4 → 2 · 프록시 2 → 1."""
+    from . import ff
+    if ff.low_spec():
+        PREVIEW_POOL.setMaxThreadCount(2)
+        PROXY_POOL.setMaxThreadCount(1)
+
+
 def tune(paths) -> tuple[int, int]:
     """원본 저장장치 종류로 동시 분석·렌더 수를 다시 정함(v0.16.19). 설정 auto_jobs/render_jobs(0 = 자동)가 있으면 그 값.
     풀 크기는 실행 중에도 바꿀 수 있음(돌던 작업은 그대로, 다음 작업부터)."""

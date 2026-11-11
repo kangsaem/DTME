@@ -63,6 +63,20 @@ def crash_log():
         "".join(traceback.format_exception(a.exc_type, a.exc_value, a.exc_traceback))[-3000:])
 
 
+def hw_check():
+    """그래픽 판별(NVENC → Quick Sync → 없음)을 뒤에서 미리 — 첫 렌더·프록시가 기다리지 않게(v0.16.48)."""
+    import threading
+    from dtme import ff, jobs
+
+    def work():
+        try:
+            ff.hw_kind()
+            jobs.apply_hw()
+        except Exception as e:  # noqa: BLE001
+            ff.log_error("그래픽 확인", str(e))
+    threading.Thread(target=work, name="hw", daemon=True).start()
+
+
 def main():
     purge_frame_cache()
     crash_log()
@@ -70,6 +84,7 @@ def main():
     os.environ.setdefault("QT_MEDIA_BACKEND", "ffmpeg")
     app = QApplication(sys.argv)
     app.setApplicationName("DTME")
+    hw_check()
     dark(app)
     w = MainWindow()
     args = [a for a in sys.argv[1:] if Path(a).suffix.lower() in (".mp4", ".mov")]

@@ -2,6 +2,8 @@
 - 출력 프레임 수 같음 · 프레임마다 화면 차(특히 조각 경계) · 소리 길이 · ◆(색 키프레임) 위치
 - 배속 x1 · x2 · x1/2, 인/아웃 구간, 세로(리프레임)
 사용: python tests/test_chunks.py <작업폴더>"""
+import os as _os0
+_os0.environ.setdefault("DTME_HW", "nvenc")     # GPU 명령 모양 시험(v0.16.48: 그래픽 판별을 건너뜀)
 import os, sys, time
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "app"))
 import numpy as np
