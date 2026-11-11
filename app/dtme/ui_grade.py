@@ -6,7 +6,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QPoint, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QPixmap
 from PySide6.QtWidgets import (QButtonGroup, QComboBox, QFileDialog, QFrame, QHBoxLayout,
                                QLabel, QLineEdit, QListWidget, QListWidgetItem, QMenu, QPushButton,
@@ -21,7 +21,8 @@ from .ui_render import fix_size
 
 BASE = ("base", "")
 N_SAMPLES = 6
-TILE_W, TILE_H = 150, 84
+TILE_W, TILE_H = 320, 180          # v0.16.49: 샘플 창 타일(예전 = 왼쪽 패널 폭에 맞춘 150×84 안팎)
+SMP_COLS = 3
 SIDE_W = 60            # 오른쪽 버튼(저장… · 오디오 · RGB) 폭
 ON_STYLE = ""          # 켜짐 = 앱 기본(파랑, ui_style)
 
@@ -332,8 +333,8 @@ class GradePanel(QWidget):
         s_lens.lay.addLayout(self._row("lens", "렌즈 보정", 72, Qt.AlignRight, "액션캠 외곽 늘어짐 줄이기(가운데를 조금 확대)"))
         s_lens.lay.addLayout(self._row("stab", "흔들림 보정", 72, Qt.AlignRight, "렌더에만 적용"))
 
-        # --- 묶음: 샘플
-        s_smp = Section("samples", "샘플")
+        # --- 샘플(v0.16.49): 왼쪽 패널에서 뺌 → [샘플] 을 누르면 뜨는 창(3×2, 띄워 둔 채 작업).
+        # 1920×1080(125% = 1536×864)에서 왼쪽 패널에 스크롤이 생기던 원인. 창이 닫혀 있으면 샘플 화면을 만들지 않음
         self.samples = QListWidget()
         self.samples.setViewMode(QListWidget.IconMode)
         self.tile = (TILE_W, TILE_H)
@@ -351,8 +352,23 @@ class GradePanel(QWidget):
         self.samples.setStyleSheet("QListWidget{background:#151515; border:none;}")
         self.samples.itemClicked.connect(self._on_sample)
         self.samples.itemDoubleClicked.connect(self._open_sample)
-        s_smp.lay.addWidget(self.samples)
-        self.sections = (s_col, s_det, s_lens, s_smp)
+        self.samples.setFixedSize(SMP_COLS * (TILE_W + 4) + 4, (N_SAMPLES // SMP_COLS) * (TILE_H + 4) + 4)
+        self.smp_win = QWidget(self, Qt.Tool)
+        self.smp_win.setWindowTitle("샘플")
+        self.smp_win.setStyleSheet("background:#151515;")
+        sl = QVBoxLayout(self.smp_win)
+        sl.setContentsMargins(6, 6, 6, 6)
+        sl.addWidget(self.samples)
+        self.smp_win.setFixedSize(self.smp_win.sizeHint())
+        self.smp_win.installEventFilter(self)
+        self.b_smp = QPushButton("샘플 보기")
+        self.b_smp.setCheckable(True)
+        self.b_smp.setFocusPolicy(Qt.NoFocus)
+        self.b_smp.setFixedHeight(22)
+        self.b_smp.setStyleSheet(ui_style.HEAD)
+        self.b_smp.setToolTip("G = 6장 고르기")
+        self.b_smp.clicked.connect(lambda on: self.show_samples(on))
+        self.sections = (s_col, s_det, s_lens)
 
         inner = QVBoxLayout()
         inner.setContentsMargins(4, 4, 4, 4)
@@ -361,6 +377,7 @@ class GradePanel(QWidget):
             inner.addLayout(lay)
         for sct in self.sections:
             inner.addWidget(sct)
+        inner.addWidget(self.b_smp)
         inner.addStretch(1)
         box = QWidget()
         box.setLayout(inner)
@@ -1092,7 +1109,26 @@ class GradePanel(QWidget):
         for k in range(N_SAMPLES):
             p.samples.append(Marker(s.id, int((k + 0.5) / N_SAMPLES * s.frames)))
         self.state.touch("markers")
+        self.show_samples(True)                 # [샘플](G) = 6장 고르고 창을 띄움
         return True
+
+    def show_samples(self, on: bool = True):
+        """샘플 창 열기/닫기. 처음엔 모니터 위(왼쪽 위), 옮기면 그 자리 기억(settings samples_pos)."""
+        from .project import get_setting
+        self.b_smp.setChecked(bool(on))
+        if not on:
+            self.smp_win.hide()
+            return
+        if not self.smp_win.isVisible():
+            pos = get_setting("samples_pos", None)
+            scr = self.window().screen().availableGeometry() if self.window().screen() else None
+            if isinstance(pos, list) and len(pos) == 2 and scr is not None and scr.contains(QPoint(int(pos[0]) + 40, int(pos[1]) + 20)):
+                self.smp_win.move(int(pos[0]), int(pos[1]))
+            else:
+                self.smp_win.move(self.mapToGlobal(QPoint(self.width() + 24, 60)))
+            self.smp_win.show()
+        self.smp_win.raise_()
+        self.refresh_samples()
 
     def refresh_samples(self):
         p = self.state.project
@@ -1101,7 +1137,9 @@ class GradePanel(QWidget):
         gen = self.gen
         raw = self.view_mode() == "raw"
         self.samples.clear()
-        if not s or not s.frames:
+        n = len([m for m in p.samples if s and m.src == s.id])
+        self.b_smp.setText(f"샘플 보기 {n}/{N_SAMPLES}" if n else "샘플 보기")
+        if not s or not s.frames or not self.smp_win.isVisible():      # 창이 닫혀 있음 = 안 만듦(값 바꿀 때마다 6장 만들던 것)
             return
         marks = [m for m in p.samples if m.src == s.id]
         for m in marks:
@@ -1155,6 +1193,20 @@ class GradePanel(QWidget):
         return pix.scaled(self.tile[0] * 2, self.tile[1] * 2, Qt.KeepAspectRatio, Qt.SmoothTransformation)
 
     def eventFilter(self, obj, e):
+        if obj is self.smp_win:
+            if e.type() in (QEvent.Close, QEvent.Hide):
+                self.b_smp.setChecked(False)
+                self.gen += 1                                   # 만들던 샘플 = 버림
+            elif e.type() == QEvent.Move and self.smp_win.isVisible():
+                from .project import set_setting
+                try:
+                    set_setting("samples_pos", [self.smp_win.x(), self.smp_win.y()])
+                except Exception:  # noqa: BLE001
+                    pass
+            elif e.type() == QEvent.KeyPress and e.key() == Qt.Key_Escape:
+                self.show_samples(False)
+                return True
+            return False
         if e.type() == QEvent.Resize and obj is self._scroll.viewport():
             QTimer.singleShot(0, self._fit_tiles)
         elif e.type() == QEvent.LayoutRequest and obj is self._scroll.widget():
@@ -1185,27 +1237,8 @@ class GradePanel(QWidget):
             self.curve.setFixedHeight(ch)
 
     def _fit_tiles(self):
-        """샘플 폭 = 조절 영역 폭. 좁으면 3열×2줄, 넓으면(360px 이상) 2열×3줄."""
+        """(이름만 남음) 패널 크기가 바뀌면 커브 높이를 다시 맞춤. 샘플 타일은 샘플 창에서 고정 크기(v0.16.49)."""
         self._fit_curve()
-        from PySide6.QtWidgets import QStyle
-        sb = self.style().pixelMetric(QStyle.PM_ScrollBarExtent)      # 스크롤바 자리 항상 비워 둠(폭이 흔들리지 않게)
-        avail = max(160, self._scroll.width() - sb - 8)
-        cols = 2 if avail >= 360 else 3
-        tw = (avail - 4 * cols - 4) // cols
-        th = tw * 9 // 16
-        rows = (N_SAMPLES + cols - 1) // cols
-        if (tw, th) == self.tile and self.samples.width() == avail:
-            return
-        self.tile = (tw, th)
-        self.samples.setIconSize(QSize(tw, th))
-        self.samples.setGridSize(QSize(tw + 4, th + 4))
-        self.samples.setFixedSize(cols * (tw + 4) + 4, rows * (th + 4) + 4)
-        for i in range(self.samples.count()):
-            it = self.samples.item(i)
-            it.setSizeHint(QSize(tw + 4, th + 4))
-            pix = self.pix.get(it.data(Qt.UserRole))
-            if pix:
-                it.setIcon(self._icon(pix))
 
     def _on_sample(self, it):
         mid = it.data(Qt.UserRole)

@@ -56,8 +56,7 @@ print(sorted(os.path.basename(x) for x in glob.glob(OUT+"/*")))
 w.grab().save(""+WORK+"/shot_after.png")
 
 # 패널 폭 변경 → 샘플 타일 크기 연동
-w0 = e.grade.tile; e.grade.resize(e.grade.width()+120, e.grade.height()); e.grade._fit_tiles(); wait(0.3)
-print("샘플 타일:", w0, "→", e.grade.tile)
+print("샘플 창:", e.grade.smp_win.isVisible(), e.grade.tile)
 # 쓰기 충돌 재시도
 from dtme import ff
 import tempfile, pathlib
