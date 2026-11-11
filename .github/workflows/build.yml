@@ -157,6 +157,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
           python tests/test_ui_v1641.py
           if ($LASTEXITCODE -ne 0) { exit 1 }
+          python tests/test_ui_presetclose.py
+          if ($LASTEXITCODE -ne 0) { exit 1 }
           # 끝난 뒤 Windows 종료 단계에서 가끔 접근 위반(테스트 내용과 무관, 원인 미확인) → 결과 줄로 판정
           $o = python tests/test_ui_autocheck.py 2>&1 | Out-String
           Write-Output $o

@@ -259,7 +259,7 @@ class Grip(QWidget):
 
 
 class PresetDialog(DragMove, QDialog):
-    """떠 있는 프리셋 창(v0.16.8): 고르면 바로 적용하고 열린 채 그대로. 끌어서 옮김, [프리셋] 다시 누르기·Esc 로 닫힘.
+    """떠 있는 프리셋 창(v0.16.8): 고르면 바로 적용하고 열린 채 그대로. 끌어서 옮김, [프리셋] 다시 누르기·Esc·바깥 클릭(v0.16.44)으로 닫힘.
     picked('auto'|'scene:x'|키|'user:이름'|'base', 강도)."""
     picked = Signal(str, str)
     closed = Signal()
@@ -337,8 +337,39 @@ class PresetDialog(DragMove, QDialog):
             b.setChecked(k == key)
 
     def done(self, r):
+        self._watch(False)
         super().done(r)
         self.closed.emit()
+
+    # v0.16.44 바깥을 누르면 닫힘(사용자: 닫을 방법이 없음). 누른 곳의 동작(슬라이더 등)은 그대로 됨.
+    # [프리셋] 버튼 = 버튼이 알아서 닫음 · 확인 창·우클릭 메뉴가 떠 있는 동안은 안 닫음.
+    def _watch(self, on: bool):
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance()
+        if app is None or on == getattr(self, "_watching", False):
+            return
+        self._watching = on
+        (app.installEventFilter if on else app.removeEventFilter)(self)
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        self._watch(True)
+
+    def hideEvent(self, e):
+        self._watch(False)
+        super().hideEvent(e)
+
+    def eventFilter(self, obj, e):
+        if e.type() == QEvent.MouseButtonPress and self.isVisible():
+            from PySide6.QtCore import QPoint, QRect
+            from PySide6.QtWidgets import QApplication
+            if not (QApplication.activeModalWidget() or QApplication.activePopupWidget()):
+                gp = e.globalPosition().toPoint()
+                btn = getattr(self.parent(), "preset", None)
+                on_btn = btn is not None and QRect(btn.mapToGlobal(QPoint(0, 0)), btn.size()).contains(gp)
+                if not self.frameGeometry().contains(gp) and not on_btn:
+                    QTimer.singleShot(0, lambda: self.isVisible() and self.reject())
+        return False
 
 
 # ------------------------------------------------------------------ AUTO 창 클립 목록
