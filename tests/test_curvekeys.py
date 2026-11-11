@@ -63,7 +63,15 @@ rk3 = r3["gkeys"].get("r_gain")
 print("색 ◆ 빨강:", rk3, "파랑:", r3["gkeys"].get("b_gain"))
 assert rk3 and rk3[0]["f"] == 0 and len([k for k in rk3 if k["f"] <= 5 * FPS]) <= 4
 settle = [k for k in rk3 if k["f"] <= 5 * FPS][-1]
-assert rk3[0]["v"] > settle["v"] * 1.3 and rk3[0]["v"] <= min(2.0, settle["v"] * 1.8 + 1e-3), (rk3[0], settle)
+assert rk3[0]["v"] > settle["v"] * 1.2 and rk3[0]["v"] <= max(settle["v"], min(1.6, settle["v"] * 1.4)) + 1e-3, (rk3[0], settle)
+sk3 = r3["gkeys"].get("sat")                                  # v0.16.42 채도 ◆: 시작 낮게 → 자리 잡은 지점 = 클립 채도
+assert sk3 and sk3[0]["v"] < sk3[-1]["v"] and sk3[0]["v"] >= sk3[-1]["v"] - 0.2 - 1e-6 and sk3[-1]["v"] == r3["grade"]["sat"], sk3
+ck3 = r3["gkeys"].get(CURVE_KEY)                              # 밝기 맞춤: 시작 커브가 클립 커브보다 밝게, γ 0.8 까지만
+assert ck3 and ck3[-1]["f"] >= settle["f"], ck3
+from dtme.project import spline_eval as _se  # noqa: E402
+y0, y1 = _se(ck3[0]["v"], [0.4])[0], _se(curve_at(ck3, settle["f"]), [0.4])[0]
+print("채도 ◆:", sk3, "· 커브 0.4 →", round(y0, 3), "(자리 잡은 뒤", round(y1, 3), ")")
+assert y0 >= y1 - 1e-6
 assert r3["gkeys"]["b_gain"][0]["v"] < [k for k in r3["gkeys"]["b_gain"] if k["f"] == settle["f"]][0]["v"]
 # 색이 안정된 클립 = 색 ◆ 없음
 assert "r_gain" not in auto.recommend([(f, img_c(1.0)) for f in fr], base, "shallow", None, "mid", fps=FPS)["gkeys"]

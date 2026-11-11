@@ -132,7 +132,10 @@ EARLY_WIN = 6.0                   # 이 초 안을 시작 구간으로 봄
 CURVE_TOL = 0.04                  # 시작 구간 밝기 양끝이 뒤쪽과 이만큼 넘게 다르면 커브 ◆
 CURVE_KEYS_MAX = 3
 COLOR_TOL = 0.095                 # v0.16.38 시작 구간 색(빨강/초록·파랑/초록 비, log) 이만큼(≈10%) 넘게 다르면 색 ◆
-COLOR_R_MAX = 1.8                 # 시작 빨강 게인 = 자리 잡은 값의 최대 1.8배(빨강 정보가 적은 화면 노이즈)
+COLOR_R_MAX = 1.4                 # 시작 빨강 게인 = 자리 잡은 값의 최대 1.4배(v0.16.42: 1.8 → 1.4, 빨강 2.0 에서 붉은 노이즈가 보임)
+COLOR_R_TOP = 1.6                 # 시작 빨강 게인 상한(예전 2.0)
+START_SAT_DROP = 0.2              # 빨강을 최대 배율로 올린 ◆ 는 채도를 이만큼 낮춤(붉은 얼룩이 덜 보이게), 배율에 비례
+START_GAMMA_MIN = 0.8             # 덜 올린 빨강만큼 어두운 시작 = 커브로 밝기 맞춤(출력 y^γ), 이보다 더 밝히지 않음(노이즈)
 COLOR_B_RANGE = (0.7, 1.3)
 
 
@@ -404,7 +407,7 @@ def settle_index(frames: list[int], ends: list[tuple[float, float]], fps: float 
     return early[last + 1] if last + 1 < len(early) else late[0]
 
 
-def _start_color_keys(gkeys: dict, frames: list[int], sts: list[dict], g: dict, fps: float | None) -> None:
+def _start_color_keys(gkeys: dict, frames: list[int], sts: list[dict], g: dict, fps: float | None) -> int:
     """v0.16.38 시작 구간 색 ◆: 카메라 화이트밸런스가 자리 잡는 동안(빨강이 점점 늘어남) 빨강·파랑 ◆ 최대 3개
     (인점 · 가운데 1 · 자리 잡은 지점). 값 = 자리 잡은 지점 게인 × (자리 잡은 색 비 / 그 샘플 색 비), 빨강 최대 1.8배·2.0,
     파랑 0.7~1.3배. 자리 잡은 지점 앞의 기존 빨강·파랑 ◆는 이것으로 바꿈, 뒤는 그대로."""
@@ -412,7 +415,7 @@ def _start_color_keys(gkeys: dict, frames: list[int], sts: list[dict], g: dict, 
     lv = [(float(np.log(max(1e-4, x["rg"]))), float(np.log(max(1e-4, x["bg"])))) for x in sts]
     si = settle_index(frames, lv, fps, COLOR_TOL)
     if si <= 0:
-        return
+        return 0
     fs = frames[si]
     rk, bk = gkeys.get("r_gain"), gkeys.get("b_gain")
     r_s = key_at(rk, fs) if rk else float(g["r_gain"])
@@ -428,7 +431,7 @@ def _start_color_keys(gkeys: dict, frames: list[int], sts: list[dict], g: dict, 
 
     def rv(i):
         k = float(np.exp(lv[si][0] - lv[i][0]))
-        return round(min(2.0, r_s * min(COLOR_R_MAX, max(1 / COLOR_R_MAX, k))), 3)
+        return round(min(max(COLOR_R_TOP, r_s), r_s * min(COLOR_R_MAX, max(1 / COLOR_R_MAX, k))), 3)
 
     def bv(i):
         k = float(np.exp(lv[si][1] - lv[i][1]))
@@ -437,6 +440,50 @@ def _start_color_keys(gkeys: dict, frames: list[int], sts: list[dict], g: dict, 
         keep = [x for x in (cur or []) if x["f"] > fs]
         new = [{"f": frames[i], "v": fn(i)} for i in idx] + [{"f": fs, "v": round(val_s, 3)}]
         gkeys[key] = new + keep
+    # v0.16.42 채도 ◆: 빨강을 올린 만큼 채도를 낮춤(자리 잡은 지점 = 클립 채도). 기존 채도 ◆ 가 있으면 건드리지 않음
+    if not gkeys.get("sat") and r_s > 0:
+        sat_s = float(g.get("sat", 1.0))
+        sk = [{"f": frames[i], "v": round(sat_s - START_SAT_DROP * max(0.0, min(1.0, (rv(i) / r_s - 1) / (COLOR_R_MAX - 1))), 3)}
+              for i in idx]
+        if any(sat_s - k["v"] > 0.02 for k in sk):
+            gkeys["sat"] = sk + [{"f": fs, "v": round(sat_s, 3)}]
+    return si
+
+
+def _lit_luma(a: np.ndarray, r: float, b: float, curve: list) -> float:
+    """게인 + 커브 뒤 밝기 중앙값."""
+    from .project import spline_eval
+    xs = np.linspace(0, 1, 256)
+    lut = np.array(spline_eval(curve, xs.tolist()), np.float32)
+    x = np.clip(a * np.array([r, 1.0, b], np.float32), 0, 1)
+    return float(np.median(luma(np.interp(x, xs, lut))))
+
+
+def _start_luma_keys(gkeys: dict, samples: list, si: int, g: dict) -> None:
+    """v0.16.42 시작 구간 밝기(사용자 '커브로 명도 조절'): 빨강을 덜 올린 만큼 시작이 어두움 → 시작 ◆ 위치마다
+    (게인 + 커브 뒤) 밝기 중앙값을 자리 잡은 지점에 맞추는 γ(출력 y^γ, START_GAMMA_MIN~1 = 밝히는 쪽만)를 커브 ◆ 에 넣음.
+    커브 ◆ 가 없으면 색 ◆ 위치에 만듦. 자리 잡은 지점 뒤 커브 ◆ 는 그대로."""
+    from .project import CURVE_KEY, curve_at, key_at
+    by = {f: a for f, a in samples}
+    fs = samples[si][0]
+    val = lambda k, f: key_at(gkeys.get(k) or [], f) or float(g[k])     # noqa: E731
+    cur = gkeys.get(CURVE_KEY) or []
+    target = _lit_luma(by[fs], val("r_gain", fs), val("b_gain", fs), curve_at(cur, fs) or g["curve"])
+    at = sorted({k["f"] for k in gkeys.get("r_gain", []) if k["f"] < fs} | {k["f"] for k in cur if k["f"] < fs})
+    new = []
+    for f in at:
+        if f not in by:
+            continue
+        c = curve_at(cur, f) or [list(q) for q in g["curve"]]
+        now = _lit_luma(by[f], val("r_gain", f), val("b_gain", f), c)
+        gm = 1.0
+        if 0.01 < now < target < 0.99:
+            gm = max(START_GAMMA_MIN, float(np.log(target) / np.log(now)))
+        new.append({"f": f, "v": [[x, round(float(y) ** gm, 4)] for x, y in c] if gm < 0.985 else c})
+    if not new or all(k["v"] == (curve_at(cur, k["f"]) or g["curve"]) for k in new) and not cur:
+        return
+    tail = [k for k in cur if k["f"] >= fs] or [{"f": fs, "v": [list(q) for q in g["curve"]]}]
+    gkeys[CURVE_KEY] = new + tail
 
 
 def recommend(samples: list[tuple[int, np.ndarray]], base: dict, scene: str | None = None, subject: str | None = None,
@@ -482,7 +529,7 @@ def recommend(samples: list[tuple[int, np.ndarray]], base: dict, scene: str | No
             idx = [idx[int(round(i * (len(idx) - 1) / 5))] for i in range(6)]
         gkeys = {"r_gain": [{"f": frames[i], "v": round(rs[i], 3)} for i in idx],
                  "b_gain": [{"f": frames[i], "v": round(bs[i], 3)} for i in idx]}
-    _start_color_keys(gkeys, frames, sts, g, fps)
+    csi = _start_color_keys(gkeys, frames, sts, g, fps)
     if si > 0:          # v0.16.34 커브 ◆: 인점 · (가운데 1개) · 안정 지점(= 클립 커브), 최대 3개. 뒤는 클립 커브 그대로
         ck = [0]
         if si >= 2 and CURVE_KEYS_MAX >= 3:
@@ -493,6 +540,8 @@ def recommend(samples: list[tuple[int, np.ndarray]], base: dict, scene: str | No
             if dev(j) > CURVE_TOL:
                 ck.append(j)
         gkeys["curve"] = [{"f": frames[i], "v": mk(*ends[i])} for i in ck] + [{"f": frames[si], "v": g["curve"]}]
+    if csi > 0:
+        _start_luma_keys(gkeys, samples, csi, g)
     return {"grade": g, "gkeys": gkeys, "scene": sc, "subject": sb, "preset": sc}
 
 
