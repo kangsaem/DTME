@@ -862,6 +862,7 @@ class EditTab(QWidget):
         (예전 = 손을 멈추고 0.25초 뒤에야 바뀜). 샘플 타일·타임라인은 예전처럼 멈춘 뒤."""
         if self._live_busy:
             self._live_pending = True
+            ff.dbg("끄는 중: 앞 작업이 안 끝남 → 대기")
             return
         self._live_busy = True
         if not self.request_preview(live=True):
@@ -878,8 +879,10 @@ class EditTab(QWidget):
         s = self._cur()
         p = self.player
         if not s or not s.frames or p.is_busy() or (not self.window().isVisible() and not getattr(self, "_allow_hidden", False)):   # 숨김 = 안 만듦([보정+편집] 누른 뒤는 미리)
+            ff.dbg(f"요청 안 함: 소스={bool(s)} 재생={p.is_playing()} 뒤로={p._back.isActive()} 창={self.window().isVisible()}")
             return False
         if not self.chk_preview.isChecked() and p.has_media:
+            ff.dbg("요청 안 함: 정지 시 보정 화면 꺼짐")
             p.overlay_frame = None
             p.mon.set_before(None)
             p._grab(p.frame)
@@ -895,15 +898,22 @@ class EditTab(QWidget):
             hit = PREVIEW_LRU.get(key)
             if hit is not None:                  # 같은 프레임·같은 보정은 다시 안 만듦
                 PREVIEW_LRU.move_to_end(key)
+        gs = " ".join(f"{k}={full.get(k)}" for k in ("r_gain", "b_gain", "hue", "sat", "water", "gy"))
+        ff.dbg(f"요청 #{gen} f={frame} 보기={mode} 끄는중={int(live)} 소스={s.id} 패널소스={self.grade.cur_sid} 패널f={self.grade.frame} "
+               f"기억={int(hit is not None)} 대기열={jobs.PREVIEW_POOL.activeThreadCount()} | {gs}")
         if hit is not None:
             self._on_preview(gen, frame, tok, hit)
             return False
 
         def work():
             if gen != self.pgen:                 # 기다리는 사이 다른 화면을 요청함 = 안 만듦(ffmpeg 를 헛돌리지 않음, v0.16.40)
+                ff.dbg(f"작업 #{gen} 건너뜀(지금 #{self.pgen})")
                 return None
+            ff.dbg(f"작업 #{gen} 시작")
             c = ff.cached_frame(s, frame)
+            ff.dbg(f"작업 #{gen} 입력 준비({c.fmt})")
             out = ff.render_preview(c, grade)
+            ff.dbg(f"작업 #{gen} 끝 {len(out)}B")
             res = (out, ff.render_preview(c, ff.lut_only(full))) if mode == "split" else (out, None)
             with PREVIEW_LOCK:                   # 작업 스레드 여러 개가 같이 씀
                 PREVIEW_LRU[key] = res
@@ -966,7 +976,9 @@ class EditTab(QWidget):
     def _on_preview(self, gen, frame, tok, data, quick: bool = False):
         p = self.player
         if gen != self.pgen or frame != p.frame or tok != p._token or p.is_busy():
+            ff.dbg(f"표시 버림 #{gen}: 지금 #{self.pgen} f {frame}/{p.frame} 표 {int(tok == p._token)} 재생 {int(p.is_busy())} 빠른={int(quick)}")
             return
+        ff.dbg(f"표시 #{gen} f={frame} 빠른={int(quick)}")
         if not quick:
             self._full_shown = gen
         img, before = data

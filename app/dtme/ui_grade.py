@@ -997,6 +997,14 @@ class GradePanel(QWidget):
         self._write(key, value)
         self.state.dirty = True
         self._update_labels()
+        try:                                        # 진단(v0.16.43): 쓴 값이 미리보기가 읽는 값에 들어갔는지
+            if key != "curve":
+                s = self._src()
+                rd = self.state.project.grade_for_source(self.cur_sid, self.frame).get(key) if self.cur_sid else None
+                ff.dbg(f"값 {key}={value} 끌기={int(slider)} 대상={self.target[0]} 소스={self.cur_sid} f={self.frame} "
+                       f"읽힘={rd} ◆={len(s.gkeys.get(key) or []) if s else '-'} 끔={list(getattr(s, 'off', []) or []) if s else '-'}")
+        except Exception as e:  # noqa: BLE001
+            ff.dbg(f"값 기록 실패 {e}")
         if slider:
             self.liveChanged.emit()
             self._debounce.start()
@@ -1014,6 +1022,7 @@ class GradePanel(QWidget):
         self._emit_change()
 
     def _emit_change(self):
+        ff.dbg("값 바뀜 알림(멈춘 뒤)")
         self.state.changed.emit("grade")
         self.gradeChanged.emit()
         self.refresh_samples()

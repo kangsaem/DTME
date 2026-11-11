@@ -499,6 +499,19 @@ def replace_retry(src, dst, tries: int = 60) -> None:
 
 
 LOG_MAX = 2 << 20
+_dbg_last = ["", 0]
+
+
+def dbg(msg: str) -> None:
+    """진단 기록(v0.16.43, 미리보기가 안 바뀌는 문제 추적용 — 원인을 찾으면 뺌). 같은 줄이 이어지면 횟수만."""
+    if msg == _dbg_last[0]:
+        _dbg_last[1] += 1
+        if _dbg_last[1] % 50:
+            return
+        msg = f"{msg} (×{_dbg_last[1]})"
+    else:
+        _dbg_last[:] = [msg, 0]
+    log_error("진단", f"[{threading.current_thread().name}] {msg}")
 
 
 def log_trim() -> None:
