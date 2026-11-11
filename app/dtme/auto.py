@@ -135,9 +135,10 @@ COLOR_TOL = 0.095                 # v0.16.38 시작 구간 색(빨강/초록·�
 COLOR_R_MAX = 1.4                 # 시작 빨강 게인 = 자리 잡은 값의 최대 1.4배(v0.16.42: 1.8 → 1.4, 빨강 2.0 에서 붉은 노이즈가 보임)
 COLOR_R_TOP = 1.6                 # 시작 빨강 게인 상한(예전 2.0)
 START_SAT_DROP = 0.2              # 빨강을 최대 배율로 올린 ◆ 는 채도를 이만큼 낮춤(붉은 얼룩이 덜 보이게), 배율에 비례
-WATER_PER_DEG = 0.65              # 물빛 1 = 물 색상각 약 0.65°(0958 렌더 실측: +10 → +6.5°, +20 → +13°)
-START_WATER_MAX = 16              # 시작 ◆ 물빛은 클립 값 + 이만큼까지(v0.16.45, 사용자: 시작의 녹색 물만 잡기 — 빨강 한계는 그대로)
-START_WATER_MIN = 3               # 이보다 작은 차이는 ◆ 안 만듦
+HUE_PER_DEG = 0.33                # 색조 1 = 물 색상각 약 0.33°(0958 렌더 실측: +10 → +3.3°, +30 → +10°)
+START_HUE_MAX = 18                # 시작 ◆ 색조는 클립 값 + 이만큼까지(v0.16.46, 사용자 ④: 색조 +18 + 커브. 물빛 ◆(v0.16.45)는 얼룩·어두워짐으로 뺌)
+START_HUE_MIN = 3                 # 이보다 작은 차이는 ◆ 안 만듦
+HUE_GAMMA = 0.0038                # 색조 1 올릴 때 어두워지는 만큼 커브 γ 를 이만큼 낮춤(실측: +10 → 0.96, +18 → 0.93, +28 → 0.90)
 START_GAMMA_MIN = 0.8             # 덜 올린 빨강만큼 어두운 시작 = 커브로 밝기 맞춤(출력 y^γ), 이보다 더 밝히지 않음(노이즈)
 COLOR_B_RANGE = (0.7, 1.3)
 
@@ -461,18 +462,18 @@ def _start_color_keys(gkeys: dict, frames: list[int], sts: list[dict], g: dict, 
               for i in idx]
         if any(sat_s - k["v"] > 0.02 for k in sk):
             gkeys["sat"] = sk + [{"f": fs, "v": round(sat_s, 3)}]
-    # v0.16.45 물빛 ◆: 빨강을 한계까지 올려도 시작의 물이 녹색 쪽(색상각이 작음)이면 그만큼 물빛을 파랑 쪽으로.
-    # 물만 돌림(피부·산호 그대로), 어두운 곳이 붉어지지 않음. 자리 잡은 지점 = 클립 물빛
-    if samples is not None and not gkeys.get("water"):
-        w_s = float(g.get("water", 0))
+    # v0.16.46 색조 ◆(사용자 ④): 빨강을 한계까지 올려도 시작의 물이 녹색 쪽(색상각이 작음)이면 그만큼 색조를 파랑·보라 쪽으로,
+    # 최대 +18. 어두워지는 만큼은 _start_luma_keys 가 커브로 밝힘. 자리 잡은 지점 = 클립 색조
+    if samples is not None and not gkeys.get("hue"):
+        u_s = float(g.get("hue", 0))
         h_s = water_hue(samples[si][1], r_s, b_s)
-        wk = []
+        hk = []
         for i in idx:
             h_i = water_hue(samples[i][1], rv(i), bv(i)) if h_s is not None else None
-            d = (h_s - h_i) / WATER_PER_DEG if h_i is not None else 0.0
-            wk.append({"f": frames[i], "v": round(w_s + max(0.0, min(float(START_WATER_MAX), d)), 1)})
-        if any(k["v"] - w_s >= START_WATER_MIN for k in wk):
-            gkeys["water"] = wk + [{"f": fs, "v": round(w_s, 1)}]
+            d = (h_s - h_i) / HUE_PER_DEG if h_i is not None else 0.0
+            hk.append({"f": frames[i], "v": round(min(30.0, u_s + max(0.0, min(float(START_HUE_MAX), d))), 1)})
+        if any(k["v"] - u_s >= START_HUE_MIN for k in hk):
+            gkeys["hue"] = hk + [{"f": fs, "v": round(u_s, 1)}]
     return si
 
 
@@ -504,7 +505,9 @@ def _start_luma_keys(gkeys: dict, samples: list, si: int, g: dict) -> None:
         now = _lit_luma(by[f], val("r_gain", f), val("b_gain", f), c)
         gm = 1.0
         if 0.01 < now < target < 0.99:
-            gm = max(START_GAMMA_MIN, float(np.log(target) / np.log(now)))
+            gm = float(np.log(target) / np.log(now))
+        du = (key_at(gkeys.get("hue") or [], f) or float(g.get("hue", 0))) - float(g.get("hue", 0))
+        gm = max(START_GAMMA_MIN, gm * (1 - HUE_GAMMA * max(0.0, du)))      # 색조를 돌린 만큼 어두워짐 → 더 밝힘
         new.append({"f": f, "v": [[x, round(float(y) ** gm, 4)] for x, y in c] if gm < 0.985 else c})
     if not new or all(k["v"] == (curve_at(cur, k["f"]) or g["curve"]) for k in new) and not cur:
         return

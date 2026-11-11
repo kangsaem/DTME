@@ -73,7 +73,7 @@ y0, y1 = _se(ck3[0]["v"], [0.4])[0], _se(curve_at(ck3, settle["f"]), [0.4])[0]
 print("채도 ◆:", sk3, "· 커브 0.4 →", round(y0, 3), "(자리 잡은 뒤", round(y1, 3), ")")
 assert y0 >= y1 - 1e-6
 assert r3["gkeys"]["b_gain"][0]["v"] < [k for k in r3["gkeys"]["b_gain"] if k["f"] == settle["f"]][0]["v"]
-# v0.16.45 물빛 ◆: 시작의 물이 녹색 쪽(초록이 많음) → 시작 물빛 > 클립 물빛(최대 +16), 자리 잡은 지점 = 클립 물빛
+# v0.16.46 색조 ◆(물빛 ◆ 대신): 시작의 물이 녹색 쪽 → 시작 색조 > 클립 색조(최대 +18), 자리 잡은 지점 = 클립 색조, 커브는 그만큼 더 밝게
 def img_g(rk):
     a = rng.random((90, 160, 3)).astype(np.float32) * 0.3 + 0.35
     return np.clip(a * np.array([0.5 * rk, 1.0 + 0.25 * (1 - rk), 1.25], np.float32), 0, 1)
@@ -81,10 +81,16 @@ def img_g(rk):
 
 smp4 = [(f, img_g(ramp.get(round(f / FPS * 2) / 2, 1.0))) for f in fr]
 r4 = auto.recommend(smp4, base, "shallow", None, "mid", fps=FPS)
-wk4 = r4["gkeys"].get("water")
-print("물빛 ◆:", wk4, "· 빨강", r4["gkeys"].get("r_gain"))
-assert wk4 and wk4[-1]["v"] == r4["grade"]["water"] and r4["grade"]["water"] < wk4[0]["v"] <= r4["grade"]["water"] + 16, wk4
+hk4 = r4["gkeys"].get("hue")
+print("색조 ◆:", hk4, "· 빨강", r4["gkeys"].get("r_gain"))
+assert hk4 and hk4[-1]["v"] == r4["grade"]["hue"] and r4["grade"]["hue"] < hk4[0]["v"] <= r4["grade"]["hue"] + 18, hk4
+assert "water" not in r4["gkeys"]
 assert max(k["v"] for k in r4["gkeys"]["r_gain"]) <= 1.6 + 1e-6                 # 빨강 한계 그대로
+ck4 = r4["gkeys"][CURVE_KEY]
+old_g = auto.HUE_GAMMA; auto.HUE_GAMMA = 0.0
+ck4n = auto.recommend(smp4, base, "shallow", None, "mid", fps=FPS)["gkeys"][CURVE_KEY]
+auto.HUE_GAMMA = old_g
+assert _se(ck4[0]["v"], [0.4])[0] > _se(ck4n[0]["v"], [0.4])[0], "색조를 돌린 만큼 커브가 더 밝아야"
 assert auto.water_hue(np.full((4, 4, 3), 0.5, np.float32), 1, 1) is None        # 물 없음 = 판단 안 함
 # 흔들림 보정 한계: 블루워터 끔 · 산호 100 · 나머지 50 (저장된 값이 커도 자름)
 from dtme.project import Project, stab_limit  # noqa: E402
