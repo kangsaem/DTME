@@ -135,10 +135,6 @@ COLOR_TOL = 0.095                 # v0.16.38 시작 구간 색(빨강/초록·�
 COLOR_R_MAX = 1.4                 # 시작 빨강 게인 = 자리 잡은 값의 최대 1.4배(v0.16.42: 1.8 → 1.4, 빨강 2.0 에서 붉은 노이즈가 보임)
 COLOR_R_TOP = 1.6                 # 시작 빨강 게인 상한(예전 2.0)
 START_SAT_DROP = 0.2              # 빨강을 최대 배율로 올린 ◆ 는 채도를 이만큼 낮춤(붉은 얼룩이 덜 보이게), 배율에 비례
-HUE_PER_DEG = 0.33                # 색조 1 = 물 색상각 약 0.33°(0958 렌더 실측: +10 → +3.3°, +30 → +10°)
-START_HUE_MAX = 18                # 시작 ◆ 색조는 클립 값 + 이만큼까지(v0.16.46, 사용자 ④: 색조 +18 + 커브. 물빛 ◆(v0.16.45)는 얼룩·어두워짐으로 뺌)
-START_HUE_MIN = 3                 # 이보다 작은 차이는 ◆ 안 만듦
-HUE_GAMMA = 0.0038                # 색조 1 올릴 때 어두워지는 만큼 커브 γ 를 이만큼 낮춤(실측: +10 → 0.96, +18 → 0.93, +28 → 0.90)
 START_GAMMA_MIN = 0.8             # 덜 올린 빨강만큼 어두운 시작 = 커브로 밝기 맞춤(출력 y^γ), 이보다 더 밝히지 않음(노이즈)
 COLOR_B_RANGE = (0.7, 1.3)
 
@@ -411,18 +407,7 @@ def settle_index(frames: list[int], ends: list[tuple[float, float]], fps: float 
     return early[last + 1] if last + 1 < len(early) else late[0]
 
 
-def water_hue(a: np.ndarray, r: float, b: float) -> float | None:
-    """게인 뒤 물(파랑~청록, 채도 0.2 넘음) 평균색의 색상각(°). 물이 화면의 5% 미만이면 None."""
-    x = np.clip(a * np.array([r, 1.0, b], np.float32), 0, 1)
-    h, s = hue_sat(x)
-    m = (h >= 150) & (h <= 260) & (s > 0.2)
-    if m.mean() < 0.05:
-        return None
-    c = x[m].mean(0).reshape(1, 1, 3)
-    return float(hue_sat(c)[0][0, 0])
-
-
-def _start_color_keys(gkeys: dict, frames: list[int], sts: list[dict], g: dict, fps: float | None, samples=None) -> int:
+def _start_color_keys(gkeys: dict, frames: list[int], sts: list[dict], g: dict, fps: float | None) -> int:
     """v0.16.38 시작 구간 색 ◆: 카메라 화이트밸런스가 자리 잡는 동안(빨강이 점점 늘어남) 빨강·파랑 ◆ 최대 3개
     (인점 · 가운데 1 · 자리 잡은 지점). 값 = 자리 잡은 지점 게인 × (자리 잡은 색 비 / 그 샘플 색 비), 빨강 최대 1.8배·2.0,
     파랑 0.7~1.3배. 자리 잡은 지점 앞의 기존 빨강·파랑 ◆는 이것으로 바꿈, 뒤는 그대로."""
@@ -462,18 +447,7 @@ def _start_color_keys(gkeys: dict, frames: list[int], sts: list[dict], g: dict, 
               for i in idx]
         if any(sat_s - k["v"] > 0.02 for k in sk):
             gkeys["sat"] = sk + [{"f": fs, "v": round(sat_s, 3)}]
-    # v0.16.46 색조 ◆(사용자 ④): 빨강을 한계까지 올려도 시작의 물이 녹색 쪽(색상각이 작음)이면 그만큼 색조를 파랑·보라 쪽으로,
-    # 최대 +18. 어두워지는 만큼은 _start_luma_keys 가 커브로 밝힘. 자리 잡은 지점 = 클립 색조
-    if samples is not None and not gkeys.get("hue"):
-        u_s = float(g.get("hue", 0))
-        h_s = water_hue(samples[si][1], r_s, b_s)
-        hk = []
-        for i in idx:
-            h_i = water_hue(samples[i][1], rv(i), bv(i)) if h_s is not None else None
-            d = (h_s - h_i) / HUE_PER_DEG if h_i is not None else 0.0
-            hk.append({"f": frames[i], "v": round(min(30.0, u_s + max(0.0, min(float(START_HUE_MAX), d))), 1)})
-        if any(k["v"] - u_s >= START_HUE_MIN for k in hk):
-            gkeys["hue"] = hk + [{"f": fs, "v": round(u_s, 1)}]
+    # 물빛 ◆(v0.16.45)·색조 ◆(v0.16.46)는 뺌(v0.16.47, 사용자: 돌릴수록 맨 앞 노이즈·보라 얼룩 — 시작의 약한 녹색은 그대로 둠)
     return si
 
 
@@ -505,9 +479,7 @@ def _start_luma_keys(gkeys: dict, samples: list, si: int, g: dict) -> None:
         now = _lit_luma(by[f], val("r_gain", f), val("b_gain", f), c)
         gm = 1.0
         if 0.01 < now < target < 0.99:
-            gm = float(np.log(target) / np.log(now))
-        du = (key_at(gkeys.get("hue") or [], f) or float(g.get("hue", 0))) - float(g.get("hue", 0))
-        gm = max(START_GAMMA_MIN, gm * (1 - HUE_GAMMA * max(0.0, du)))      # 색조를 돌린 만큼 어두워짐 → 더 밝힘
+            gm = max(START_GAMMA_MIN, float(np.log(target) / np.log(now)))
         new.append({"f": f, "v": [[x, round(float(y) ** gm, 4)] for x, y in c] if gm < 0.985 else c})
     if not new or all(k["v"] == (curve_at(cur, k["f"]) or g["curve"]) for k in new) and not cur:
         return
@@ -558,7 +530,7 @@ def recommend(samples: list[tuple[int, np.ndarray]], base: dict, scene: str | No
             idx = [idx[int(round(i * (len(idx) - 1) / 5))] for i in range(6)]
         gkeys = {"r_gain": [{"f": frames[i], "v": round(rs[i], 3)} for i in idx],
                  "b_gain": [{"f": frames[i], "v": round(bs[i], 3)} for i in idx]}
-    csi = _start_color_keys(gkeys, frames, sts, g, fps, samples)
+    csi = _start_color_keys(gkeys, frames, sts, g, fps)
     if si > 0:          # v0.16.34 커브 ◆: 인점 · (가운데 1개) · 안정 지점(= 클립 커브), 최대 3개. 뒤는 클립 커브 그대로
         ck = [0]
         if si >= 2 and CURVE_KEYS_MAX >= 3:
