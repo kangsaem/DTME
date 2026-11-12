@@ -387,6 +387,8 @@ class RenderPanel(QWidget):
         self.progress: dict[str, float] = {}
         self.queue: list = []
         self.active: dict = {}           # 렌더 중인 항목 id → 출력 경로(코어 수만큼 동시, jobs.RENDER_N)
+        self.jobs: dict = {}             # 렌더 중인 항목 id → Job(전체 취소용, v0.16.54)
+        self.cancelled = False           # 이번 렌더를 [렌더] 버튼으로 멈춤
         self.running = False
 
         self.table = QListWidget()      # 이름은 table 유지(키 입력 필터에서 사용)
@@ -410,7 +412,7 @@ class RenderPanel(QWidget):
         self.b_render.setFixedSize(MAIN_W, MAIN_H)
         self.b_render.setFocusPolicy(Qt.NoFocus)
         ui_style.tone(self.b_render, "red")
-        self.b_render.clicked.connect(self.render)
+        self.b_render.clicked.connect(self.press)
         self.dlg = RenderSettingsDialog(state, self)
         self.settings = self.dlg.settings
         self.b_down = QPushButton("▼")             # v0.16.25: 미리보기 렌더 자리 → 소스 목록에서 선택한 것을 렌더 리스트로
@@ -504,7 +506,53 @@ class RenderPanel(QWidget):
                 p.snap_seg(g)
         self.state.touch("render")
 
+    def press(self):
+        """[렌더] 버튼(v0.16.54, MOSCO v0.7.80 과 같음): 렌더 중 = 전체 취소 / 아니면 저장폴더를 매번 묻고 시작."""
+        if self.running:
+            self.cancel_all()
+            return
+        if not self._ask_folder():
+            return
+        self.render()
+
+    def _ask_folder(self) -> bool:
+        """[렌더] 누를 때마다 저장폴더를 물어봄(지난 폴더를 처음 위치로). 취소 = False."""
+        from .project import get_setting, set_setting
+        p = self.state.project
+        o = p.output
+        start = (o.folder.strip() or get_setting("last_folder", "")
+                 or (str(Path(p.sources[0].path).parent) if p.sources else ""))
+        d = QFileDialog.getExistingDirectory(self, "저장폴더 선택", start)
+        if not d:
+            return False
+        if o.folder != d:
+            o.folder = d
+            self.state.dirty = True
+            self.state.changed.emit("output")
+        try:
+            set_setting("last_folder", d)
+        except Exception:  # noqa: BLE001
+            pass
+        return True
+
+    def cancel_all(self):
+        """진행 중·대기 중 렌더를 모두 멈춤(완료분은 그대로). 끝나면 _next 가 버튼을 되돌림."""
+        if not self.running:
+            return
+        self.cancelled = True
+        for it in self.queue:                         # 아직 시작 안 한 것
+            self.status.pop(it.id, None)
+            self.progress.pop(it.id, None)
+        self.run_items = [x for x in self.run_items if x not in self.queue]
+        self.queue = []
+        for j in list(self.jobs.values()):
+            j.cancel.set()
+        self.message.emit("렌더 취소 중…")
+        self.refresh()
+        self._next()
+
     def render(self):
+        """렌더 시작(폴더는 비어 있을 때만 물음 — AUTO·코드 경로). 버튼은 press()."""
         if self.running:
             return
         if not ensure_folder(self, self.state):
@@ -517,6 +565,7 @@ class RenderPanel(QWidget):
             self.message.emit("새 항목 없음")
             return
         self.running = True
+        self.cancelled = False
         self.run_items = list(self.queue)
         self.run_t0 = time.time()
         self.run_ok, self.run_bad = set(), set()
@@ -546,6 +595,8 @@ class RenderPanel(QWidget):
             self.running = False
             self.b_render.setToolTip("")
             self.b_render.set_progress(None)
+            if self.cancelled:
+                self.message.emit("렌더 취소")
             self.runFinished.emit(len(self.run_ok), len(self.run_bad), time.time() - self.run_t0,
                                   str(out_dir(self.state.project)))
 
@@ -575,7 +626,7 @@ class RenderPanel(QWidget):
         text = f"{k}/{n} · {int(frac * 100)}%"
         left = self._left_text(frac)
         self.b_render.set_progress(frac, text, bool(self.run_bad))
-        self.b_render.setToolTip(f"남은 시간 {left}" if left else "")
+        self.b_render.setToolTip((f"남은 시간 {left} · " if left else "렌더 중 · ") + "누르면 취소")
         self.runProgress.emit(frac, f"{text} · 남은 {left}" if left else text, bool(self.run_bad))      # 창 제목
 
     def _left_text(self, frac: float) -> str:
@@ -603,6 +654,7 @@ class RenderPanel(QWidget):
             precache_item(p, it, cancel)               # v0.16.26: HDD 원본을 순서대로 한 번 읽어 메모리에(조각들이 거기서 읽음)
             ff.render_video(p, it.segs, str(path), prog, cancel, it.orientation, it.audio, extras=extras)
         job = jobs.Job(work, with_progress=True)
+        self.jobs[it.id] = job
         if self.queue:                                 # 다음 항목도 뒤에서 미리 읽기
             nxt = self.queue[0]
             jobs.submit(jobs.PRECACHE_POOL, jobs.Job(lambda nxt=nxt: precache_item(p, nxt)))
@@ -615,6 +667,7 @@ class RenderPanel(QWidget):
 
         def done(_r, iid=it.id, item=it):
             self.active.pop(iid, None)
+            self.jobs.pop(iid, None)
             self.status[iid] = f"완료 {time.time() - t0:.0f}초 → {path}"
             ff.log_info(f"렌더 {time.time() - t0:.1f}초 (동시 {jobs.RENDER_N}, 코어 {jobs.CORES}) {path}")
             item.done = str(path)                 # 프로젝트에 저장 → 다시 열어도 완료
@@ -627,6 +680,19 @@ class RenderPanel(QWidget):
 
         def err(msg, iid=it.id):
             self.active.pop(iid, None)
+            j = self.jobs.pop(iid, None)
+            if j is not None and j.cancel.is_set():       # [렌더] 로 멈춤 = 실패 아님, 만들다 만 파일은 지움
+                self.status[iid] = "취소"
+                self.progress.pop(iid, None)
+                try:
+                    Path(path).unlink(missing_ok=True)
+                except OSError:
+                    pass
+                self.run_items = [x for x in self.run_items if x.id != iid]
+                self.refresh()
+                self.itemProgress.emit(iid, 1.0, bool(self.queue or self.active))
+                self._next()
+                return
             hint = " (인코더를 x264로)" if "nvenc" in msg.lower() else ""
             self.status[iid] = f"실패{hint}: {msg[-300:]}"
             self.run_bad.add(iid)

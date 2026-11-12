@@ -259,13 +259,15 @@ class Grip(QWidget):
 
 
 class PresetDialog(DragMove, QDialog):
-    """떠 있는 프리셋 창(v0.16.8): 고르면 바로 적용하고 열린 채 그대로. 끌어서 옮김, [프리셋] 다시 누르기·Esc·바깥 클릭(v0.16.44)으로 닫힘.
-    picked('auto'|'scene:x'|키|'user:이름'|'base', 강도)."""
+    """떠 있는 프리셋 창(v0.16.54 = MOSCO v0.7.76·78 방식): 항상 위 · 열면 아무것도 안 골라짐 · 누르면 고르기만 →
+    [적용] 을 눌러야 적용(창은 그대로) · 닫기 = ✕ 또는 [프리셋] 다시 누르기뿐(Esc·바깥 클릭 무시) · 고른 클립이 바뀌면 따라감.
+    picked('auto'|'scene:x'|키|'user:이름'|'base', 강도) = [적용] 때 1번."""
     picked = Signal(str, str)
     closed = Signal()
 
     def __init__(self, base: dict, current: str = "", strength: str = "mid", parent=None):
-        super().__init__(parent, Qt.Tool | Qt.FramelessWindowHint)
+        super().__init__(parent, Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.pending = None                       # 고른 것(아직 적용 안 함)
         self.base = base
         self.setModal(False)
         self.setObjectName("PresetDialog")
@@ -273,9 +275,21 @@ class PresetDialog(DragMove, QDialog):
         v = QVBoxLayout(self)
         v.setContentsMargins(16, 4, 16, 16)
         v.setSpacing(12)
-        v.addWidget(Grip())                       # 맨 위 손잡이 줄 = 잡고 끌어 옮김(빈 바탕도 됨)
+        top = QHBoxLayout()
+        top.setContentsMargins(20, 0, 0, 0)       # 왼쪽 20 = ✕ 폭(손잡이 점이 가운데 오게)
+        top.setSpacing(0)
+        top.addWidget(Grip(), 1)                  # 맨 위 손잡이 줄 = 잡고 끌어 옮김(빈 바탕도 됨)
+        self.b_x = QPushButton("✕")
+        self.b_x.setObjectName("x")
+        self.b_x.setFixedSize(20, 20)
+        self.b_x.setFocusPolicy(Qt.NoFocus)
+        self.b_x.setFlat(True)
+        self.b_x.setStyleSheet("#x{background:transparent; border:none; color:#cfcfcf;} #x:hover{background:#c0392b; color:#fff;}")
+        self.b_x.clicked.connect(self.close)
+        top.addWidget(self.b_x)
+        v.addLayout(top)
         self.grid = PresetGrid()
-        self.grid.set_current(current)
+        self.grid.set_current("")
         v.addWidget(self.grid)                    # 왼쪽 여백 = 오른쪽(16), 강도 글자 없음(사용자 2026-11-07)
         v.addWidget(self._line())
         self.strength = Seg([("weak", "약"), ("mid", "중"), ("strong", "강")], strength)
@@ -294,7 +308,6 @@ class PresetDialog(DragMove, QDialog):
             b.setFocusPolicy(Qt.NoFocus)
             b.setCheckable(True)
             b.setStyleSheet(ON_BTN)
-            b.setChecked(current == ("base" if name == "기본값" else f"user:{name}"))
             key = "base" if name == "기본값" else f"user:{name}"
             b.clicked.connect(lambda _=False, k=key: self._pick(k))
             if key != "base":
@@ -304,6 +317,20 @@ class PresetDialog(DragMove, QDialog):
             ul.addWidget(b)
         ul.addStretch(1)
         v.addLayout(ul)
+        v.addWidget(self._line())
+        bl = QHBoxLayout()
+        bl.setSpacing(8)
+        self.cur = QLabel("")                    # 지금 클립 · 들어가 있는 프리셋(글자만, 칸은 안 켬)
+        self.cur.setStyleSheet("color:#aaa;")
+        bl.addWidget(self.cur, 1)
+        self.b_apply = QPushButton("적용")
+        self.b_apply.setFixedSize(MAIN_W, MAIN_H)
+        self.b_apply.setFocusPolicy(Qt.NoFocus)
+        ui_style.tone(self.b_apply, "red")
+        self.b_apply.setEnabled(False)
+        self.b_apply.clicked.connect(self._apply)
+        bl.addWidget(self.b_apply)
+        v.addLayout(bl)
         self.setFixedWidth(459)                  # 내용 폭 그대로(예전 540 - 왼쪽 81)
         self._last_hover = ""
         self.grid.chosen.connect(self._pick)
@@ -328,48 +355,30 @@ class PresetDialog(DragMove, QDialog):
             self.detail.show_values("", None)
 
     def _pick(self, key):
+        """고르기만(적용은 [적용])."""
+        self.pending = key
         self.set_current(key)
-        self.picked.emit(key, self.strength.value() or "mid")
+        self.b_apply.setEnabled(True)
+
+    def _apply(self):
+        if self.pending:
+            self.picked.emit(self.pending, self.strength.value() or "mid")
 
     def set_current(self, key):
         self.grid.set_current(key)
         for k, b in self.user_btns.items():
             b.setChecked(k == key)
 
-    def done(self, r):
-        self._watch(False)
-        super().done(r)
+    def set_clip(self, text: str):
+        """지금 클립 표시만 바꿈(고른 칸은 그대로)."""
+        self.cur.setText(self.cur.fontMetrics().elidedText(text, Qt.ElideRight, 300))
+
+    def reject(self):                             # Esc 로는 안 닫힘(닫기 = ✕ · [프리셋] 다시 누르기)
+        pass
+
+    def closeEvent(self, e):
+        e.accept()
         self.closed.emit()
-
-    # v0.16.44 바깥을 누르면 닫힘(사용자: 닫을 방법이 없음). 누른 곳의 동작(슬라이더 등)은 그대로 됨.
-    # [프리셋] 버튼 = 버튼이 알아서 닫음 · 확인 창·우클릭 메뉴가 떠 있는 동안은 안 닫음.
-    def _watch(self, on: bool):
-        from PySide6.QtWidgets import QApplication
-        app = QApplication.instance()
-        if app is None or on == getattr(self, "_watching", False):
-            return
-        self._watching = on
-        (app.installEventFilter if on else app.removeEventFilter)(self)
-
-    def showEvent(self, e):
-        super().showEvent(e)
-        self._watch(True)
-
-    def hideEvent(self, e):
-        self._watch(False)
-        super().hideEvent(e)
-
-    def eventFilter(self, obj, e):
-        if e.type() == QEvent.MouseButtonPress and self.isVisible():
-            from PySide6.QtCore import QPoint, QRect
-            from PySide6.QtWidgets import QApplication
-            if not (QApplication.activeModalWidget() or QApplication.activePopupWidget()):
-                gp = e.globalPosition().toPoint()
-                btn = getattr(self.parent(), "preset", None)
-                on_btn = btn is not None and QRect(btn.mapToGlobal(QPoint(0, 0)), btn.size()).contains(gp)
-                if not self.frameGeometry().contains(gp) and not on_btn:
-                    QTimer.singleShot(0, lambda: self.isVisible() and self.reject())
-        return False
 
 
 # ------------------------------------------------------------------ AUTO 창 클립 목록

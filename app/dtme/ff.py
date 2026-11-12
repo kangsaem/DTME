@@ -1118,6 +1118,7 @@ def find_preview(path: str) -> str | None:
 PREVIEW_DIFF = 10.0          # 색 판정: 가까운 쪽 차(화소 차 중앙값, 0~255) 상한
 PREVIEW_N = 8                # 판정 창 하나에 프리뷰 몇 장(v0.16.22: 15 → 8)
 PREVIEW_MIN_W_AUTO = 640     # AUTO 분석에 쓸 최소 폭(분석은 320 폭)
+PREVIEW_LONG = 1280          # 멈춘 보정 화면의 긴 쪽
 PREVIEW_MIN_W_STILL = 1280   # 멈춘 화면(먼저 보이기)에 쓸 최소 폭(보정 화면이 1280 폭)
 
 
@@ -1597,8 +1598,16 @@ _range_busy: set = set()
 _range_lock = threading.Lock()
 
 
+def _fit_preview(w: int, h: int) -> tuple[int, int]:
+    """멈춘 보정 화면 크기 = 긴 쪽 1280(v0.16.54: 세로 영상은 720×1280 — 예전 1280×2276 은 화소가 3배라 느림)."""
+    w, h = w or 3840, h or 2160
+    if h > w:
+        return int(round(PREVIEW_LONG * w / h / 2)) * 2, PREVIEW_LONG
+    return PREVIEW_LONG, int(round(PREVIEW_LONG * h / w / 2)) * 2
+
+
 def _preview_size(src) -> tuple[int, int]:
-    return 1280, int(round(1280 * (src.height or 2160) / (src.width or 3840) / 2)) * 2
+    return _fit_preview(src.width, src.height)
 
 
 def range_lookup(path: str, lo: int, hi: int):
@@ -1670,10 +1679,11 @@ def cached_frame(src: Source, frame: int, gpu: bool = False) -> CachedFrame:
             if hit is not None:
                 data, w, h = hit
                 return CachedFrame(data, lead, (w, h), "raw", key + "|r")
+            pw, ph = _preview_size(src)
             data = run([paths.ffmpeg(), "-v", "error", "-ss", _seek(frame - lead, src.fps), "-i", _abs(src.path),
-                        "-frames:v", str(lead + 1), "-an", "-vf", "scale=1280:-2:flags=lanczos,format=yuv420p10le",
+                        "-frames:v", str(lead + 1), "-an", "-vf", f"scale={pw}:{ph}:flags=lanczos,format=yuv420p10le",
                         "-c:v", "ffv1", "-f", "nut", "-"])
-            c = CachedFrame(data, lead, _preview_size(src), "nut", key)
+            c = CachedFrame(data, lead, (pw, ph), "nut", key)
             with _cache_lock:
                 _frame_cache[key] = c
                 while len(_frame_cache) > _FRAME_CACHE_MAX:
@@ -1704,11 +1714,11 @@ def cached_frame_preview(src: Source, frame: int, pv: dict) -> CachedFrame:
     if c is not None:
         return c
     lead = min(2, k)
+    cw, ch = _fit_preview(pv["w"], pv["h"])
     data = run([paths.ffmpeg(), "-v", "error", "-ss", _seek(k - lead, preview_fps(pv)), "-i", _abs(pv["path"]),
-                "-frames:v", str(lead + 1), "-an", "-vf", "scale=1280:-2:flags=bicubic,format=yuv420p10le",
+                "-frames:v", str(lead + 1), "-an", "-vf", f"scale={cw}:{ch}:flags=bicubic,format=yuv420p10le",
                 "-c:v", "ffv1", "-f", "nut", "-"])
-    ch = int(round(1280 * pv["h"] / pv["w"] / 2)) * 2
-    c = CachedFrame(data, lead, (1280, ch), "nut", key)
+    c = CachedFrame(data, lead, (cw, ch), "nut", key)
     with _cache_lock:
         _frame_cache[key] = c
         while len(_frame_cache) > _FRAME_CACHE_MAX:
@@ -1759,7 +1769,7 @@ def _render_preview(cached: CachedFrame, g: dict | None) -> bytes:
         vf = []
     else:
         cwd, lut = _lut_for(g)
-        vf = lens_chain(g, *cached.size) + grade_chain(g, lut, 1280)
+        vf = lens_chain(g, *cached.size) + grade_chain(g, lut, cached.size[0])
     vf = last_only(vf, cached.lead) + ["format=rgb24"]
     return run([paths.ffmpeg(), "-v", "error", *cached.input_args(), "-filter_complex", graph(vf, "[0:v]", "[po]"),
                 "-map", "[po]", "-frames:v", "1", "-f", "image2pipe", "-c:v", "png", "-"], cwd=cwd, data=cached.data)

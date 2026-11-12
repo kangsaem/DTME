@@ -709,10 +709,30 @@ class GradePanel(QWidget):
         src = self._src()
         name = preset_name(src.auto) if src else ""
         self.preset.setText(f"프리셋: {name}  ▾" if name else "프리셋  ▾")
+        self._sync_presets()
+
+    def _sync_presets(self):
+        """떠 있는 프리셋 창 = 지금 클립 따라감(글자만, 고른 칸은 그대로 — v0.16.54)."""
         dlg = getattr(self, "_pdlg", None)
-        if dlg is not None and src:                       # 떠 있는 창 = 지금 클립 표시
-            cur = (src.auto or {}).get("preset", "") or ("base" if not src.grade else "")
-            dlg.set_current(cur)
+        if dlg is None:
+            return
+        from .project import short_name
+        from .ui_auto import preset_name
+        p = self.state.project
+        srcs = [p.source(x) for x in self._sids() if p.source(x)]
+        if len(srcs) > 1:
+            dlg.set_clip(f"{len(srcs)}개")
+        elif srcs:
+            s0 = srcs[0]
+            name = preset_name(s0.auto) or ("기본값" if not s0.grade else "")
+            dlg.set_clip(short_name(s0.path) + (f" · {name}" if name else ""))
+        else:
+            dlg.set_clip("")
+
+    def _pop_parent(self):
+        """확인 창의 부모: 프리셋 창이 떠 있으면 그 창(항상 위 창에 가리지 않게)."""
+        dlg = getattr(self, "_pdlg", None)
+        return dlg if dlg is not None and dlg.isVisible() else self
 
     def _sids(self):
         return (self.targets_fn() if self.targets_fn else []) or ([self.cur_sid] if self.cur_sid else [])
@@ -720,7 +740,7 @@ class GradePanel(QWidget):
     def toggle_presets(self):
         dlg = getattr(self, "_pdlg", None)
         if dlg is not None and dlg.isVisible():
-            dlg.reject()
+            dlg.close()
         else:
             self.open_presets()
 
@@ -733,18 +753,15 @@ class GradePanel(QWidget):
         from .ui_auto import PresetDialog
         old = getattr(self, "_pdlg", None)
         if old is not None:
-            old.reject()
-        src = self._src()
-        cur = (src.auto or {}).get("preset", "") if src else ""
-        if src and not cur and not src.grade:
-            cur = "base"
-        dlg = PresetDialog(self.state.project.grade, cur, self.strength, self)
+            old.close()
+        dlg = PresetDialog(self.state.project.grade, "", self.strength, self)      # 열면 아무것도 안 골라짐
         dlg.picked.connect(self.apply_choice)
         dlg.userMenu.connect(lambda n, pos: self._preset_menu(n, pos))
         dlg.adjustSize()
         g = self.preset.mapToGlobal(self.preset.rect().bottomLeft())
         dlg.move(g)
         self._pdlg = dlg
+        self._sync_presets()
         dlg.closed.connect(lambda d=dlg: self._presets_closed(d))
         self.preset.setChecked(True)
         dlg.show()
@@ -818,7 +835,7 @@ class GradePanel(QWidget):
         if allow_frame and len(sids) == 1:
             btns.append(("frame", "이 프레임에 ◆", 120, None))
         btns.append(("all", "전체 바꾸기", 104, "red"))
-        return ui_style.confirm(self, text, btns)
+        return ui_style.confirm(self._pop_parent(), text, btns)
 
     def _preset_at_frame(self, s, g: dict):
         """프리셋 값을 지금 프레임 ◆ 로(빨강·파랑·색조·채도·물빛·녹황·커브). 나머지 항목·다른 ◆ 그대로."""
@@ -929,7 +946,7 @@ class GradePanel(QWidget):
             return
         dlg = getattr(self, "_pdlg", None)
         if dlg is not None:
-            dlg.reject()
+            dlg.close()
         if act is a_ren:
             new, ok = ui_style.get_text(self, name)
             if ok and new.strip() and new.strip() != name:
@@ -1020,14 +1037,6 @@ class GradePanel(QWidget):
         self._write(key, value)
         self.state.dirty = True
         self._update_labels()
-        try:                                        # 진단(v0.16.43): 쓴 값이 미리보기가 읽는 값에 들어갔는지
-            if key != "curve":
-                s = self._src()
-                rd = self.state.project.grade_for_source(self.cur_sid, self.frame).get(key) if self.cur_sid else None
-                ff.dbg(f"값 {key}={value} 끌기={int(slider)} 대상={self.target[0]} 소스={self.cur_sid} f={self.frame} "
-                       f"읽힘={rd} ◆={len(s.gkeys.get(key) or []) if s else '-'} 끔={list(getattr(s, 'off', []) or []) if s else '-'}")
-        except Exception as e:  # noqa: BLE001
-            ff.dbg(f"값 기록 실패 {e}")
         if slider:
             self.liveChanged.emit()
             self._debounce.start()
@@ -1045,7 +1054,6 @@ class GradePanel(QWidget):
         self._emit_change()
 
     def _emit_change(self):
-        ff.dbg("값 바뀜 알림(멈춘 뒤)")
         self.state.changed.emit("grade")
         self.gradeChanged.emit()
         self.refresh_samples()

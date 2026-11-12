@@ -81,6 +81,8 @@ class MainWindow(QMainWindow):
         taskbar.clear(self)
         if not self.isVisible():                      # 시작 창 [보정+렌더](편집 화면 숨김) = 시작 창이 팝업
             return
+        if self.edit.render_panel.cancelled:          # [렌더] 로 멈춤(v0.16.54) = 완료 팝업 없음
+            return
         taskbar.flash(self)
         old = getattr(self, "_done_dlg", None)
         if old is not None:

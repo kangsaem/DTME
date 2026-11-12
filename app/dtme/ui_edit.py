@@ -456,6 +456,7 @@ class EditTab(QWidget):
         self.grade.gradeChanged.connect(self._on_grade_changed)
         self.grade.liveChanged.connect(self._on_grade_live)
         self._live_busy = self._live_pending = False
+        self._pv_flight: dict = {}                  # 만드는 중인 보정 화면: 키 → {gen, tok, live}
         self.grade.viewChanged.connect(lambda _k: self.request_preview())
         self.grade.splitDirChanged.connect(self._set_split_dir)
         self.player.mon.splitFlipped.connect(lambda v: self.grade.set_split_dir(v, emit=False))
@@ -463,6 +464,7 @@ class EditTab(QWidget):
         self.grade.whitePickToggled.connect(self._white_mode)
         self.grade.sampleClicked.connect(self._show_sample)
         self.grade.targets_fn = self._selected_sids
+        self.src_list.itemSelectionChanged.connect(self.grade._sync_presets)      # 떠 있는 프리셋 창 = 고른 클립 따라감
         self.grade.keysChanged.connect(self._refresh_marks)
         self.grade.message.connect(lambda t, c: self._say(t, c))
         self.player.mon.contrastRequested.connect(self.fix_contrast)
@@ -862,7 +864,6 @@ class EditTab(QWidget):
         (예전 = 손을 멈추고 0.25초 뒤에야 바뀜). 샘플 타일·타임라인은 예전처럼 멈춘 뒤."""
         if self._live_busy:
             self._live_pending = True
-            ff.dbg("끄는 중: 앞 작업이 안 끝남 → 대기")
             return
         self._live_busy = True
         if not self.request_preview(live=True):
@@ -898,22 +899,23 @@ class EditTab(QWidget):
             hit = PREVIEW_LRU.get(key)
             if hit is not None:                  # 같은 프레임·같은 보정은 다시 안 만듦
                 PREVIEW_LRU.move_to_end(key)
-        gs = " ".join(f"{k}={full.get(k)}" for k in ("r_gain", "b_gain", "hue", "sat", "water", "gy"))
-        ff.dbg(f"요청 #{gen} f={frame} 보기={mode} 끄는중={int(live)} 소스={s.id} 패널소스={self.grade.cur_sid} 패널f={self.grade.frame} "
-               f"기억={int(hit is not None)} 대기열={jobs.PREVIEW_POOL.activeThreadCount()} | {gs}")
+        fl = self._pv_flight.get(key)
+        ff.dbg(f"요청 #{gen} f={frame} 보기={mode} 끄는중={int(live)} 기억={int(hit is not None)} 같은작업={int(fl is not None)}")
         if hit is not None:
             self._on_preview(gen, frame, tok, hit)
             return False
+        if fl is not None:                       # 같은 화면을 이미 만드는 중(v0.16.54) = 새로 안 만들고 그 결과를 씀
+            fl["gen"], fl["tok"] = gen, tok      # (예전: 손을 떼면 같은 값으로 한 번 더 만들고 먼저 것은 버림 → 늦게 뜸)
+            fl["live"] = fl["live"] or live
+            return True
+        fl = {"gen": gen, "tok": tok, "live": live}
+        self._pv_flight[key] = fl
 
         def work():
-            if gen != self.pgen:                 # 기다리는 사이 다른 화면을 요청함 = 안 만듦(ffmpeg 를 헛돌리지 않음, v0.16.40)
-                ff.dbg(f"작업 #{gen} 건너뜀(지금 #{self.pgen})")
+            if fl["gen"] != self.pgen:           # 기다리는 사이 다른 화면을 요청함 = 안 만듦(ffmpeg 를 헛돌리지 않음, v0.16.40)
                 return None
-            ff.dbg(f"작업 #{gen} 시작")
             c = ff.cached_frame(s, frame)
-            ff.dbg(f"작업 #{gen} 입력 준비({c.fmt})")
             out = ff.render_preview(c, grade)
-            ff.dbg(f"작업 #{gen} 끝 {len(out)}B")
             res = (out, ff.render_preview(c, ff.lut_only(full))) if mode == "split" else (out, None)
             with PREVIEW_LOCK:                   # 작업 스레드 여러 개가 같이 씀
                 PREVIEW_LRU[key] = res
@@ -921,16 +923,22 @@ class EditTab(QWidget):
                     PREVIEW_LRU.popitem(last=False)
             return res
 
-        def done(data, g=gen, fr=frame, t=tok):
+        def done(data, fr=frame):
+            self._pv_flight.pop(key, None)
+            if data is None and fl["gen"] == self.pgen:      # 건너뛴 직후 같은 화면을 다시 요청함 → 새로
+                if not self.request_preview(live=fl["live"]) and fl["live"]:
+                    self._live_done()
+                return
             if data is not None:
-                self._on_preview(g, fr, t, data)
-            if live:
+                self._on_preview(fl["gen"], fr, fl["tok"], data)
+            if fl["live"]:
                 self._live_done()
 
         def fail(msg):
+            self._pv_flight.pop(key, None)
             ff.log_error("미리보기", msg)
             self._say(f"미리보기 오류: {msg[-160:]}", C_WARN)
-            if live:
+            if fl["live"]:
                 self._live_done()
         job = jobs.Job(work)
         job.signals.done.connect(done)
@@ -950,7 +958,7 @@ class EditTab(QWidget):
             pv = ff.preview_info(s, (full or {}).get("lut", ""), judge=False)     # 저장된 판정만(여기서 판정 안 함)
         except Exception:  # noqa: BLE001
             pv = None
-        if not pv or pv.get("w", 0) < ff.PREVIEW_MIN_W_STILL:
+        if not pv or max(pv.get("w", 0), pv.get("h", 0)) < ff.PREVIEW_MIN_W_STILL:      # 세로 프리뷰 = 긴 쪽으로
             return
 
         def work():
@@ -995,7 +1003,7 @@ class EditTab(QWidget):
         if not s or not s.frames or p.is_busy() or mon.zoom <= 1.0001 or self.grade.view_mode() == "split":
             return
         r = mon._view_rect()
-        if r.width() * mon.devicePixelRatioF() < 1280 * 1.3:      # 미리보기(1280)로 충분
+        if r.width() * mon.devicePixelRatioF() < ff._preview_size(s)[0] * 1.3:      # 미리보기(긴 쪽 1280)로 충분
             return
         rect = mon.visible_norm()
         if not rect:

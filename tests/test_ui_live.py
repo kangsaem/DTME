@@ -45,6 +45,7 @@ assert live_shown >= 1, "끄는 동안 화면이 한 번도 안 바뀜"
 assert len(made) < k, (len(made), k)                     # 값마다 만들지 않음(한 번에 1개)
 wait(4, lambda: not e._live_busy and not gp._debounce.isActive()); wait(1.0)
 assert made[-1] == last, (made[-3:], last)               # 마지막 값으로 끝남
+assert made.count(last) == 1, made[-4:]                  # v0.16.54: 손을 뗀 뒤 같은 값으로 한 번 더 만들지 않음
 assert not e._live_busy and not e._live_pending
 print(f"끄는 동안: 값 {k}번 → 만든 화면 {len(made)} · 끄는 중 표시 {live_shown}")
 # 2) 묵은 요청 = 안 만듦
@@ -53,6 +54,19 @@ for i in range(8):
     gp._set("b_gain", 1.0 + 0.01 * i); 
 wait(4, lambda: False)
 assert len(made) <= 5, made                              # 8번 요청 중 풀(4)에 바로 들어간 것 말고는 건너뜀
+# 2-1) v0.16.54: 같은 화면을 만드는 중에 또 요청(손을 뗀 직후) = 새로 안 만들고 그 결과를 표시
+slow = ff._render_preview
+ff._render_preview = lambda c, g: (time.sleep(0.8), slow(c, g))[1]
+gp._write("r_gain", 1.777); made.clear(); shown.clear()
+e._live_busy = True
+assert e.request_preview(live=True) is True
+wait(0.2)
+assert e.request_preview() is True                       # 멈춘 뒤 요청(같은 값)
+wait(6, lambda: not e._live_busy and shown); wait(1.2)
+assert made == [1.777], made                             # 예전 = 2번 만들고 먼저 것은 버림
+assert len(shown) == 1 and not e._live_busy and not e._pv_flight, (shown, e._live_busy)
+ff._render_preview = slow
+print("같은 화면 겹친 요청: 1번만 만듦")
 # 3) 실행취소 = 끌기 1번
 print("OK test_ui_live")
 os._exit(0)
