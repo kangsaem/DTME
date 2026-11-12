@@ -98,11 +98,11 @@ LIFT = [(0.0, 0.0), (0.05, 0.07), (0.10, 0.121), (0.20, 0.235), (0.30, 0.335), (
         (0.85, 0.90), (0.95, 0.969), (1.0, 1.0)]
 
 
-def lift_curve(pts: list) -> list:
-    """커브의 출력(y)에 LIFT 를 덧씌움(new_y = LIFT(old_y)). 양 끝 0·1 은 그대로."""
+def lift_curve(pts: list, k: float = 1.0) -> list:
+    """커브의 출력(y)에 LIFT 를 덧씌움(new_y = LIFT(old_y)). 양 끝 0·1 은 그대로. k = 덧씌우는 정도(0 = 안 함)."""
     import numpy as np
     xs, ys = zip(*LIFT)
-    return [[x, round(float(np.interp(y, xs, ys)), 4)] for x, y in pts]
+    return [[x, round(float(y + (np.interp(y, xs, ys) - y) * k), 4)] for x, y in pts]
 
 
 def builtin_grade(key: str, base: dict | None = None, strength: str = "mid") -> dict:
@@ -137,6 +137,28 @@ COLOR_R_TOP = 1.6                 # 시작 빨강 게인 상한(예전 2.0)
 START_SAT_DROP = 0.2              # 빨강을 최대 배율로 올린 ◆ 는 채도를 이만큼 낮춤(붉은 얼룩이 덜 보이게), 배율에 비례
 START_GAMMA_MIN = 0.8             # 덜 올린 빨강만큼 어두운 시작 = 커브로 밝기 맞춤(출력 y^γ), 이보다 더 밝히지 않음(노이즈)
 COLOR_B_RANGE = (0.7, 1.3)
+START_B_TOP = 0.90                # v0.16.53 시작 파랑 ◆: 밝은 쪽 10% 의 파랑이 이 값을 넘지 않는 데까지만 올림(해·빛기둥 날림)
+# v0.16.53 이미 진한 영상(카메라 비비드 등)은 덜 얹음: 밝은 곳 중 채도 0.9 넘는 면적(샘플 중앙값)이
+# RICH_LO 이하 = 예전 그대로, RICH_HI 이상 = 채도 더하기·S커브·암부 누르기·밝기 덧씌움 없음(색 균형·검정/흰점만).
+# 실측: Insta360 Ace Pro 2 vivid 0.226 / DJI D-Log M + LUT 는 AUTO 를 건 결과물에서도 0.00(3개 클립)
+RICH_SAT, RICH_LO, RICH_HI = 0.9, 0.03, 0.15
+
+
+def rich_area(a: np.ndarray) -> float:
+    y = luma(a)
+    lit = y > 0.06
+    if lit.mean() < 0.02:
+        return 0.0
+    _h, s = hue_sat(a)
+    return float((s[lit] > RICH_SAT).mean())
+
+
+def rich_keep(samples: list) -> float:
+    """1 = 예전대로 다 얹음 … 0 = 이미 진함(채도·대비를 더 얹지 않음)."""
+    if not samples:
+        return 1.0
+    f = float(np.median([rich_area(a) for _f, a in samples]))
+    return float(np.clip((RICH_HI - f) / (RICH_HI - RICH_LO), 0.0, 1.0))
 
 
 def sample_frames(src: Source, every: float = SAMPLE_EVERY_SEC, n_max: int = SAMPLE_MAX,
@@ -435,7 +457,9 @@ def _start_color_keys(gkeys: dict, frames: list[int], sts: list[dict], g: dict, 
 
     def bv(i):
         k = float(np.exp(lv[si][1] - lv[i][1]))
-        return round(max(0.5, min(1.5, b_s * min(COLOR_B_RANGE[1], max(COLOR_B_RANGE[0], k)))), 3)
+        v = max(0.5, min(1.5, b_s * min(COLOR_B_RANGE[1], max(COLOR_B_RANGE[0], k))))
+        top = max(b_s, START_B_TOP / max(1e-3, sts[i]["top10"][2]))      # 밝은 쪽 파랑이 날아가지 않는 데까지만
+        return round(min(v, top), 3)
     for key, fn, cur, val_s in (("r_gain", rv, rk, r_s), ("b_gain", bv, bk, b_s)):
         keep = [x for x in (cur or []) if x["f"] > fs]
         new = [{"f": frames[i], "v": fn(i)} for i in idx] + [{"f": fs, "v": round(val_s, 3)}]
@@ -510,18 +534,21 @@ def recommend(samples: list[tuple[int, np.ndarray]], base: dict, scene: str | No
     mixed = any(classify([x]) == "deep" for x in sts) and sc != "deep"
     pd = SCENE_BASE["deep"] if mixed else p
     lo *= pd.get("lo", 0.9)
-    s_amt = min(p["s"], pd["s"]) * (0.6 if mixed else 1.0)
+    keep = rich_keep(samples)                     # v0.16.53: 이미 진한 영상이면 채도·대비를 덜 얹음(0 = 안 얹음)
+    s_amt = min(p["s"], pd["s"]) * (0.6 if mixed else 1.0) * keep
     st = p["st"]
+    sd = p.get("sd", 0) * st * keep
     g = builtin_grade(sc, base, strength)
+    g["sat"] = round(1 + (float(g["sat"]) - 1) * keep, 3) if g["sat"] > 1 else g["sat"]
     rs, bs = _med3([x[0] for x in gains]), _med3([x[1] for x in gains])
     g.update(r_gain=round(float(np.median(rs)), 3), b_gain=round(float(np.median(bs)), 3),
-             curve=s_curve(lo - 0.01, hi + 0.01, s_amt * st, sd=p.get("sd", 0) * st))
+             curve=s_curve(lo - 0.01, hi + 0.01, s_amt * st, sd=sd))
     if p.get("lift"):
-        g["curve"] = lift_curve(g["curve"])
+        g["curve"] = lift_curve(g["curve"], keep)
 
     def mk(lo_, hi_):
-        c = s_curve(lo_ * pd.get("lo", 0.9) - 0.01, hi_ + 0.01, s_amt * st, sd=p.get("sd", 0) * st)
-        return lift_curve(c) if p.get("lift") else c
+        c = s_curve(lo_ * pd.get("lo", 0.9) - 0.01, hi_ + 0.01, s_amt * st, sd=sd)
+        return lift_curve(c, keep) if p.get("lift") else c
 
     gkeys = {}
     if len(frames) >= 2 and (max(rs) - min(rs) > KEY_TOL_R or max(bs) - min(bs) > KEY_TOL_B):
@@ -543,7 +570,7 @@ def recommend(samples: list[tuple[int, np.ndarray]], base: dict, scene: str | No
         gkeys["curve"] = [{"f": frames[i], "v": mk(*ends[i])} for i in ck] + [{"f": frames[si], "v": g["curve"]}]
     if csi > 0:
         _start_luma_keys(gkeys, samples, csi, g)
-    return {"grade": g, "gkeys": gkeys, "scene": sc, "subject": sb, "preset": sc}
+    return {"grade": g, "gkeys": gkeys, "scene": sc, "subject": sb, "preset": sc, "rich": round(1 - keep, 2)}
 
 
 def analyze_source(src: Source, base: dict, scene=None, subject=None, strength="mid", gpu=False,
