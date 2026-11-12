@@ -1197,7 +1197,8 @@ class EditTab(QWidget):
         self._pv_timer.stop()
         self.pgen += 1
         self.player.overlay_frame = self.player.frame
-        self.player.show_image(pix)
+        self.player.mon.set_before(None)          # v0.16.63 샘플 그림은 이미 반반(왼쪽 원본·오른쪽 보정) → 모니터의 '지금 프레임 원본'을 또 겹치지 않음
+        self.player.show_image(pix)               # (예전: 왼쪽 = 지금 프레임, 오른쪽 = 샘플 → 서로 다른 장면이 붙어 보임)
 
     # ================================================================ 인/아웃·배속
     def mark_in(self):

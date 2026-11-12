@@ -84,5 +84,8 @@ names = sorted(os.listdir(out)); print("저장:", names)
 assert names == [f"202611121205_{k}.png" for k in range(1, 7)]
 gp.set_output("vertical")
 assert wait(60, lambda: (lambda q: not q.isNull() and q.width() < q.height())(QImage(gp.samples.item(0).data(Qt.UserRole + 1) or "")))
+gp.set_view("split"); wait(3)
+gp._on_sample(gp.samples.item(3)); wait(0.3)
+assert e.player.mon.before is None, "v0.16.63 샘플 클릭 = 샘플 그림만(지금 프레임 원본을 겹치지 않음)"
 gp.b_smp_x.click(); wait(0.3); assert not gp.smp_win.isVisible() and not gp.b_smp.isChecked()
 print("OK test_ui_v1655"); os._exit(0)
