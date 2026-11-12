@@ -260,6 +260,18 @@ def _dlg_flags(parent):
     return fl
 
 
+def _main_center(parent):
+    """확인 창을 띄울 자리 = 맨 위 주 창의 가운데(떠 있는 도구 창(프리셋·샘플)에서 불러도 그 창에 겹치지 않게 — v0.16.61:
+    프리셋 창 한가운데에 뜨면 겹침 순서가 틀어졌을 때 통째로 가려져 프로그램이 멈춘 것처럼 보였음)."""
+    w = parent.window()
+    for _ in range(4):
+        up = w.parentWidget()
+        if up is None:
+            break
+        w = up.window()
+    return w.geometry().center()
+
+
 def confirm(parent, text: str, buttons) -> str:
     """테두리 없는 어두운 확인 창. buttons = [(값, 글자, 폭, 색 이름|None), ...] 왼→오. Esc·바깥 = 'cancel'."""
     from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
@@ -287,7 +299,7 @@ def confirm(parent, text: str, buttons) -> str:
     lay.addLayout(row)
     if parent is not None and parent.isVisible():
         dlg.adjustSize()
-        c = parent.window().geometry().center()
+        c = _main_center(parent)
         dlg.move(c.x() - dlg.width() // 2, c.y() - dlg.height() // 2)
     from PySide6.QtCore import QTimer
     QTimer.singleShot(0, lambda: (dlg.raise_(), dlg.activateWindow()))      # 떠 있는 창들 위로

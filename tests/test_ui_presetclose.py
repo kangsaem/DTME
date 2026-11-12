@@ -49,6 +49,8 @@ QTest.mouseClick(d.b_apply, Qt.LeftButton); wait(0.3)
 assert s1.auto.get("preset") == "deep", "떠 있는 채 다른 클립에 적용"
 # v0.16.58: 확인 창 = 항상 위인 프리셋 창 위로(가려지면 멈춘 것처럼 보임) · 분석 중 표시
 assert ui_style._dlg_flags(d) & Qt.WindowStaysOnTopHint and not (ui_style._dlg_flags(w) & Qt.WindowStaysOnTopHint)
+c0 = ui_style._main_center(d); assert w.geometry().contains(c0) and abs(c0.x() - w.geometry().center().x()) < 3, "확인 창 자리 = 주 창 가운데(프리셋 창 위가 아님)"
+assert not d.geometry().contains(c0)
 d.set_busy(True); assert d.b_apply.text() == "분석 중…" and not d.b_apply.isEnabled()
 d.set_busy(False); assert d.b_apply.text() == "적용" and d.b_apply.isEnabled()
 d.grid.chosen.emit("auto"); QTest.mouseClick(d.b_apply, Qt.LeftButton)
