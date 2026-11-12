@@ -249,9 +249,10 @@ class EditTab(QWidget):
         self.mus_list.setVisible(False)
         self.music_info = {}                    # v0.16.64 음악 파일 → 분석(박자·파형·분위기)
         self._mus_jobs = set()
-        self.b_mauto = _btn("음악 자동", "", self.auto_music)
+        from .ui_auto import main_button as _mb
+        self.b_mauto = _mb("음악 자동", "red")         # v0.16.65 아래 ▼ 와 같은 크기(88×32) · [AUTO] 와 같은 색
+        self.b_mauto.clicked.connect(self.auto_music)
         self.b_mauto.setToolTip("영상 길이·분위기에 맞춰 넣은 음악에서 골라 음악 줄을 채움")
-        self.b_mauto.setFixedHeight(28)
         self.b_mauto.setVisible(False)
         self.load_bar = QProgressBar()
         self.load_bar.setTextVisible(False)
@@ -285,7 +286,7 @@ class EditTab(QWidget):
         left.addWidget(self.src_list, 3)
         left.addWidget(self.img_list, 1)
         left.addWidget(self.mus_list, 1)
-        left.addWidget(self.b_mauto)
+        left.addWidget(self.b_mauto, 0, Qt.AlignLeft)       # 아래 렌더 칸 ▼ 와 같은 줄(왼쪽)
         left.addWidget(self.load_bar)
         self.src_box = QWidget()          # 오른쪽 열 위: 소스. 높이 = 모니터+바(렌더가 재생 버튼 줄부터 시작)
         self.src_box.setLayout(left)
