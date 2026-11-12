@@ -354,7 +354,9 @@ def classify(st_list: list[dict]) -> str:
 
 
 # ------------------------------------------------------------------ 값 계산
-# v0.16.56 DJI 원본(D-Log M + LUT)이 아닌 영상 = 보라로 덜 돌게 화면을 재서(사용자 비교 사진 ⑥):
+# v0.16.60 = P2 로 바꿈: DJI 원본이 아닌 영상 = 색조 0 · 물빛 0 만(파랑·나머지는 예전 그대로). 아래 측정 함수(water_angle · measured_water ·
+# gains_for(follow=False))는 남겨 두되 AUTO 는 안 씀 — v0.16.56~59 의 ⑥(파랑 잰 값 · 물빛 측정)은 암부 파랑이 빠져 사용자가 되돌림.
+# (기록) v0.16.56 DJI 원본(D-Log M + LUT)이 아닌 영상 = 보라로 덜 돌게 화면을 재서(사용자 비교 사진 ⑥):
 # 색조 0 · 파랑은 빨강을 따라 올리지 않음(잰 값) · 물빛 = 물 색상각이 WATER_GOAL 에 못 미치는 만큼(0~WATER_CAP).
 # 근거: Ace Pro 일반 색 1클립(BJVS3373) — 프리셋 고정값(색조 +5 · 물빛 +8 · 파랑 ≥ 빨강×0.9)이면 물 +14~19°, 흰 모래가 연보라.
 WATER_GOAL = 209.0                # BJVS3373(자리 잡은 뒤 · 게인 뒤 물 색상각 중앙값 198.7°)에서 물빛 +16 이 나오는 값(사용자 ⑥). 이보다 파란 물 = 물빛 0
@@ -561,7 +563,7 @@ def recommend(samples: list[tuple[int, np.ndarray]], base: dict, scene: str | No
     sb = ""
     p = scene_params(sc, None, strength)
     gains = [gains_for(s, p) for s in sts]        # 커브·시작 구간 판단 = 늘 예전 방식 게인으로(측정 쪽도 밝기 처리는 같게)
-    gout = [gains_for(s, p, follow=False) for s in sts] if measure else gains     # 클립에 들어갈 빨강·파랑
+    gout = gains                                  # v0.16.60(P2): 파랑은 예전대로(빨강 따라 올림) — 안 올리면 암부 파랑이 빠져 암부가 평평해 보임(사용자)
     frames = [f for f, _a in samples]
     ends = [tone_ends(np.clip(a * np.array([r, 1.0, b], np.float32), 0, 1)) for (_f, a), (r, b) in zip(samples, gains)]
     si = settle_index(frames, ends, fps)          # v0.16.34: 시작 구간이 안정되기 전 샘플은 클립 커브 계산에서 뺌
@@ -581,11 +583,9 @@ def recommend(samples: list[tuple[int, np.ndarray]], base: dict, scene: str | No
              curve=s_curve(lo - 0.01, hi + 0.01, s_amt * st, sd=sd))
     if p.get("lift"):
         g["curve"] = lift_curve(g["curve"], keep)
-    if measure:                                   # v0.16.56 DJI 원본이 아님 = 색조 0 · 물빛은 잰 만큼
+    if measure:                                   # v0.16.60(사용자 P2) DJI 원본이 아님 = 색조 0 · 물빛 0(보라만 조금 뺌). 나머지는 예전과 같음
         g["hue"] = 0.0
-        wv = measured_water(samples[si:], gout[si:])
-        if wv is not None:
-            g["water"] = wv
+        g["water"] = 0
 
     def mk(lo_, hi_):
         c = s_curve(lo_ * pd.get("lo", 0.9) - 0.01, hi_ + 0.01, s_amt * st, sd=sd)

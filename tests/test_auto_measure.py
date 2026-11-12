@@ -1,5 +1,4 @@
-"""v0.16.56: DJI 원본(D-Log M + LUT)이 아닌 영상 = 화면을 재서(색조 0 · 파랑은 빨강을 따라 올리지 않음 · 물빛 = 물 색상각이 목표에 못 미치는 만큼 0~20).
-DJI 원본·옛 프로젝트 = 예전 값 그대로. 커브·◆(밝기 쪽)는 두 방식이 같음. python tests/test_auto_measure.py"""
+"""v0.16.60(P2): DJI 원본(D-Log M + LUT)이 아닌 영상 = 색조 0 · 물빛 0 만 다름(보라만 조금 뺌). DJI 원본·옛 프로젝트 = 예전 값 그대로. python tests/test_auto_measure.py"""
 import os, sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "app"))
 import numpy as np
@@ -27,18 +26,12 @@ for name, smp in (("청록", green), ("파랑", blue)):
     old = auto.recommend(smp, base, "shallow", fps=60.0)
     new = auto.recommend(smp, base, "shallow", fps=60.0, measure=True)
     go, gn = old["grade"], new["grade"]
-    print(name, "예전", {k: go[k] for k in ("r_gain", "b_gain", "hue", "water")}, "측정", {k: gn[k] for k in ("r_gain", "b_gain", "hue", "water")})
-    assert go["hue"] == auto.BASE_HUE and go["b_gain"] >= round(auto.BLUE_FOLLOW * go["r_gain"], 3) - 1e-6      # 예전 = 그대로
-    assert gn["hue"] == 0 and gn["r_gain"] == go["r_gain"] and gn["b_gain"] <= go["b_gain"]
-    assert 0 <= gn["water"] <= auto.WATER_CAP
-    assert gn["curve"] == go["curve"] and gn["sat"] == go["sat"] and gn["gy"] == go["gy"]                       # 밝기·나머지 = 같음
-    assert new["measured"] and not old["measured"]
-gw = auto.recommend(green, base, "shallow", fps=60.0, measure=True)["grade"]["water"]
-bw = auto.recommend(blue, base, "shallow", fps=60.0, measure=True)["grade"]["water"]
-assert gw > bw == 0, (gw, bw)                                   # 청록 물 = 더 많이, 이미 파란 물 = 0
-# 물이 안 보이는 화면 = 프리셋 물빛 그대로
-sand = [(k * 120, np.full((180, 320, 3), (0.5, 0.5, 0.45), np.float32)) for k in range(4)]
-assert auto.recommend(sand, base, "shallow", fps=60.0, measure=True)["grade"]["water"] == auto.builtin_grade("shallow", base)["water"]
+    print(name, "예전", {k: go[k] for k in ("r_gain", "b_gain", "hue", "water")}, "DJI 원본 아님", {k: gn[k] for k in ("r_gain", "b_gain", "hue", "water")})
+    assert go["hue"] == auto.BASE_HUE and go["water"] > 0                       # 예전(DJI 원본) = 그대로
+    assert gn["hue"] == 0 and gn["water"] == 0                                  # v0.16.60 P2: 색조 0 · 물빛 0
+    diff = {k for k in go if go[k] != gn[k]}
+    assert diff == {"hue", "water"}, diff                                       # 그 둘 말고는 전부 같음(빨강·파랑·커브·채도·노이즈…)
+    assert old["gkeys"] == new["gkeys"] and new["measured"] and not old["measured"]
 # 어느 클립이 예전 값 그대로인가
 s = Source(path="x.mp4")
 s.lut_mode = "dlog"; assert auto.is_dji_log(s, "DJI.cube") and not auto.is_dji_log(s, "")
