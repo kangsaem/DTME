@@ -247,6 +247,12 @@ class EditTab(QWidget):
         self.mus_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.mus_list.customContextMenuRequested.connect(lambda _pos: self.add_files())
         self.mus_list.setVisible(False)
+        self.music_info = {}                    # v0.16.64 음악 파일 → 분석(박자·파형·분위기)
+        self._mus_jobs = set()
+        self.b_mauto = _btn("음악 자동", "", self.auto_music)
+        self.b_mauto.setToolTip("영상 길이·분위기에 맞춰 넣은 음악에서 골라 음악 줄을 채움")
+        self.b_mauto.setFixedHeight(28)
+        self.b_mauto.setVisible(False)
         self.load_bar = QProgressBar()
         self.load_bar.setTextVisible(False)
         self.load_bar.setFixedHeight(6)
@@ -279,6 +285,7 @@ class EditTab(QWidget):
         left.addWidget(self.src_list, 3)
         left.addWidget(self.img_list, 1)
         left.addWidget(self.mus_list, 1)
+        left.addWidget(self.b_mauto)
         left.addWidget(self.load_bar)
         self.src_box = QWidget()          # 오른쪽 열 위: 소스. 높이 = 모니터+바(렌더가 재생 버튼 줄부터 시작)
         self.src_box.setLayout(left)
@@ -1918,6 +1925,10 @@ class EditTab(QWidget):
         self.tl_time = t
         self.timeline.set_time(t)
         self._update_tl_titles(t)
+        if self.player.is_playing() and self._music_player is not None:     # v0.16.64 재생 중 다음 곡 시작 = 그 곡으로(미리보기는 크로스페이드 없이 바로 바뀜)
+            now = self._music_at(t)
+            if now is not None and now.get("id") != getattr(self, "_music_cur", None):
+                self._music_play()
         if self.player.is_playing() and f >= seg.fout - 1:
             idx = next((i for i, c in enumerate(self._tl_cuts) if c[0] is seg), -1)
             if 0 <= idx < len(self._tl_cuts) - 1:
@@ -1966,9 +1977,10 @@ class EditTab(QWidget):
         from PySide6.QtCore import QUrl
         from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
         from .project import orig_volume
-        m = next((x for x in p.music if float(x["t0"]) <= self.tl_time < float(x["t0"]) + float(x["len"])), None)
+        m = self._music_at(self.tl_time)
         if m is None:
             return
+        self._music_cur = m.get("id")
         if self._music_player is None:
             self._music_player = QMediaPlayer(self)
             self._music_out = QAudioOutput(self)
@@ -1980,7 +1992,13 @@ class EditTab(QWidget):
         self._music_player.setPosition(int((float(m.get("off", 0)) + self.tl_time - float(m["t0"])) * 1000))
         self._music_player.play()
 
+    def _music_at(self, t):
+        """t 에 들리는 곡(겹친 곳 = 나중에 시작한 곡)."""
+        on = [x for x in self.state.project.music if float(x["t0"]) <= t < float(x["t0"]) + float(x["len"])]
+        return max(on, key=lambda x: float(x["t0"])) if on else None
+
     def _music_stop(self):
+        self._music_cur = None
         if self._music_player is not None:
             self._music_player.stop()
         if self.player.audio:
@@ -2156,6 +2174,51 @@ class EditTab(QWidget):
             it.setToolTip(f"{a['path']}\n{a['dur']:.1f}초")
             self.mus_list.addItem(it)
         self.mus_list.setVisible(bool(self.state.project.audios))
+        self.b_mauto.setVisible(bool(self.state.project.audios))
+        self._analyze_audios()
+
+    def _analyze_audios(self):
+        """넣은 음악마다 분석(저장된 것 있으면 바로, 없으면 뒤에서 — 3분 곡 ≈ 1~2초)."""
+        from . import music
+        for a in self.state.project.audios:
+            path = a["path"]
+            if path in self.music_info or path in self._mus_jobs or not Path(path).exists():
+                continue
+            d = music.cached(path)
+            if d is not None:
+                self.music_info[path] = d
+                continue
+            self._mus_jobs.add(path)
+            job = jobs.Job(lambda path=path: music.get(path))
+
+            def done(d, path=path):
+                self._mus_jobs.discard(path)
+                self.music_info[path] = d
+                self.timeline.set_music_info(self.music_info)
+                self._refresh_audio_tips()
+
+            def err(msg, path=path):
+                self._mus_jobs.discard(path)
+                ff.log_error(f"음악 분석 {path}", msg)
+            job.signals.done.connect(done)
+            job.signals.error.connect(err)
+            jobs.submit(jobs.AUTO_POOL, job, priority=-2)
+        self.timeline.set_music_info(self.music_info)
+        self._refresh_audio_tips()
+
+    def _refresh_audio_tips(self):
+        from . import music
+        for i in range(self.mus_list.count()):
+            it = self.mus_list.item(i)
+            a = next((x for x in self.state.project.audios if x["id"] == it.data(Qt.UserRole)), None)
+            inf = self.music_info.get(a["path"]) if a else None
+            if a is None:
+                continue
+            tip = f"{a['path']}\n{a['dur']:.1f}초"
+            if inf:
+                bpm = float(inf.get("bpm", 0))
+                tip += (f"\n{bpm:.0f} BPM" if float(inf.get("conf", 0)) >= 0.3 else "\n박자 흐림") + f" · {music.mood_word(music.mood(inf))}"
+            it.setToolTip(tip)
 
     def _on_mus_clicked(self, it):
         self._set_target("mus")
@@ -2164,9 +2227,63 @@ class EditTab(QWidget):
             return
         p = self.state.project
         t0 = max([float(m["t0"]) + float(m["len"]) for m in p.music] + [0.0])
+        if p.music:                                     # v0.16.64 이어 붙일 때 = 곡 사이 겹침(크로스페이드)만큼 앞으로
+            last = max(p.music, key=lambda m: float(m["t0"]) + float(m["len"]))
+            t0 = max(0.0, t0 - min(float(p.mix.get("xfade", 2.0)), float(last["len"]) / 2, float(a["dur"]) / 2))
         self.state.checkpoint()
         p.music.append(new_music(a["path"], t0, a["dur"]))
         self.state.touch("titles")
+
+    def auto_music(self):
+        """[음악 자동](v0.16.64): 타임라인 영상의 분위기(움직임·컷 빠르기·배속)를 재고, 넣은 음악 중 분위기가 가까운 곡으로
+        영상 길이를 채움(모자라면 곡을 이어 붙여 크로스페이드). 실행취소 1번."""
+        from . import music
+        p = self.state.project
+        segs = list(p.segments)
+        if not segs:
+            self._say("타임라인이 비어 있음", C_WARN)
+            return
+        if not p.audios:
+            return
+        total = max((st + ln for _g, st, ln in self._tl_cuts), default=0.0)
+        if p.music and ui_style.confirm(self, "음악 줄을 바꿀까요?", [("cancel", "취소", 72, None), ("ok", "바꾸기", 80, "red")]) != "ok":
+            return
+        auds = [a for a in p.audios if Path(a["path"]).exists()]
+        self.b_mauto.setEnabled(False)
+        self.b_mauto.setText("분석 중…")
+
+        def work():
+            infos = {a["path"]: music.get(a["path"]) for a in auds}
+            vm = music.video_mood(p, segs)
+            return infos, vm
+
+        def done(r):
+            infos, vm = r
+            self.music_info.update(infos)
+            self.timeline.set_music_info(self.music_info)
+            self.b_mauto.setEnabled(True)
+            self.b_mauto.setText("음악 자동")
+            p = self.state.project                     # (분석하는 사이 실행취소 등으로 바뀌었을 수 있음)
+            items = music.plan(auds, infos, total, vm["mood"], float(p.mix.get("xfade", 2.0)))
+            if not items:
+                self._say("쓸 수 있는 음악이 없음", C_WARN)
+                return
+            self.state.checkpoint()
+            p.music = [{**new_music(x["path"], x["t0"], x["dur"]), "off": x["off"], "len": x["len"]} for x in items]
+            self.state.touch("titles")
+            names = " → ".join(f"{Path(x['path']).stem}({music.mood_word(music.mood(infos[x['path']]))})" for x in items)
+            self._say(f"음악 자동: 영상 {music.mood_word(vm['mood'])} · {names}", C_INFO)
+            ff.log_info(f"음악 자동: 영상 {vm} → {[(Path(x['path']).name, round(music.mood(infos[x['path']]), 2), x['len']) for x in items]}")
+
+        def err(msg):
+            self.b_mauto.setEnabled(True)
+            self.b_mauto.setText("음악 자동")
+            ff.log_error("음악 자동", msg)
+            self._say(f"음악 자동 실패: {msg[-120:]}", C_WARN)
+        job = jobs.Job(work)
+        job.signals.done.connect(done)
+        job.signals.error.connect(err)
+        jobs.submit(jobs.AUTO_POOL, job)
 
     # ================================================================ 소스 줄 툴팁(프리셋 · 인식 · 출력)
     def _src_tip(self, s):

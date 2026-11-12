@@ -626,7 +626,7 @@ def new_music(path: str, t0: float, dur: float) -> dict:
 
 def default_mix() -> dict:
     """orig None = 자동(음악 없으면 1.0, 있으면 0.0)."""
-    return {"orig": None, "music": 1.0, "fin": 0.5, "fout": 2.0}
+    return {"orig": None, "music": 1.0, "fin": 0.5, "fout": 2.0, "xfade": 2.0}     # xfade = 곡을 이어 붙일 때 겹침(초, v0.16.64)
 
 
 def orig_volume(mix: dict, music: list) -> float:

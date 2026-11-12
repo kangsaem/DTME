@@ -2433,16 +2433,25 @@ def post_graph(fparts: list, cmd: list, project: Project, extras: dict, total: f
     vo = orig_volume(mix, music)
     fparts.append(f"[am]volume={vo:.3f}[ab]")
     labs = ["[ab]"]
+    spans = [(float(x["t0"]), float(x["t0"]) + float(x.get("len", x.get("dur", 0)))) for x in music]
     for j, m in enumerate(music):
         t0 = float(m["t0"])
         ln = max(0.05, min(float(m.get("len", m.get("dur", 0))), total - t0))
         fi, fo = min(float(mix.get("fin", 0.5)), ln / 2), min(float(mix.get("fout", 2.0)), ln / 2)
+        # v0.16.64 크로스페이드: 다른 곡과 겹친 만큼 = 겹친 구간에서 줄고/커짐(두 곡 합이 일정한 곡선 qsin). 안 겹친 쪽 = 설정 페이드
+        ci = max([b - t0 for k, (a_, b) in enumerate(spans) if k != j and a_ < t0 < b] + [0.0])
+        co = max([t0 + ln - a_ for k, (a_, b) in enumerate(spans) if k != j and t0 < a_ < t0 + ln and b > t0 + ln] + [0.0])
         cmd += ["-i", _abs(m["path"])]
         a = [f"atrim=start={float(m.get('off', 0)):.4f}:duration={ln:.4f}", "asetpts=PTS-STARTPTS",
              "aresample=48000", "aformat=sample_fmts=fltp:channel_layouts=stereo"]
-        if fi > 0.01:
+        if ci > 0.01:
+            a.append(f"afade=t=in:st=0:d={min(ci, ln):.4f}:curve=qsin")
+        elif fi > 0.01:
             a.append(f"afade=t=in:st=0:d={fi:.4f}")
-        if fo > 0.01:
+        if co > 0.01:
+            co = min(co, ln)
+            a.append(f"afade=t=out:st={ln - co:.4f}:d={co:.4f}:curve=qsin")
+        elif fo > 0.01:
             a.append(f"afade=t=out:st={ln - fo:.4f}:d={fo:.4f}")
         a += [f"volume={float(mix.get('music', 1.0)):.3f}", f"adelay=delays={int(t0 * 1000)}:all=1"]
         fparts.append(f"[{ii}:a:0]{','.join(a)}[mu{j}]")

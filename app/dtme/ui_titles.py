@@ -319,12 +319,12 @@ class MusicDialog(_Undoable):
         g = QGridLayout()
         self.body.addLayout(g)
         rows = [("음악 볼륨", "music", 0, 200, 100, "%"), ("원본 볼륨", "orig", 0, 200, 100, "%"),
-                ("페이드인", "fin", 0, 50, 10, "초"), ("페이드아웃", "fout", 0, 80, 10, "초")]
+                ("페이드인", "fin", 0, 50, 10, "초"), ("페이드아웃", "fout", 0, 80, 10, "초"), ("곡 사이 겹침", "xfade", 0, 80, 10, "초")]
         self.labels = {}
         for r, (name, k, lo, hi, sc, unit) in enumerate(rows):
             g.addWidget(QLabel(name), r, 0)
             v = mix.get(k)
-            cur = 0 if (k == "orig" and v is None) else float(v if v is not None else 0)
+            cur = 0 if (k == "orig" and v is None) else float(v if v is not None else (2.0 if k == "xfade" else 0))
             s = _slider(lo, hi, int(round(cur * sc)))
             lab = QLabel()
             lab.setMinimumWidth(48)
@@ -345,7 +345,7 @@ class MusicDialog(_Undoable):
 
     def _label(self, k):
         lab, sc, unit = self.labels[k]
-        v = self.mix.get(k)
+        v = self.mix.get(k, 2.0 if k == "xfade" else None)
         if k == "orig" and v is None:
             lab.setText("자동")
         elif unit == "%":

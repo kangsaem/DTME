@@ -406,7 +406,7 @@ class SeqTimeline(QWidget):
 
     RULER = 20
     TL = 18          # 글자·이미지 줄 높이
-    ML = 20          # 음악 줄 높이
+    ML = 30          # 음악 줄 높이(v0.16.64 20 → 30: 파형·박자 눈금)
     GRAB = 6
     SNAP = 8
 
@@ -418,6 +418,7 @@ class SeqTimeline(QWidget):
         self.sel = ""
         self.trans_sel = ""           # 선택한 화면 전환(뒤 컷 id)
         self.titles, self.music = [], []
+        self.music_info = {}          # v0.16.64 음악 파일 → 분석(music.analyze): 파형 · 박자 · 마디 첫 박
         self.ov_sel = ("", "")
         self.t = 0.0
         self._press = None            # 컷: (index, x)
@@ -435,6 +436,10 @@ class SeqTimeline(QWidget):
     def set_overlays(self, titles, music, sel):
         self.titles, self.music, self.ov_sel = titles, music, sel
         self._resize()
+        self.update()
+
+    def set_music_info(self, info: dict):
+        self.music_info = info
         self.update()
 
     def set_time(self, t):
@@ -638,6 +643,8 @@ class SeqTimeline(QWidget):
                 label = Path(d.get("path", "")).stem
             c.setAlpha(225)
             p.fillRect(r, c)
+            if kind == "music":
+                self._paint_music(p, d, r)
             if (kind, d.get("id")) == self.ov_sel:
                 p.setPen(QPen(QColor("white"), 2))
                 p.drawRect(r.adjusted(1, 1, -1, -1))
@@ -663,6 +670,55 @@ class SeqTimeline(QWidget):
         p.setPen(QPen(QColor("#e5484d"), 2))
         p.drawLine(QPointF(x, 0), QPointF(x, h))
 
+    def _paint_music(self, p, m, r):
+        """음악 막대 안: 파형(밝은 초록) · 박자(짧은 눈금) · 마디 첫 박(긴 눈금) · 다른 곡과 겹친 곳 = X(크로스페이드)."""
+        inf = self.music_info.get(m.get("path", ""))
+        off, ln = float(m.get("off", 0)), float(m["len"])
+        p.save()
+        p.setClipRect(r)
+        if inf and inf.get("peaks"):
+            pk = inf["peaks"]
+            per = 50.0
+            cy, hh = r.center().y(), r.height() / 2 - 2
+            x0, x1 = max(r.left(), 0), min(r.right(), self.width())
+            step = 2
+            col = QColor(150, 220, 175, 150)
+            p.setPen(QPen(col, 1))
+            x = x0
+            while x <= x1:
+                ta = off + (x - r.left()) / self.pps
+                tb = ta + step / self.pps
+                ia, ib = int(ta * per), max(int(ta * per) + 1, int(tb * per))
+                seg = pk[max(0, ia):min(len(pk), ib)]
+                v = (max(seg) / 255.0) if seg else 0.0
+                p.drawLine(QPointF(x, cy - v * hh), QPointF(x, cy + v * hh))
+                x += step
+            conf = float(inf.get("conf", 0))
+            if conf >= 0.15:
+                a = 70 + int(140 * min(1.0, conf))
+                bt = [b for b in inf.get("beats", []) if off <= b <= off + ln]
+                if len(bt) > 1 and (bt[1] - bt[0]) * self.pps >= 5:
+                    p.setPen(QPen(QColor(255, 255, 255, a // 2), 1))
+                    for b in bt:
+                        x = r.left() + (b - off) * self.pps
+                        p.drawLine(QPointF(x, r.bottom() - 5), QPointF(x, r.bottom()))
+                p.setPen(QPen(QColor(242, 201, 76, a), 1))
+                for b in inf.get("bars", []):
+                    if off <= b <= off + ln:
+                        x = r.left() + (b - off) * self.pps
+                        p.drawLine(QPointF(x, r.top()), QPointF(x, r.bottom()))
+        p.restore()
+        t0 = float(m["t0"])                              # 앞 곡과 겹침 = X
+        for o in self.music:
+            if o is m:
+                continue
+            a, b = float(o["t0"]), float(o["t0"]) + float(o["len"])
+            if a < t0 < b:
+                xa, xb = self._x(t0), self._x(min(b, t0 + ln))
+                p.setPen(QPen(QColor(255, 255, 255, 200), 1.5))
+                p.drawLine(QPointF(xa, r.top()), QPointF(xb, r.bottom()))
+                p.drawLine(QPointF(xa, r.bottom()), QPointF(xb, r.top()))
+
     def _drop_index(self, x):
         rects = self._rects()
         for i, r in enumerate(rects):
@@ -679,7 +735,32 @@ class SeqTimeline(QWidget):
         for m in self.music:
             if m is not exclude:
                 ts += [float(m["t0"]), float(m["t0"]) + float(m["len"])]
+        if not (isinstance(exclude, dict) and exclude in self.music):      # v0.16.64 글자·이미지 = 음악 박자에도 붙음(리듬 뚜렷한 곡만)
+            from .music import beats_on_timeline
+            for m in self.music:
+                inf = self.music_info.get(m.get("path", ""))
+                if inf and float(inf.get("conf", 0)) >= 0.3:
+                    ts += beats_on_timeline(m, inf)
         return ts
+
+    def _bar_snap(self, m, n0):
+        """음악 옮기기: 마디 첫 박이 컷 경계에 가까우면 그 자리로(v0.16.64). → 새 t0 또는 None."""
+        inf = self.music_info.get(m.get("path", ""))
+        if not inf or float(inf.get("conf", 0)) < 0.3 or not inf.get("bars"):
+            return None
+        cuts = [it[6] for it in self.items] + ([self.items[-1][6] + self.items[-1][1]] if self.items else [])
+        off, ln = float(m.get("off", 0)), float(m["len"])
+        tol = self.SNAP / self.pps
+        best = None
+        for b in inf["bars"]:
+            if not (off <= b <= off + ln):
+                continue
+            x = n0 + b - off
+            for c in cuts:
+                d = c - x
+                if abs(d) <= tol and (best is None or abs(d) < abs(best)):
+                    best = d
+        return None if best is None else n0 + best
 
     def _snap(self, v, targets):
         tol = self.SNAP / self.pps
@@ -756,7 +837,9 @@ class SeqTimeline(QWidget):
                 if mode == "move":
                     n0 = max(0.0, t0 + dt)
                     s0, s1 = self._snap(n0, tg), self._snap(n0 + ln, tg) - ln
-                    d["t0"] = max(0.0, s0 if s0 != n0 else s1)
+                    sb = self._bar_snap(d, n0)
+                    cands = [x for x in (s0, s1, sb) if x is not None and abs(x - n0) > 1e-6]    # (n0+len)-len 소수 오차 = 안 붙은 것
+                    d["t0"] = max(0.0, min(cands, key=lambda x: abs(x - n0)) if cands else n0)
                 elif mode == "l":       # 앞을 자름: 파일 안 시작도 같이
                     n0 = self._snap(t0 + dt, tg)
                     n0 = max(t0 - off, min(t0 + ln - 0.2, n0))
