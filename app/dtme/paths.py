@@ -16,6 +16,11 @@ def bin_dir() -> Path:
     return app_dir() / "bin"
 
 
+def asset(name: str) -> Path:
+    """그림 파일(assets/…): 시작 창 그림 start.png · 아이콘 dtme.ico. 빌드 = 프로그램 폴더 assets, 개발 = 저장소 assets."""
+    return app_dir() / "assets" / name
+
+
 def lut_dir() -> Path:
     d = app_dir() / "luts"
     d.mkdir(exist_ok=True)

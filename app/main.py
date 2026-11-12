@@ -84,6 +84,13 @@ def main():
     os.environ.setdefault("QT_MEDIA_BACKEND", "ffmpeg")
     app = QApplication(sys.argv)
     app.setApplicationName("DTME")
+    try:                                   # 창·작업 표시줄 아이콘(v0.16.52, exe 파일 아이콘은 빌드 --icon)
+        from PySide6.QtGui import QIcon
+        from dtme import paths as _paths
+        if _paths.asset("dtme.ico").exists():
+            app.setWindowIcon(QIcon(str(_paths.asset("dtme.ico"))))
+    except Exception:  # noqa: BLE001
+        pass
     hw_check()
     dark(app)
     w = MainWindow()

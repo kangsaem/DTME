@@ -31,7 +31,7 @@ jobs:
 
       - name: Build exe (PyInstaller, onedir)
         run: |
-          pyinstaller --noconfirm --windowed --name DTME --paths app `
+          pyinstaller --noconfirm --windowed --name DTME --icon assets/dtme.ico --paths app `
             --collect-submodules dtme `
             --exclude-module PySide6.QtWebEngineCore --exclude-module PySide6.QtWebEngineWidgets `
             --exclude-module PySide6.QtQuick --exclude-module PySide6.QtQml --exclude-module PySide6.Qt3DCore `
@@ -95,6 +95,7 @@ jobs:
           Copy-Item luts/*.cube dist/DTME/luts/
           New-Item -ItemType Directory -Force dist/DTME/fonts | Out-Null
           Copy-Item fonts/* dist/DTME/fonts/
+          Copy-Item assets dist/DTME/ -Recurse -Force
           Copy-Item README.md dist/DTME/사용법.md
           & dist/DTME/bin/ffmpeg.exe -hide_banner -version | Select-Object -First 1
 
@@ -164,6 +165,8 @@ jobs:
           python tests/test_insta.py insta_test
           if ($LASTEXITCODE -ne 0) { exit 1 }
           python tests/test_ui_presetclose.py
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          python tests/test_ui_start.py
           if ($LASTEXITCODE -ne 0) { exit 1 }
           # 끝난 뒤 Windows 종료 단계에서 가끔 접근 위반(테스트 내용과 무관, 원인 미확인) → 결과 줄로 판정
           $o = python tests/test_ui_autocheck.py 2>&1 | Out-String
