@@ -15,6 +15,31 @@ SIZE_MIN, SIZE_MAX = 16, 600          # 글자 크기(1080 화면 기준 px)
 RECT_SWATCHES = ["#000000", "#ffffff", "#1f3a5f", "#7a1f1f"]
 
 
+ANIM_BTNS = (("fade", "페이드"), ("right", "→"), ("left", "←"), ("up", "↑"), ("down", "↓"))
+
+
+def anim_rows(dlg, grid, row: int, data: dict):
+    """들어올 때(인)·나갈 때(아웃): [페이드 | → | ← | ↑ | ↓] 두 줄(v0.16.57). 화살표 = 움직이는 방향. dlg.anim = {'ain': 그룹, 'aout': 그룹}."""
+    dlg.anim = {}
+    for i, (key, name) in enumerate((("ain", "인"), ("aout", "아웃"))):
+        grid.addWidget(QLabel(name), row + i, 0)
+        h = QHBoxLayout()
+        h.setSpacing(0)
+        grp = QButtonGroup(dlg)
+        for j, (k, n) in enumerate(ANIM_BTNS):
+            b = QPushButton(n)
+            b.setCheckable(True)
+            b.setFocusPolicy(Qt.NoFocus)
+            b.setProperty("key", k)
+            b.setMinimumWidth(34 if k != "fade" else 52)
+            b.setChecked(data.get(key, "fade") == k)
+            grp.addButton(b, j)
+            h.addWidget(b, 1)
+        grp.buttonClicked.connect(lambda b, key=key: dlg._set(key, b.property("key")))
+        grid.addLayout(h, row + i, 1, 1, 2)
+        dlg.anim[key] = grp
+
+
 def _slider(lo, hi, v):
     s = QSlider(Qt.Horizontal)
     s.setRange(lo, hi)
@@ -117,12 +142,13 @@ class TextDialog(_Undoable):
             brow.addWidget(b, 1)
         self.bg.buttonClicked.connect(lambda b: self._set("bg", b.property("key")))
         g.addLayout(brow, 2, 1, 1, 2)
-        g.addWidget(QLabel("페이드"), 3, 0)
+        anim_rows(self, g, 3, title)
+        g.addWidget(QLabel("길이"), 5, 0)            # 페이드·밀기 길이(예전 이름 '페이드')
         self.fade = _slider(0, 20, int(round(float(title.get("fade", 0.5)) * 10)))
         self.fade_v = QLabel(f"{self.fade.value() / 10:.1f}초")
         self.fade.valueChanged.connect(lambda v: (self.fade_v.setText(f"{v / 10:.1f}초"), self._set("fade", v / 10)))
-        g.addWidget(self.fade, 3, 1)
-        g.addWidget(self.fade_v, 3, 2)
+        g.addWidget(self.fade, 5, 1)
+        g.addWidget(self.fade_v, 5, 2)
         g.setColumnStretch(1, 1)
         lay.addLayout(g)
         self._paint_swatches()
@@ -187,7 +213,7 @@ class RectDialog(_Undoable):
         crow.addWidget(more)
         crow.addStretch(1)
         g.addLayout(crow, 0, 1, 1, 2)
-        rows = (("불투명도", "opacity", 0, 100, 100, "%"), ("둥글기", "radius", 0, 80, 1, ""), ("페이드", "fade", 0, 20, 10, "초"))
+        rows = (("불투명도", "opacity", 0, 100, 100, "%"), ("둥글기", "radius", 0, 80, 1, ""), ("길이", "fade", 0, 20, 10, "초"))
         self.vals = {}
         for i, (name, key, lo, hi, sc, unit) in enumerate(rows, 1):
             g.addWidget(QLabel(name), i, 0)
@@ -202,6 +228,7 @@ class RectDialog(_Undoable):
             g.addWidget(sl, i, 1)
             g.addWidget(lab, i, 2)
             self.vals[key] = sl
+        anim_rows(self, g, len(rows) + 1, rect)
         g.setColumnStretch(1, 1)
         self.body.addLayout(g)
         self._paint_swatches()
@@ -221,6 +248,31 @@ class RectDialog(_Undoable):
         c = QColorDialog.getColor(QColor(self.t.get("color", "#000000")), self, "사각형 색")
         if c.isValid():
             self._color(c.name())
+
+    def _set(self, k, v):
+        self.t[k] = v
+        self.changed.emit()
+
+
+class ImageDialog(_Undoable):
+    """타임라인 이미지(v0.16.57): 들어올 때·나갈 때 · 길이. 위치·크기는 모니터에서."""
+
+    def __init__(self, title: dict, parent=None):
+        super().__init__(title, parent)
+        self.t = title
+        self.setMinimumWidth(320)
+        g = QGridLayout()
+        anim_rows(self, g, 0, title)
+        g.addWidget(QLabel("길이"), 2, 0)
+        self.fade = _slider(0, 20, int(round(float(title.get("fade", 0.5)) * 10)))
+        self.fade_v = QLabel(f"{self.fade.value() / 10:.1f}초")
+        self.fade_v.setMinimumWidth(40)
+        self.fade.valueChanged.connect(lambda v: (self.fade_v.setText(f"{v / 10:.1f}초"), self._set("fade", v / 10)))
+        g.addWidget(self.fade, 2, 1)
+        g.addWidget(self.fade_v, 2, 2)
+        g.setColumnStretch(1, 1)
+        self.body.addLayout(g)
+        self.add_buttons()
 
     def _set(self, k, v):
         self.t[k] = v

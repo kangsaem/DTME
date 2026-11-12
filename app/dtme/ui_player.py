@@ -158,8 +158,24 @@ class Monitor(QWidget):
         k = c.width() / self.out_wh[0]
         p.save()
         p.setClipRect(c)
+        from .project import anim_offset
+        moved = False
         for t, alpha, img, wh in self.titles:
+            if moved:
+                p.restore()
+                moved = False
             p.setOpacity(max(0.0, min(1.0, alpha)))
+            ph, akey, af = getattr(self, "title_anim", {}).get(t.get("id"), (None, "", 0.0))
+            if ph:                                      # v0.16.57 밀려 들어오기/나가기(렌더와 같은 계산, 화면 px)
+                if t.get("kind") in ("rect", "image"):
+                    br, pad = self._title_rect(t, wh if t.get("kind") == "image" else None), 2 * k
+                else:
+                    br, pad = self._title_rect(t, None, QFontMetricsF(self._title_font(t, k))), 24 * k
+                dx, dy = anim_offset(ph, akey, af, (br.left() - c.left(), br.top() - c.top(), br.width(), br.height()),
+                                     c.width(), c.height(), pad)
+                p.save()
+                p.translate(dx, dy)
+                moved = True
             if t.get("kind") == "rect":
                 col = QColor(t.get("color", "#000000"))
                 col.setAlphaF(max(0.0, min(1.0, float(t.get("opacity", 0.5)))))
@@ -190,6 +206,8 @@ class Monitor(QWidget):
                 p.setPen(QColor(t.get("color", "#ffffff")))
                 p.drawText(QPointF(x, y + fm.ascent()), line)
                 y += fm.lineSpacing() + 8 * k
+        if moved:
+            p.restore()
         p.restore()
         for t, _a, img, wh in self.titles:
             if t["id"] == self.sel_title and not self.playing:

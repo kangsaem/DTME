@@ -1894,14 +1894,16 @@ class EditTab(QWidget):
     def _update_tl_titles(self, t):
         p = self.state.project
         out = []
+        anim = {}
         for d in p.titles:
             t0, t1 = float(d["t0"]), float(d["t1"])
             if not (t0 <= t < t1):
                 continue
-            fd = min(float(d.get("fade", 0.5)), (t1 - t0) / 2)
-            a = 1.0 if fd <= 0.01 else max(0.0, min(1.0, (t - t0) / fd, (t1 - t) / fd))
+            from .project import title_anim
+            a, ph, akey, af = title_anim(d, t)           # v0.16.57 페이드 또는 밀려 들어오기/나가기
             if not self.player.is_playing():
-                a = 1.0                                  # 멈춤 = 페이드 무시(0초 시작 글자·사각형도 보이게), 페이드는 재생할 때만
+                a, ph, af = 1.0, None, 0.0               # 멈춤 = 페이드·밀기 무시(0초 시작 글자·사각형도 제자리에 보이게), 재생할 때만
+            anim[d["id"]] = (ph, akey, af)
             img, wh = None, None
             if d.get("kind") == "image":
                 m = p.image(d.get("img", ""))
@@ -1909,6 +1911,7 @@ class EditTab(QWidget):
                     continue
                 img, wh = self._qimage(m.id), (m.width, m.height)
             out.append((d, a, img, wh))
+        self.player.mon.title_anim = anim
         self.player.mon.set_titles(out, self.sel_ov[1] if self.sel_ov[0] == "title" else "")
 
     def _on_title_pressed(self, tid):
@@ -1976,7 +1979,7 @@ class EditTab(QWidget):
     def edit_ov(self, kind, oid, new: bool = False):
         """글자·음악 설정 = 떠 있는 창(v0.16.19). 열린 채로 타임라인·모니터 조작 가능.
         [확인] = 등록하고 닫기(빈 글자면 없앰) / [취소]·Esc = 열기 전으로(새 글자면 없앰). 다른 창을 열면 앞 창은 [확인]."""
-        from .ui_titles import MusicDialog, RectDialog, TextDialog
+        from .ui_titles import ImageDialog, MusicDialog, RectDialog, TextDialog
         d = self._ov(kind, oid)
         if d is None:
             return
@@ -1995,6 +1998,12 @@ class EditTab(QWidget):
             if not new:
                 self.state.checkpoint()
             dlg = RectDialog(d, self)
+        elif kind == "title" and d.get("kind") == "image":       # v0.16.57 이미지 = 길이 · 들어올 때/나갈 때
+            if self.state.project.segments:
+                self.set_mode("timeline")
+            if not new:
+                self.state.checkpoint()
+            dlg = ImageDialog(d, self)
         elif kind == "music":
             self.state.checkpoint()
             dlg = MusicDialog(self.state.project.mix, self)

@@ -578,6 +578,41 @@ def new_title_image(img: str, t0: float, t1: float, scale: float = 1.0) -> dict:
             "cx": 0.5, "cy": 0.5, "scale": float(scale)}
 
 
+# v0.16.57 글자·사각형·이미지: 들어올 때(ain)·나갈 때(aout) = 페이드 대신 밀려 들어오기/나가기(움직이는 방향).
+# 길이 = fade 값. 들어올 때 = 빠르게 출발해 부드럽게 멈춤(남은 거리 (1-u)^3), 나갈 때 = 천천히 출발해 빠르게(u^3). 화면 밖 ↔ 제자리.
+ANIMS = ("fade", "right", "left", "up", "down")
+
+
+def title_anim(d: dict, t: float):
+    """t(초)에서 → (알파, 'in'|'out'|None, 방향, 거리 비율 0~1)."""
+    t0, t1 = float(d["t0"]), float(d["t1"])
+    fd = min(float(d.get("fade", 0.5)), (t1 - t0) / 2)
+    if fd <= 0.01:
+        return 1.0, None, "", 0.0
+    ain, aout = d.get("ain", "fade"), d.get("aout", "fade")
+    if t < t0 + fd:
+        u = max(0.0, min(1.0, (t - t0) / fd))
+        return (u, None, "", 0.0) if ain not in ANIMS[1:] else (1.0, "in", ain, (1 - u) ** 3)
+    if t > t1 - fd:
+        u = max(0.0, min(1.0, (t - (t1 - fd)) / fd))
+        return (1 - u, None, "", 0.0) if aout not in ANIMS[1:] else (1.0, "out", aout, u ** 3)
+    return 1.0, None, "", 0.0
+
+
+def anim_offset(phase, key: str, f: float, box, ow: float, oh: float, pad: float = 0.0):
+    """밀기 (dx, dy). box = (x, y, w, h) 제자리. 들어올 때 = 움직이는 방향의 반대쪽 화면 밖에서, 나갈 때 = 그 방향 화면 밖으로."""
+    if not phase or f <= 0:
+        return 0.0, 0.0
+    x, y, w, h = box
+    away = {"right": (ow - x + pad, 0.0), "left": (-(x + w + pad), 0.0), "up": (0.0, -(y + h + pad)), "down": (0.0, oh - y + pad)}
+    if phase == "out":
+        dx, dy = away.get(key, (0.0, 0.0))
+    else:                                           # 들어옴 = 반대 방향으로 나가 있는 자리에서
+        opp = {"right": "left", "left": "right", "up": "down", "down": "up"}.get(key, "")
+        dx, dy = away.get(opp, (0.0, 0.0))
+    return dx * f, dy * f
+
+
 def new_rect(t0: float, t1: float) -> dict:
     """사각형 레이어(v0.16.34, 글자 배경용). cx·cy·w·h = 출력 화면 비율, radius = 1080 기준 px, opacity 0~1."""
     return {"id": _id(), "kind": "rect", "t0": float(t0), "t1": float(t1), "fade": TITLE_FADE,

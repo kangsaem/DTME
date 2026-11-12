@@ -2200,11 +2200,57 @@ def _hex(c: str) -> str:
     return "0x" + (c if len(c) == 6 else "ffffff")
 
 
-def _fade_alpha(t0, t1, f):
+def _fade_alpha(t0, t1, f, fin: bool = True, fout: bool = True):
     f = min(f, (t1 - t0) / 2)
-    if f <= 0.01:
+    if f <= 0.01 or not (fin or fout):
         return "1"
-    return f"if(lt(t,{t0 + f:.4f}),(t-{t0:.4f})/{f:.4f},if(gt(t,{t1 - f:.4f}),({t1:.4f}-t)/{f:.4f},1))"
+    a = f"(t-{t0:.4f})/{f:.4f}" if fin else "1"
+    b = f"({t1:.4f}-t)/{f:.4f}" if fout else "1"
+    return f"if(lt(t,{t0 + f:.4f}),{a},if(gt(t,{t1 - f:.4f}),{b},1))"
+
+
+def _anim_sides(t: dict) -> tuple[str, str, float]:
+    """(들어올 때, 나갈 때, 길이) — 밀기가 아니면 'fade'."""
+    from .project import ANIMS
+    t0, t1 = float(t["t0"]), float(t["t1"])
+    fd = min(float(t.get("fade", 0.5)), (t1 - t0) / 2)
+    ain, aout = t.get("ain", "fade"), t.get("aout", "fade")
+    return (ain if ain in ANIMS[1:] else "fade"), (aout if aout in ANIMS[1:] else "fade"), fd
+
+
+def _slide_xy(t: dict, x0: str, y0: str, w: str, h: str, ow: int, oh: int, pad: float) -> tuple[str, str]:
+    """밀려 들어오기/나가기(v0.16.57) → overlay·drawtext 의 x, y 식(t = 초). project.title_anim/anim_offset 과 같은 계산.
+    x0·y0·w·h = 제자리 위치·크기(숫자 또는 text_w 같은 식)."""
+    ain, aout, fd = _anim_sides(t)
+    if fd <= 0.01 or (ain == "fade" and aout == "fade"):
+        return x0, y0
+    t0, t1 = float(t["t0"]), float(t["t1"])
+    away = {"right": (f"({ow}-({x0})+{pad:.1f})", ""), "left": (f"(-(({x0})+({w})+{pad:.1f}))", ""),
+            "up": ("", f"(-(({y0})+({h})+{pad:.1f}))"), "down": ("", f"({oh}-({y0})+{pad:.1f})")}
+    opp = {"right": "left", "left": "right", "up": "down", "down": "up"}
+    fin = f"pow(1-(t-{t0:.4f})/{fd:.4f},3)"
+    fout = f"pow((t-{t1 - fd:.4f})/{fd:.4f},3)"
+    out = []
+    for axis, base in ((0, x0), (1, y0)):
+        e = f"({base})"
+        if ain != "fade" and away[opp[ain]][axis]:
+            e += f"+if(lt(t,{t0 + fd:.4f}),{away[opp[ain]][axis]}*{fin},0)"
+        if aout != "fade" and away[aout][axis]:
+            e += f"+if(gt(t,{t1 - fd:.4f}),{away[aout][axis]}*{fout},0)"
+        out.append(e)
+    return out[0], out[1]
+
+
+def _fade_chain(t: dict) -> list[str]:
+    """사각형·이미지: 페이드를 고른 쪽만 알파 페이드."""
+    ain, aout, fd = _anim_sides(t)
+    t0, t1 = float(t["t0"]), float(t["t1"])
+    c = []
+    if fd > 0.01 and ain == "fade":
+        c.append(f"fade=t=in:st={t0:.4f}:d={fd:.4f}:alpha=1")
+    if fd > 0.01 and aout == "fade":
+        c.append(f"fade=t=out:st={t1 - fd:.4f}:d={fd:.4f}:alpha=1")
+    return c
 
 
 def _work_copy(path: str, prefix: str) -> str:
@@ -2235,7 +2281,10 @@ def text_filter(t: dict, ow: int, oh: int) -> str | None:
     col = _hex(t.get("color"))
     o = [f"fontfile={fname}", f"textfile={tf.name}", f"fontsize={max(8, round(float(t.get('size', 64)) * k))}",
          f"fontcolor={col}", "text_align=C", f"line_spacing={round(8 * k)}",
-         f"x={float(t.get('cx', 0.5)) * ow:.1f}-text_w/2", f"y={float(t.get('cy', 0.8)) * oh:.1f}-text_h/2"]
+         ]
+    sx, sy = _slide_xy(t, f"{float(t.get('cx', 0.5)) * ow:.1f}-text_w/2", f"{float(t.get('cy', 0.8)) * oh:.1f}-text_h/2",
+                       "text_w", "text_h", ow, oh, 24 * k)
+    o += [f"x='{sx}'", f"y='{sy}'"]
     if t.get("bold") and not real_bold:
         o.append(f"borderw={max(1, round(1.5 * k))}:bordercolor={col}")
     bg = t.get("bg", "shadow")
@@ -2245,7 +2294,8 @@ def text_filter(t: dict, ow: int, oh: int) -> str | None:
     elif bg == "band":
         o.append(f"box=1:boxcolor=0x000000@0.45:boxborderw={round(16 * k)}")
     o.append(f"enable='between(t,{t0:.4f},{t1:.4f})'")
-    o.append(f"alpha='{_fade_alpha(t0, t1, float(t.get('fade', 0.5)))}'")
+    ain, aout, _fd = _anim_sides(t)
+    o.append(f"alpha='{_fade_alpha(t0, t1, float(t.get('fade', 0.5)), ain == 'fade', aout == 'fade')}'")
     return "drawtext=" + ":".join(o)
 
 
@@ -2317,12 +2367,10 @@ def post_graph(fparts: list, cmd: list, project: Project, extras: dict, total: f
             png = rect_png(t, w, h, min(ow, oh) / 1080)
             cmd += ["-loop", "1", "-framerate", f"{OUT_FPS.numerator}/{OUT_FPS.denominator}", "-t", f"{total + 1:.3f}",
                     "-i", _abs(png)]
-            fd = min(float(t.get("fade", 0.5)), (t1 - t0) / 2)
-            chain = ["format=yuva420p"]
-            if fd > 0.01:
-                chain += [f"fade=t=in:st={t0:.4f}:d={fd:.4f}:alpha=1", f"fade=t=out:st={t1 - fd:.4f}:d={fd:.4f}:alpha=1"]
+            chain = ["format=yuva420p"] + _fade_chain(t)
+            sx, sy = _slide_xy(t, str(x), str(y), str(w), str(h), ow, oh, 2)
             fparts.append(f"[{ii}:v:0]{','.join(chain)}[ti{k}]")
-            fparts.append(f"{cur}[ti{k}]overlay=x={x}:y={y}:format=yuv420:eof_action=pass"
+            fparts.append(f"{cur}[ti{k}]overlay=x='{sx}':y='{sy}':format=yuv420:eof_action=pass"
                           f":enable='between(t,{t0:.4f},{t1:.4f})'{nxt}")
             ii += 1
         else:
@@ -2333,12 +2381,10 @@ def post_graph(fparts: list, cmd: list, project: Project, extras: dict, total: f
             cmd += ["-loop", "1", "-framerate", f"{OUT_FPS.numerator}/{OUT_FPS.denominator}", "-t", f"{total + 1:.3f}",
                     "-noautorotate", "-i", _abs(img.path)]
             x, y, w, h = layer_box(t, img, ow, oh)
-            fd = min(float(t.get("fade", 0.5)), (t1 - t0) / 2)
-            chain = ORIENT_FILTER.get(img.orient, []) + [f"scale=w={w}:h={h}:flags=lanczos:{OV_CONVERT}", "format=yuva420p"]
-            if fd > 0.01:
-                chain += [f"fade=t=in:st={t0:.4f}:d={fd:.4f}:alpha=1", f"fade=t=out:st={t1 - fd:.4f}:d={fd:.4f}:alpha=1"]
+            chain = ORIENT_FILTER.get(img.orient, []) + [f"scale=w={w}:h={h}:flags=lanczos:{OV_CONVERT}", "format=yuva420p"] + _fade_chain(t)
+            sx, sy = _slide_xy(t, str(x), str(y), str(w), str(h), ow, oh, 2)
             fparts.append(f"[{ii}:v:0]{','.join(chain)}[ti{k}]")
-            fparts.append(f"{cur}[ti{k}]overlay=x={x}:y={y}:format=yuv420:eof_action=pass"
+            fparts.append(f"{cur}[ti{k}]overlay=x='{sx}':y='{sy}':format=yuv420:eof_action=pass"
                           f":enable='between(t,{t0:.4f},{t1:.4f})'{nxt}")
             ii += 1
         cur, k = nxt, k + 1
