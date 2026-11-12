@@ -592,7 +592,58 @@ def probe(path: str) -> dict:
         "pix_fmt": v.get("pix_fmt", ""), "codec": v.get("codec_name", ""),
         "vfr": vfr, "duration": dur,
         "color_mode": (lambda m: m if m != "unknown" else insta_color_mode(path))(dji_color_mode(path, d)),
+        "ctime": _ctime12((d.get("format", {}).get("tags") or {}).get("creation_time", "")),
     }
+
+
+def _ctime12(t: str) -> str:
+    """파일 안의 만든 시각(UTC '2026-06-25T02:35:25.000000Z') → 현지 시간 YYYYMMDDhhmm. 없음·이상한 값(1904·1970 등) = ''."""
+    try:
+        from datetime import datetime, timezone
+        dt = datetime.strptime(t.strip()[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+        if dt.year < 2005:
+            return ""
+        return dt.astimezone().strftime("%Y%m%d%H%M")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def aae_trim(path: str):
+    """아이폰 사진 앱 편집 기록(.AAE, 영상 옆에 같이 옴)의 자르기 구간 → (시작 초, 끝 초). 없음·못 읽음 = None.
+    짝: 같은 이름.AAE · IMG_1234 → IMG_O1234.AAE. 자르기 말고 다른 편집(색·필터)은 안 읽음."""
+    import plistlib
+    import re
+    import zlib
+    p = Path(path)
+    names = [p.stem + e for e in (".AAE", ".aae")]
+    m = re.match(r"^(IMG_)E?(\d+)$", p.stem, re.I)
+    if m:
+        names += [f"{m.group(1)}O{m.group(2)}{e}" for e in (".AAE", ".aae")]
+    f = next((p.parent / n for n in names if (p.parent / n).is_file()), None)
+    if f is None:
+        return None
+    try:
+        with open(f, "rb") as fh:
+            raw = plistlib.load(fh).get("adjustmentData")
+        d = None
+        for wbits in (-15, 15, 31):
+            try:
+                d = json.loads(zlib.decompress(raw, wbits))
+                break
+            except Exception:  # noqa: BLE001
+                continue
+        if d is None:
+            d = json.loads(raw)
+        for a in d.get("adjustments", []):
+            if a.get("identifier") == "Trim" and a.get("enabled", True):
+                st = a.get("settings", {})
+                sec = lambda k: float(st[k]["value"]) / float(st[k].get("timescale") or 1)   # noqa: E731
+                t0, t1 = sec("startTime"), sec("endTime")
+                if t1 > t0 >= 0:
+                    return t0, t1
+    except Exception:  # noqa: BLE001
+        return None
+    return None
 
 
 def insta_color_mode(path: str) -> str:

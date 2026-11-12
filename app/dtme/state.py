@@ -232,7 +232,20 @@ class AppState(QObject):
                 return
             for k in ("fps_num", "fps_den", "frames", "width", "height", "has_audio"):
                 setattr(s, k, info[k])
-            if not s.lut_mode:                     # 처음 불러올 때만: D-Log M = LUT, 일반·알 수 없음 = LUT 없음
+            first = not s.lut_mode
+            if first:                              # v0.16.55 처음 불러올 때만: 이름에 날짜 없으면 만든 시각 · 아이폰 자르기(AAE) → 인/아웃
+                from .project import name_has_date, set_name_hint
+                if info.get("ctime") and not name_has_date(s.path):
+                    s.ctime = info["ctime"]
+                    set_name_hint(s.path, s.ctime)
+                tr = None if (s.sel_in or s.sel_out) else ff.aae_trim(s.path)
+                if tr and s.frames:
+                    a = max(0, min(s.frames - 1, int(round(tr[0] * float(s.fps)))))
+                    b = max(a + 1, min(s.frames, int(round(tr[1] * float(s.fps)))))
+                    if (a, b) != (0, s.frames):
+                        s.sel_in, s.sel_out = a, (0 if b >= s.frames else b)
+                        ff.log_info(f"AAE 자르기 → 인/아웃 {a}~{b} ({s.path})")
+            if first:                              # 처음 불러올 때만: D-Log M = LUT, 일반·알 수 없음 = LUT 없음
                 s.lut_mode = info.get("color_mode", "unknown")
                 lut = auto_lut(self.project, s)
                 if lut is not None and lut != self.project.grade.get("lut", ""):

@@ -59,7 +59,8 @@ assert wait(30, lambda: not rp.running), "취소 뒤 끝남"
 wait(0.5)
 print(f"취소 {time.time() - t0:.1f}초 · 상태 {[rp.status.get(x.id, '') for x in p.render_items]}")
 assert rp.b_render.frac is None and not rp.active and not rp.queue and not rp.jobs, "버튼 복귀"
-assert not any(x.done for x in p.render_items) and not os.listdir(out1), ("만들다 만 파일 없음", os.listdir(out1))
+assert not any(x.done for x in p.render_items)
+assert wait(15, lambda: not os.listdir(out1)), ("만들다 만 파일 없음", os.listdir(out1))      # Windows = 잠깐 뒤에 지워짐
 assert getattr(w, "_done_dlg", None) is None, "취소 = 완료 팝업 없음"
 assert "렌더 " not in w.windowTitle()
 # 4) 다시 누름 = 또 물어봄(처음 위치 = 지난 폴더) → 끝까지

@@ -216,6 +216,20 @@ def open_file(path):
         subprocess.Popen(["xdg-open", path])
 
 
+def remove_later(path) -> None:
+    """만들다 만 파일 지우기. Windows 는 막 끈 ffmpeg 가 파일을 잠깐 더 잡고 있음(WinError 32) → 뒤에서 몇 초 다시 시도."""
+    import threading
+
+    def go():
+        for _ in range(50):
+            try:
+                Path(path).unlink(missing_ok=True)
+                return
+            except OSError:
+                time.sleep(0.2)
+    threading.Thread(target=go, daemon=True).start()
+
+
 def ensure_folder(parent, state) -> bool:
     """저장폴더가 비어 있으면 먼저 물어봄(취소하면 False). 고른 폴더는 다음 프로젝트에서도 처음 위치로."""
     o = state.project.output
@@ -684,10 +698,7 @@ class RenderPanel(QWidget):
             if j is not None and j.cancel.is_set():       # [렌더] 로 멈춤 = 실패 아님, 만들다 만 파일은 지움
                 self.status[iid] = "취소"
                 self.progress.pop(iid, None)
-                try:
-                    Path(path).unlink(missing_ok=True)
-                except OSError:
-                    pass
+                remove_later(path)
                 self.run_items = [x for x in self.run_items if x.id != iid]
                 self.refresh()
                 self.itemProgress.emit(iid, 1.0, bool(self.queue or self.active))

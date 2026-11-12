@@ -51,8 +51,11 @@ e.import_files([mk["27k"], mk["4k"]])
 assert wait(60, lambda: len(p.sources) == 3 and all(x.frames for x in p.sources))
 wait(0.5)
 items = [e.grade.out.itemData(i) for i in range(e.grade.out.count())]
-print("섞임:", items)
-assert items == ["horizontal", "horizontal1440", "horizontal2160", "vertical"]
+print("섞임(지금 클립 = 1080):", items)
+assert items == ["horizontal", "vertical"]                    # v0.16.55 출력 칸 = 지금 클립에 맞는 것만(출력 = 소스별)
+e._select_source(next(x.id for x in p.sources if x.width == 3840)); wait(0.5)
+items = [e.grade.out.itemData(i) for i in range(e.grade.out.count())]
+assert items == ["horizontal", "horizontal1440", "horizontal2160", "vertical"], items
 
 # 렌더 리스트로: 기본 4K → 원본마다 한도
 p.output.orientation = "horizontal2160"

@@ -693,8 +693,12 @@ class EditTab(QWidget):
         self.load_bar.setValue(int(frac * 100))
         self.src_list.viewport().update()
 
+    def _vert(self, s=None) -> bool:
+        """지금(또는 준) 소스의 출력이 세로(v0.16.55 출력 = 소스별)."""
+        return self.state.project.out_of(s if s is not None else self._cur()) == "vertical"
+
     def _apply_aspect(self):
-        self.player.set_aspect(9 / 16 if self.state.project.output.orientation == "vertical" else 16 / 9)
+        self.player.set_aspect(9 / 16 if self._vert() else 16 / 9)
         self._update_monitor_layers()
         self._refresh_keys()
 
@@ -785,6 +789,7 @@ class EditTab(QWidget):
         self.player.clear("로딩 중…")      # 이전 소스 화면 즉시 지움
         self.state.prioritize(self.cur_sid)
         self.grade.set_current_source(self.cur_sid)
+        self._apply_aspect()                       # v0.16.55 출력 = 소스별 → 고른 소스의 화면비
         QTimer.singleShot(0, self._load_current)
 
     def _sync_loading(self):
@@ -1250,7 +1255,9 @@ class EditTab(QWidget):
         o = p.output
         hs = [source_out_h(p.source(g.src)) for g in segs]
         h = 0 if (not hs or 0 in hs) else max(hs)
-        return RenderItem(name=item_base(p, segs), segs=segs, orientation=clamp_out(o.orientation, h), audio=o.audio)
+        first = p.source(segs[0].src) if segs else None             # v0.16.55 출력 = 첫 컷 소스의 출력(여러 소스를 이은 타임라인도 영상 1개 = 출력 1개)
+        want = (first.out if first is not None else "") or o.orientation
+        return RenderItem(name=item_base(p, segs), segs=segs, orientation=clamp_out(want, h), audio=o.audio)
 
     def send_to_render(self):
         self.state.checkpoint()
@@ -1443,7 +1450,7 @@ class EditTab(QWidget):
                 c.fout = min(g.fout, g.fin + n)
             return c
         pick = ([part(segs[i - 1], True)] if i > 0 else []) + [part(segs[i], False)]
-        orient = "preview_v" if p.output.orientation == "vertical" else "preview"
+        orient = "preview_v" if self._vert(p.source(segs[0].src) if segs else None) else "preview"
         # v0.16.33: 그 구간의 타임라인 글자·이미지도 같이(예전 = 전환 미리보기에 글자·PNG 가 안 보임)
         starts, st = [], 0.0
         for k, g in enumerate(segs):
@@ -1654,7 +1661,7 @@ class EditTab(QWidget):
         if len(s.layers) >= MAX_LAYERS:
             self._say(f"레이어는 {MAX_LAYERS}개까지", C_WARN)
             return
-        ow, oh = ff.out_size("vertical" if self.state.project.output.orientation == "vertical" else "horizontal")
+        ow, oh = ff.out_size("vertical" if self._vert(s) else "horizontal")
         scale = min(1.0, ow / m.width, oh / m.height)       # 1080p 기준(1440·4K 는 같은 비율로 커짐)      # 원본 크기. 출력 화면보다 크면 화면에 맞춤
         a, b = s.io
         self.state.checkpoint()
@@ -1775,7 +1782,7 @@ class EditTab(QWidget):
 
     def _refresh_keys(self):
         s = self._cur()
-        vert = self.state.project.output.orientation == "vertical"
+        vert = self._vert(s)
         self.sbar.set_keys([k["f"] for k in s.reframe] if s and vert else [])
 
     def _update_crop(self):
@@ -2082,7 +2089,7 @@ class EditTab(QWidget):
         if m is None or not m.width:
             return
         p = self.state.project
-        ow, oh = ff.out_size("vertical" if p.output.orientation == "vertical" else "horizontal")
+        ow, oh = ff.out_size("vertical" if self._vert(p.source(p.segments[0].src) if p.segments else None) else "horizontal")
         self.state.checkpoint()
         d = new_title_image(iid, 0.0, TITLE_DEFAULT_SEC, min(1.0, ow / m.width, oh / m.height))
         p.titles.append(d)

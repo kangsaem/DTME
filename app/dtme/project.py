@@ -321,7 +321,8 @@ class Source:
     gkeys: dict = field(default_factory=dict)    # 색 키프레임 {"r_gain": [{"f", "v"}], …} (KEYABLE 만)
     stars: list = field(default_factory=list)    # ★ 장면 표시(프레임)
     auto: dict = field(default_factory=dict)     # AUTO·프리셋 기록 {"preset": 키, "by": "auto"|"user", "rec": 인식 키, "nkeys": n}
-    out: str = ""                                # AUTO 전체렌더 출력(orientation). "" = 프로젝트 출력
+    out: str = ""                                # 이 소스의 출력(orientation, v0.16.55 보정 패널 출력 칸 = 소스별). "" = 프로젝트 출력
+    ctime: str = ""                              # 파일 안의 만든 시각 YYYYMMDDhhmm(현지 시간) — 이름에 날짜가 없을 때 표시·렌더 이름(v0.16.55)
     off: list = field(default_factory=list)      # 이름을 눌러 잠시 끈 보정 항목(미리보기·보낼 때 빼고 적용)
     lut_mode: str = ""                           # DJI 메타로 판단한 색 모드 dlog | normal | unknown ("" = 옛 프로젝트, 판단 안 함)
     id: str = field(default_factory=_id)
@@ -658,6 +659,10 @@ class Project:
     file: str = ""
 
     # ---- 조회 ----
+    def out_of(self, src) -> str:
+        """소스의 출력(v0.16.55 소스별): 소스 값 → 없으면 프로젝트 출력. 원본보다 큰 가로는 낮춤."""
+        return clamp_out((getattr(src, "out", "") if src is not None else "") or self.output.orientation, source_out_h(src))
+
     def source(self, sid: str) -> Source | None:
         return next((s for s in self.sources if s.id == sid), None)
 
@@ -743,6 +748,7 @@ class Project:
         p.images = [ImageSource(**m) for m in d.get("images", [])]
         for s in p.sources:
             upgrade_grade(s.grade)
+            set_name_hint(s.path, s.ctime)
         p.segments = [Segment(**s) for s in d.get("segments", [])]
         p.render_items = []
         for r in d.get("render_items", []):
@@ -773,9 +779,26 @@ class Project:
         return p
 
 
-def short_name(path: str) -> str:
-    """파일명에서 날짜·시간(YYYYMMDDhhmm) 추출. DJI_20261025100118_0148_D → 202610251001"""
+_NAME_HINT: dict = {}      # 경로 → YYYYMMDDhhmm (이름에 날짜가 없는 파일: 파일 안의 만든 시각, v0.16.55)
+
+
+def set_name_hint(path: str, ts: str) -> None:
+    if ts and len(ts) == 12 and ts.isdigit():
+        _NAME_HINT[os.path.abspath(path)] = ts
+
+
+def name_has_date(path: str) -> bool:
     stem = Path(path).stem
+    return bool(re.search(r"(?<!\d)(\d{14})(?!\d)", stem) or re.search(r"(?<!\d)(\d{12})", stem)
+                or re.search(r"(?<!\d)(20\d{6})_(\d{6})(?!\d)", stem))
+
+
+def short_name(path: str) -> str:
+    """파일명에서 날짜·시간(YYYYMMDDhhmm) 추출. DJI_20261025100118_0148_D → 202610251001.
+    이름에 날짜가 없으면(폰을 거친 파일 등) 파일 안의 만든 시각(set_name_hint), 그것도 없으면 이름 그대로."""
+    stem = Path(path).stem
+    if not name_has_date(path):
+        return _NAME_HINT.get(os.path.abspath(path), stem)
     m = re.search(r"(?<!\d)(\d{14})(?!\d)", stem) or re.search(r"(?<!\d)(\d{12})", stem)
     if m:
         return m.group(1)[:12]

@@ -353,12 +353,35 @@ class GradePanel(QWidget):
         self.samples.itemClicked.connect(self._on_sample)
         self.samples.itemDoubleClicked.connect(self._open_sample)
         self.samples.setFixedSize(SMP_COLS * (TILE_W + 4) + 4, (N_SAMPLES // SMP_COLS) * (TILE_H + 4) + 4)
-        self.smp_win = QWidget(self, Qt.Tool)
-        self.smp_win.setWindowTitle("샘플")
-        self.smp_win.setStyleSheet("background:#151515;")
+        self.smp_win = SampleWin(self)            # v0.16.55: 윈도우 제목줄 없음(끌어 옮김) · ✕ · [저장]
         sl = QVBoxLayout(self.smp_win)
-        sl.setContentsMargins(6, 6, 6, 6)
+        sl.setContentsMargins(8, 4, 8, 8)
+        sl.setSpacing(6)
+        st = QHBoxLayout()
+        st.setContentsMargins(20, 0, 0, 0)
+        st.setSpacing(0)
+        from .ui_auto import Grip
+        st.addWidget(Grip(), 1)
+        self.b_smp_x = QPushButton("✕")
+        self.b_smp_x.setObjectName("x")
+        self.b_smp_x.setFixedSize(20, 20)
+        self.b_smp_x.setFocusPolicy(Qt.NoFocus)
+        self.b_smp_x.setFlat(True)
+        self.b_smp_x.setStyleSheet("#x{background:transparent; border:none; color:#cfcfcf;} #x:hover{background:#c0392b; color:#fff;}")
+        self.b_smp_x.clicked.connect(lambda: self.show_samples(False))
+        st.addWidget(self.b_smp_x)
+        sl.addLayout(st)
         sl.addWidget(self.samples)
+        sb = QHBoxLayout()
+        sb.setContentsMargins(0, 0, 0, 0)
+        sb.addStretch(1)
+        self.b_smp_save = QPushButton("저장")
+        fix_size(self.b_smp_save, main=True)
+        self.b_smp_save.setFocusPolicy(Qt.NoFocus)
+        ui_style.tone(self.b_smp_save, "red")
+        self.b_smp_save.clicked.connect(self.save_samples)
+        sb.addWidget(self.b_smp_save)
+        sl.addLayout(sb)
         self.smp_win.setFixedSize(self.smp_win.sizeHint())
         self.smp_win.installEventFilter(self)
         self.b_smp = QPushButton("샘플 보기")
@@ -598,6 +621,7 @@ class GradePanel(QWidget):
         self.cur_sid = sid
         self.target = ("src", sid) if sid and self.state.project.source(sid) else BASE
         self._load_controls()
+        self._load_output()
         self._fill_presets()
         self.refresh_samples()
 
@@ -654,7 +678,8 @@ class GradePanel(QWidget):
         from .project import OUTPUTS, clamp_out, outputs_for, source_out_h
         p = self.state.project
         o = p.output
-        hs = [source_out_h(x) for x in p.sources]
+        cur = p.source(self.cur_sid) if self.cur_sid else None
+        hs = [source_out_h(cur)] if cur is not None else [source_out_h(x) for x in p.sources]   # v0.16.55 출력 = 소스별
         h = 0 if (not hs or 0 in hs) else max(hs)
         ok = outputs_for(h)
         self.out.blockSignals(True)
@@ -663,10 +688,10 @@ class GradePanel(QWidget):
             for k, label in OUTPUTS:
                 if k in ok:
                     self.out.addItem(label, k)
-        if o.orientation not in ok:
-            o.orientation = clamp_out(o.orientation, h)
+        ha = [source_out_h(x) for x in p.sources]                     # 프로젝트 기본 출력 = 예전대로 가장 큰 원본까지만
+        o.orientation = clamp_out(o.orientation, 0 if (not ha or 0 in ha) else max(ha))
         self.out.blockSignals(False)
-        self.out.setCurrentIndex(max(0, self.out.findData(o.orientation)))
+        self.out.setCurrentIndex(max(0, self.out.findData(p.out_of(cur) if cur is not None else o.orientation)))
         self.audio.blockSignals(True)
         self.audio.setChecked(o.audio)
         self.audio.blockSignals(False)
@@ -676,12 +701,27 @@ class GradePanel(QWidget):
         self._on_output()
 
     def _on_output(self, *_):
-        o = self.state.project.output
-        new = (self.out.currentData() or "horizontal", self.audio.isChecked())
-        if new != (o.orientation, o.audio):
+        """출력 크기 = 지금 클립(Ctrl·Shift 로 고른 여러 클립)마다(v0.16.55, 예전 = 프로젝트 전체 1개). 소리는 전체 1개 그대로."""
+        from .project import clamp_out, source_out_h
+        p = self.state.project
+        o = p.output
+        key, aud = self.out.currentData() or "horizontal", self.audio.isChecked()
+        srcs = [p.source(x) for x in self._sids() if p.source(x)]
+        if srcs:
+            want = {s.id: clamp_out(key, source_out_h(s)) for s in srcs}
+            if aud == o.audio and all(p.out_of(s) == want[s.id] for s in srcs):
+                return
             self.state.checkpoint()
-            o.orientation, o.audio = new
-            self.state.touch("output")
+            for s in srcs:
+                s.out = want[s.id]
+            o.audio = aud
+        else:
+            if (key, aud) == (o.orientation, o.audio):
+                return
+            self.state.checkpoint()
+            o.orientation, o.audio = key, aud
+        self.state.touch("output")
+        self.refresh_samples()
 
     # ------------------------------------------------------------ LUT
     def _fill_luts(self):
@@ -1139,6 +1179,33 @@ class GradePanel(QWidget):
         self.smp_win.raise_()
         self.refresh_samples()
 
+    def save_samples(self):
+        """샘플 창 [저장](v0.16.55): 보이는 6장(반반·원본 그대로)을 고른 폴더에 PNG 로."""
+        from .project import short_name
+        from .ui_render import unique
+        s = self.state.project.source(self.cur_sid)
+        files = [self.samples.item(i).data(Qt.UserRole + 1) for i in range(self.samples.count())]
+        files = [f for f in files if f and Path(f).is_file()]
+        if not s or not files:
+            return 0
+        start = self.state.project.output.folder.strip() or get_setting("last_folder", "") or str(Path(s.path).parent)
+        d = QFileDialog.getExistingDirectory(self.smp_win, "저장폴더 선택", start)
+        if not d:
+            return 0
+        n = 0
+        for k, f in enumerate(files):
+            try:
+                shutil.copyfile(f, unique(Path(d) / f"{short_name(s.path)}_{k + 1}.png"))
+                n += 1
+            except OSError as e:
+                ff.log_error("샘플 저장", str(e))
+        try:
+            set_setting("last_folder", d)
+        except Exception:  # noqa: BLE001
+            pass
+        self.message.emit(f"샘플 {n}장 저장", "#7fd18b")
+        return n
+
     def refresh_samples(self):
         p = self.state.project
         s = p.source(self.cur_sid)
@@ -1151,6 +1218,7 @@ class GradePanel(QWidget):
         if not s or not s.frames or not self.smp_win.isVisible():      # 창이 닫혀 있음 = 안 만듦(값 바꿀 때마다 6장 만들던 것)
             return
         marks = [m for m in p.samples if m.src == s.id]
+        asp = 9 / 16 if p.out_of(s) == "vertical" else 16 / 9      # v0.16.55 샘플 = 이 소스의 출력 화면대로 가운데 자름(세로 촬영 = 기본 가로)
         for m in marks:
             full = p.grade_for_source(s.id, m.frame)
             grade = None if raw else full
@@ -1163,15 +1231,15 @@ class GradePanel(QWidget):
             self.samples.addItem(it)
             out = sample_dir() / f"{s.id}_{m.frame}{'_raw' if raw else ('' if self.split_v else '_tb')}.png"
 
-            def work(s=s, fr=m.frame, out=out, grade=grade, full=full, vertical=self.split_v):
+            def work(s=s, fr=m.frame, out=out, grade=grade, full=full, vertical=self.split_v, asp=asp):
                 if gen != self.gen:                 # 기다리는 사이 값이 또 바뀜 = 안 만듦(v0.16.40)
                     return None
                 c = ff.cached_frame(s, fr)
-                before = ff.render_preview(c, ff.lut_only(full))        # 보정 전 = LUT만
+                before = crop_png(ff.render_preview(c, ff.lut_only(full)), asp)        # 보정 전 = LUT만
                 if grade is None:
                     data = before
                 else:
-                    data = split_png(before, ff.render_preview(c, grade), vertical)
+                    data = split_png(before, crop_png(ff.render_preview(c, grade), asp), vertical)
                 tmp = out.with_suffix(f".{gen}.part")
                 tmp.write_bytes(data)
                 try:
@@ -1278,6 +1346,48 @@ class GradePanel(QWidget):
             self.refresh_samples()
         elif what == "output":
             self._load_output()
+
+
+class SampleWin(QWidget):
+    """샘플 창: 테두리·제목줄 없는 떠 있는 창, 빈 곳을 끌어 옮김."""
+    _off = None
+
+    def __init__(self, parent=None):
+        super().__init__(parent, Qt.Tool | Qt.FramelessWindowHint)
+        self.setObjectName("SampleWin")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setStyleSheet("#SampleWin{background:#262626; border:1px solid #555;}")
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self._off = e.globalPosition().toPoint() - self.frameGeometry().topLeft()
+
+    def mouseMoveEvent(self, e):
+        if self._off is not None and e.buttons() & Qt.LeftButton:
+            self.move(e.globalPosition().toPoint() - self._off)
+
+    def mouseReleaseEvent(self, e):
+        self._off = None
+
+
+def crop_png(png: bytes, aspect: float) -> bytes:
+    """가운데를 aspect(폭/높이)로 자름. 이미 그 비율이면 그대로."""
+    from PySide6.QtCore import QBuffer, QByteArray, QIODevice
+    from PySide6.QtGui import QImage
+    im = QImage.fromData(png, "PNG")
+    if im.isNull() or abs(im.width() / im.height() - aspect) <= 0.01:
+        return png
+    w, h = im.width(), im.height()
+    if w / h > aspect:
+        cw, ch = int(round(h * aspect / 2)) * 2, h
+    else:
+        cw, ch = w, int(round(w / aspect / 2)) * 2
+    im = im.copy((w - cw) // 2, (h - ch) // 2, cw, ch)
+    ba = QByteArray()
+    buf = QBuffer(ba)
+    buf.open(QIODevice.WriteOnly)
+    im.save(buf, "PNG")
+    return bytes(ba)
 
 
 def split_png(raw_png: bytes, graded_png: bytes, vertical: bool = True) -> bytes:

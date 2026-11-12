@@ -168,6 +168,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
           python tests/test_ui_rendercancel.py rendercancel_test
           if ($LASTEXITCODE -ne 0) { exit 1 }
+          python tests/test_ui_v1655.py v1655_test
+          if ($LASTEXITCODE -ne 0) { exit 1 }
           python tests/test_ui_start.py
           if ($LASTEXITCODE -ne 0) { exit 1 }
           python tests/test_auto_rich.py

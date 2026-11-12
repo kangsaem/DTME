@@ -25,7 +25,8 @@ class MainWindow(QMainWindow):
 
         tb = QToolBar("main")
         tb.setMovable(False)
-        tb.setStyleSheet("QToolBar{spacing:6px; padding:3px;} QToolButton{padding:4px 12px;}")
+        tb.setStyleSheet("QToolBar{spacing:6px; padding:3px; background:#232323; border-bottom:1px solid #333;}"
+                         " QToolButton{padding:4px 12px;}")           # MOSCO 와 같은 값(v0.16.55: 바탕·아래 선)
         self.addToolBar(tb)
         a = QAction("새 프로젝트", self)
         a.triggered.connect(self.new_project)
