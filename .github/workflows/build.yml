@@ -176,6 +176,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
           python tests/test_auto_measure.py
           if ($LASTEXITCODE -ne 0) { exit 1 }
+          python tests/test_auto_deeprun.py
+          if ($LASTEXITCODE -ne 0) { exit 1 }
           python tests/test_title_anim.py titleanim_test
           if ($LASTEXITCODE -ne 0) { exit 1 }
           python tests/test_ui_titleanim.py

@@ -130,7 +130,9 @@ SAMPLE_MAX = 12          # v0.16.17: 20 → 12 (분석 시간 ≈60%, 사용자 
 EARLY_SEC = (0.5, 1, 2, 3, 5)     # v0.16.34 시작 구간 샘플(초), v0.16.38 0.5초 추가(0~1초 사이 튐)
 EARLY_WIN = 6.0                   # 이 초 안을 시작 구간으로 봄
 CURVE_TOL = 0.04                  # 시작 구간 밝기 양끝이 뒤쪽과 이만큼 넘게 다르면 커브 ◆
-CURVE_KEYS_MAX = 3
+CURVE_KEYS_MAX = 3                # 시작 구간 커브 ◆
+CURVE_KEYS_ALL = 8                # v0.16.62 커브 ◆ 전체 상한(시작 구간 3 + 깊은 구간)
+DEEP_RUN_MIN = 2                  # 깊은 수심으로 읽힌 샘플이 이만큼 이어져야 '깊은 구간'(1장 = 무시: 카메라가 잠깐 물 쪽을 봄·그림자)
 COLOR_TOL = 0.095                 # v0.16.38 시작 구간 색(빨강/초록·파랑/초록 비, log) 이만큼(≈10%) 넘게 다르면 색 ◆
 COLOR_R_MAX = 1.4                 # 시작 빨강 게인 = 자리 잡은 값의 최대 1.4배(v0.16.42: 1.8 → 1.4, 빨강 2.0 에서 붉은 노이즈가 보임)
 COLOR_R_TOP = 1.6                 # 시작 빨강 게인 상한(예전 2.0)
@@ -548,6 +550,22 @@ def _start_luma_keys(gkeys: dict, samples: list, si: int, g: dict) -> None:
     gkeys[CURVE_KEY] = new + tail
 
 
+def deep_runs(flags: list[bool], start: int = 0, n_min: int = DEEP_RUN_MIN) -> list[tuple[int, int]]:
+    """True 가 n_min 장 이상 이어진 구간들 [(처음, 끝)] — start 앞(시작 구간)은 안 봄."""
+    out, i, n = [], max(0, start), len(flags)
+    while i < n:
+        if flags[i]:
+            j = i
+            while j + 1 < n and flags[j + 1]:
+                j += 1
+            if j - i + 1 >= n_min:
+                out.append((i, j))
+            i = j + 1
+        else:
+            i += 1
+    return out
+
+
 def recommend(samples: list[tuple[int, np.ndarray]], base: dict, scene: str | None = None, subject: str | None = None,
               strength: str = "mid", fps: float | None = None, measure: bool = False) -> dict:
     """샘플 → {"grade": 클립 값(전체), "gkeys": 색 키프레임 또는 {}, "scene", "subject", "preset"}"""
@@ -567,13 +585,18 @@ def recommend(samples: list[tuple[int, np.ndarray]], base: dict, scene: str | No
     frames = [f for f, _a in samples]
     ends = [tone_ends(np.clip(a * np.array([r, 1.0, b], np.float32), 0, 1)) for (_f, a), (r, b) in zip(samples, gains)]
     si = settle_index(frames, ends, fps)          # v0.16.34: 시작 구간이 안정되기 전 샘플은 클립 커브 계산에서 뺌
-    lo, hi = tone_for(samples[si:], gains[si:])
-    # 커브는 클립 전체 1개 → 깊은 구간이 섞여 있으면 깊은 곳 기준(S·검정점 약하게). 깊은 곳은 빨강이 암부에 있음
-    mixed = any(classify([x]) == "deep" for x in sts) and sc != "deep"
-    pd = SCENE_BASE["deep"] if mixed else p
+    dflag = [classify([x]) == "deep" for x in sts] if sc != "deep" else [False] * len(sts)
+    use = [i for i in range(si, len(samples)) if not dflag[i]] or list(range(si, len(samples)))   # 클립 커브 양끝 = 깊어 보이는 샘플 빼고
+    lo, hi = tone_for([samples[i] for i in use], [gains[i] for i in use])
+    # v0.16.62: 깊은 구간이 섞인 클립 = 그 구간에만 약한 커브(커브 ◆). 예전 = 샘플 1장만 깊어 보여도 클립 전체를 깊은 곳 기준으로
+    # (S ×0.45 · 검정점 배율) → 인/아웃을 조금 바꾸면 대비가 뛰었음(사용자: '그 구간에서만 장면이 바뀌는 것 아닌가').
+    # 깊은 구간 = 자리 잡은 뒤 샘플에서 '깊은 수심'이 DEEP_RUN_MIN 장 이상 이어진 곳. 1장뿐 = 무시.
+    runs = deep_runs(dflag, si)
+    pd = p                                        # 클립 커브 = 그 장면 기준 그대로
+    dp = SCENE_BASE["deep"]
     lo *= pd.get("lo", 0.9)
     keep = rich_keep(samples)                     # v0.16.53: 이미 진한 영상이면 채도·대비를 덜 얹음(0 = 안 얹음)
-    s_amt = min(p["s"], pd["s"]) * (0.6 if mixed else 1.0) * keep
+    s_amt = p["s"] * keep
     st = p["st"]
     sd = p.get("sd", 0) * st * keep
     g = builtin_grade(sc, base, strength)
@@ -609,6 +632,28 @@ def recommend(samples: list[tuple[int, np.ndarray]], base: dict, scene: str | No
             if dev(j) > CURVE_TOL:
                 ck.append(j)
         gkeys["curve"] = [{"f": frames[i], "v": mk(*ends[i])} for i in ck] + [{"f": frames[si], "v": g["curve"]}]
+    if runs:            # 깊은 구간 커브 ◆: 구간 앞 샘플 = 클립 커브 → 구간 처음·끝 = 깊은 곳 커브(예전 '섞임' 커브) → 구간 뒤 샘플 = 클립 커브
+        keys = {k["f"]: k["v"] for k in gkeys.get("curve", [])}
+        clip_c = [list(q) for q in g["curve"]]
+        deep_ids = set()
+        for a, b in sorted(runs, key=lambda r: r[0] - r[1]):          # 긴 구간부터
+            dlo, dhi = tone_for(samples[a:b + 1], gains[a:b + 1])     # 그 구간의 양끝으로
+            deep_c = s_curve(dlo * dp.get("lo", 0.9) - 0.01, dhi + 0.01, min(p["s"], dp["s"]) * 0.6 * keep * st, sd=sd)
+            if p.get("lift"):
+                deep_c = lift_curve(deep_c, keep)
+            add = {frames[a]: deep_c, frames[b]: deep_c}
+            if a - 1 >= si:
+                add[frames[a - 1]] = keys.get(frames[a - 1], clip_c) if a - 1 == si else clip_c
+            if b + 1 < len(frames):
+                add[frames[b + 1]] = clip_c
+            if len(set(keys) | set(add)) > CURVE_KEYS_ALL:
+                continue
+            for f_, v_ in add.items():
+                if f_ in (frames[a], frames[b]) or f_ not in keys:
+                    keys[f_] = v_
+            deep_ids.add(id(deep_c))
+        if deep_ids:
+            gkeys["curve"] = [{"f": f_, "v": [list(q) for q in keys[f_]]} for f_ in sorted(keys)]
     if csi > 0:
         _start_luma_keys(gkeys, samples, csi, g)
     return {"grade": g, "gkeys": gkeys, "scene": sc, "subject": sb, "preset": sc, "rich": round(1 - keep, 2), "measured": bool(measure)}
