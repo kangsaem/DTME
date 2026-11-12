@@ -203,6 +203,12 @@ class MainWindow(QMainWindow):
             except Exception:  # noqa: BLE001
                 pass
 
+    def showEvent(self, e):
+        super().showEvent(e)
+        if not getattr(self, "_tinted", False):          # v0.16.58 윈도우 제목 줄(흰색) → 진회색, MOSCO 와 같음
+            self._tinted = True
+            ui_style.tint_title(self)
+
     def closeEvent(self, e):
         rp = getattr(getattr(self, "edit", None), "render_panel", None)
         if rp is not None and rp.running and self.isVisible():     # v0.16.23: 메인 창에서도 렌더 중 확인

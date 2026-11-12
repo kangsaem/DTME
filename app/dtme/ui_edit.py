@@ -457,7 +457,7 @@ class EditTab(QWidget):
         self.grade.liveChanged.connect(self._on_grade_live)
         self._live_busy = self._live_pending = False
         self._pv_flight: dict = {}                  # 만드는 중인 보정 화면: 키 → {gen, tok, live}
-        self.grade.viewChanged.connect(lambda _k: self.request_preview())
+        self.grade.viewChanged.connect(self._on_view_changed)
         self.grade.splitDirChanged.connect(self._set_split_dir)
         self.player.mon.splitFlipped.connect(lambda v: self.grade.set_split_dir(v, emit=False))
         self.grade.scopeToggled.connect(self.player.mon.set_scope)
@@ -864,6 +864,15 @@ class EditTab(QWidget):
         self._refresh_timeline()
         self.request_preview()
 
+    def _on_view_changed(self, k):
+        mon = self.player.mon
+        if k == "split":                              # v0.16.58 반반 선이 가장자리에 붙어 있으면(안 보임) 가운데로
+            if not 0.1 <= mon.split_x <= 0.9:
+                mon.split_x = 0.5
+            if not 0.1 <= mon.split_y <= 0.9:
+                mon.split_y = 0.5
+        self.request_preview()
+
     def _on_grade_live(self):
         """슬라이더를 끄는 동안(v0.16.40): 모니터 보정 화면만 따라감. 한 번에 1개만 만들고, 만드는 사이 또 바뀌면 끝난 뒤 마지막 값으로 1번 더
         (예전 = 손을 멈추고 0.25초 뒤에야 바뀜). 샘플 타일·타임라인은 예전처럼 멈춘 뒤."""
@@ -920,8 +929,24 @@ class EditTab(QWidget):
             if fl["gen"] != self.pgen:           # 기다리는 사이 다른 화면을 요청함 = 안 만듦(ffmpeg 를 헛돌리지 않음, v0.16.40)
                 return None
             c = ff.cached_frame(s, frame)
-            out = ff.render_preview(c, grade)
-            res = (out, ff.render_preview(c, ff.lut_only(full))) if mode == "split" else (out, None)
+            if mode == "split":                  # v0.16.58 반반 = 보정·원본 두 장을 같이 만듦(예전 = 차례로 → 반반이 유난히 느림)
+                import threading
+                box = {}
+
+                def side():
+                    try:
+                        box["b"] = ff.render_preview(c, ff.lut_only(full))
+                    except Exception as ex:  # noqa: BLE001
+                        box["e"] = ex
+                th = threading.Thread(target=side, daemon=True)
+                th.start()
+                out = ff.render_preview(c, grade)
+                th.join()
+                if "e" in box:
+                    raise box["e"]
+                res = (out, box["b"])
+            else:
+                res = (ff.render_preview(c, grade), None)
             with PREVIEW_LOCK:                   # 작업 스레드 여러 개가 같이 씀
                 PREVIEW_LRU[key] = res
                 while len(PREVIEW_LRU) > PREVIEW_LRU_MAX:
@@ -964,7 +989,18 @@ class EditTab(QWidget):
         except Exception:  # noqa: BLE001
             pv = None
         if not pv or max(pv.get("w", 0), pv.get("h", 0)) < ff.PREVIEW_MIN_W_STILL:      # 세로 프리뷰 = 긴 쪽으로
-            return
+            # v0.16.58 카메라 프리뷰가 없는 영상(폰을 거친 파일 등): 재생용 프록시(작지만 바로 읽힘, LUT 는 이미 입혀 있음)에 같은 보정을 먼저
+            # → 원본 4K 를 읽는 동안 보정 안 된 화면만 보이던 것(사용자: '보정 반영된 게 한참 걸림'). 흐릿하다가 원본으로 바뀜.
+            lut = (full or {}).get("lut", "")
+            try:
+                ok = bool(s.proxy) and Path(s.proxy).exists() and Path(s.proxy) == ff.proxy_path(s.path, lut)
+            except Exception:  # noqa: BLE001
+                ok = False
+            if not ok:
+                return
+            pw, ph = ff._fit_preview(s.width, s.height)
+            pv = {"path": s.proxy, "w": pw, "h": ph, "fps_num": s.fps_num, "fps_den": s.fps_den, "frames": s.frames,
+                  "shift": 0, "ratio": 1, "color": "raw"}
 
         def work():
             c = ff.cached_frame_preview(s, frame, pv)
@@ -991,7 +1027,7 @@ class EditTab(QWidget):
         if gen != self.pgen or frame != p.frame or tok != p._token or p.is_busy():
             ff.dbg(f"표시 버림 #{gen}: 지금 #{self.pgen} f {frame}/{p.frame} 표 {int(tok == p._token)} 재생 {int(p.is_busy())} 빠른={int(quick)}")
             return
-        ff.dbg(f"표시 #{gen} f={frame} 빠른={int(quick)}")
+        ff.dbg(f"표시 #{gen} f={frame} 빠른={int(quick)} 보기={self.grade.view_mode()} 반반={int(bool(data[1]))} 선={p.mon.split_x:.2f}/{p.mon.split_y:.2f}")
         if not quick:
             self._full_shown = gen
         img, before = data

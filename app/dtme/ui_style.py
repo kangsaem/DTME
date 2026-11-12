@@ -216,10 +216,54 @@ def tone(b, name: str = "", color: str = "", fg: str = "", sel: bool = False):
 
 
 # ------------------------------------------------------------------ 확인 창 (MOSCO confirm_save 와 같은 모양, v0.16.8)
+TITLE_BG, TITLE_FG = "#232323", "#e6e6e6"      # 윈도우 제목 줄 = 프로그램 바탕과 같은 진회색(MOSCO v0.7.73 과 같은 값)
+
+
+def tint_title(w) -> bool:
+    """윈도우 기본 제목 줄은 그대로 두고 색만 진회색으로(최소화·최대화·닫기·가장자리 붙이기 유지) — MOSCO tint_title 과 같음(v0.16.58).
+    윈도우 11: 제목 줄·테두리·글자 색. 윈도우 10: '어두운 제목 줄'만. 그 밖 OS·실패 = 아무 일 없음."""
+    import sys
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+        hwnd = wintypes.HWND(int(w.winId()))
+        dwm = ctypes.windll.dwmapi.DwmSetWindowAttribute
+        dwm.argtypes = [wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD]
+        dwm.restype = ctypes.c_long
+
+        def ref(h):
+            h = h.lstrip("#")
+            return int(h[4:6] + h[2:4] + h[0:2], 16)      # COLORREF = 0x00BBGGRR
+
+        def put(attr, val):
+            v = ctypes.c_int(val)
+            return dwm(hwnd, attr, ctypes.byref(v), ctypes.sizeof(v)) == 0
+        put(20, 1) or put(19, 1)                    # 어두운 제목 줄(20 = 정식, 19 = 윈도우 10 초기판)
+        put(35, ref(TITLE_BG))                      # 제목 줄 색(윈도우 11)
+        put(34, ref(TITLE_BG))                      # 창 테두리 1px 색(윈도우 11)
+        put(36, ref(TITLE_FG))                      # 제목 글자 색(윈도우 11)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _dlg_flags(parent):
+    """확인·입력 창: 부모 창이 '항상 위'(프리셋 창)면 이 창도 항상 위 — 안 그러면 그 뒤에 가려져 프로그램이 멈춘 것처럼 보임(v0.16.58)."""
+    fl = Qt.Dialog | Qt.FramelessWindowHint
+    try:
+        if parent is not None and (parent.window().windowFlags() & Qt.WindowStaysOnTopHint):
+            fl |= Qt.WindowStaysOnTopHint
+    except Exception:  # noqa: BLE001
+        pass
+    return fl
+
+
 def confirm(parent, text: str, buttons) -> str:
     """테두리 없는 어두운 확인 창. buttons = [(값, 글자, 폭, 색 이름|None), ...] 왼→오. Esc·바깥 = 'cancel'."""
     from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
-    dlg = QDialog(parent, Qt.Dialog | Qt.FramelessWindowHint)
+    dlg = QDialog(parent, _dlg_flags(parent))
     dlg.setModal(True)
     dlg.setObjectName("Confirm")
     dlg.setStyleSheet("#Confirm{background:#262626; border:1px solid #555; border-radius:6px;}"
@@ -245,6 +289,8 @@ def confirm(parent, text: str, buttons) -> str:
         dlg.adjustSize()
         c = parent.window().geometry().center()
         dlg.move(c.x() - dlg.width() // 2, c.y() - dlg.height() // 2)
+    from PySide6.QtCore import QTimer
+    QTimer.singleShot(0, lambda: (dlg.raise_(), dlg.activateWindow()))      # 떠 있는 창들 위로
     dlg.exec()
     return res["v"]
 
@@ -268,7 +314,7 @@ def notice(parent, text: str):
 def get_text(parent, text: str = "", placeholder: str = "이름") -> tuple[str, bool]:
     """이름 입력 창(QInputDialog 대신, 제목줄·제목 없음, v0.16.19). Enter = 확인, Esc = 취소. 반환 (글자, 확인?)."""
     from PySide6.QtWidgets import QDialog, QHBoxLayout, QLineEdit, QPushButton, QVBoxLayout
-    dlg = QDialog(parent, Qt.Dialog | Qt.FramelessWindowHint)
+    dlg = QDialog(parent, _dlg_flags(parent))
     dlg.setModal(True)
     dlg.setObjectName("Confirm")
     dlg.setStyleSheet("#Confirm{background:#262626; border:1px solid #555; border-radius:6px;}")

@@ -361,8 +361,16 @@ class PresetDialog(DragMove, QDialog):
         self.b_apply.setEnabled(True)
 
     def _apply(self):
-        if self.pending:
+        if self.pending and not self.busy:
             self.picked.emit(self.pending, self.strength.value() or "mid")
+
+    busy = False
+
+    def set_busy(self, on: bool):
+        """[프리셋 자동] 분석 중 = [적용] 자리에 '분석 중…'(멈춘 게 아님을 알림, v0.16.58)."""
+        self.busy = bool(on)
+        self.b_apply.setText("분석 중…" if on else "적용")
+        self.b_apply.setEnabled(not on and self.pending is not None)
 
     def set_current(self, key):
         self.grid.set_current(key)

@@ -915,10 +915,12 @@ class GradePanel(QWidget):
         sc, sb = choice_args(key)
         self._rec_jobs += len(sids)
         self.message.emit("분석 중…", "#cfd8e3")
+        self._rec_busy()
 
         def apply(smp, sid):
             s = p.source(sid)
             self._rec_jobs -= 1
+            self._rec_busy()
             if s is None:
                 return
             base = dict(p.grade)
@@ -942,15 +944,22 @@ class GradePanel(QWidget):
 
         def err(msg):
             self._rec_jobs -= 1
+            self._rec_busy()
             ff.log_error("추천", msg)
             self.message.emit(f"분석 실패: {msg[-120:]}", "#f2c94c")
         for sid in sids:
             s = p.source(sid)
             if s is None or not s.frames:
                 self._rec_jobs -= 1
+                self._rec_busy()
                 continue
             grab_job(s, p.grade_for_source(sid).get("lut", ""), p.output.gpu_decode,
                      lambda smp, sid=sid: apply(smp, sid), err)
+
+    def _rec_busy(self):
+        dlg = getattr(self, "_pdlg", None)
+        if dlg is not None:
+            dlg.set_busy(self._rec_jobs > 0)
 
     def _apply_preset(self, name):
         """사용자 프리셋 이름으로 적용(옛 호출 호환)."""
@@ -1204,6 +1213,7 @@ class GradePanel(QWidget):
         except Exception:  # noqa: BLE001
             pass
         self.message.emit(f"샘플 {n}장 저장", "#7fd18b")
+        ui_style.notice(self.smp_win, f"샘플 {n}장 저장됨" if n else "저장 못 함")
         return n
 
     def refresh_samples(self):

@@ -47,6 +47,13 @@ e._select_source(s1.id); wait(0.5)
 assert "깊은" not in d.cur.text() and d.pending == "deep", d.cur.text()
 QTest.mouseClick(d.b_apply, Qt.LeftButton); wait(0.3)
 assert s1.auto.get("preset") == "deep", "떠 있는 채 다른 클립에 적용"
+# v0.16.58: 확인 창 = 항상 위인 프리셋 창 위로(가려지면 멈춘 것처럼 보임) · 분석 중 표시
+assert ui_style._dlg_flags(d) & Qt.WindowStaysOnTopHint and not (ui_style._dlg_flags(w) & Qt.WindowStaysOnTopHint)
+d.set_busy(True); assert d.b_apply.text() == "분석 중…" and not d.b_apply.isEnabled()
+d.set_busy(False); assert d.b_apply.text() == "적용" and d.b_apply.isEnabled()
+d.grid.chosen.emit("auto"); QTest.mouseClick(d.b_apply, Qt.LeftButton)
+assert d.busy and d.b_apply.text() == "분석 중…", "프리셋 자동 = 분석 중 표시"
+assert wait(120, lambda: not d.busy) and d.b_apply.text() == "적용" and (st.project.sources[1].auto or {}).get("by") == "auto"
 # Esc · 바깥 클릭 = 안 닫힘
 QTest.keyClick(d, Qt.Key_Escape); wait(0.2); assert d.isVisible(), "Esc 무시"
 QTest.mouseClick(e.player, Qt.LeftButton, Qt.NoModifier, QPoint(50, 50)); wait(0.3)

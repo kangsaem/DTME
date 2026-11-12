@@ -76,7 +76,10 @@ assert gp.smp_win.windowFlags() & Qt.FramelessWindowHint
 gp.smp_win.grab().save(os.path.join(WORK, "samples_win.png"))
 out = os.path.join(WORK, "saved"); os.makedirs(out, exist_ok=True)
 QFileDialog.getExistingDirectory = staticmethod(lambda *a, **k: out)
+from dtme import ui_style
+said = []; ui_style.notice = lambda parent, text: said.append(text)      # v0.16.58 저장 확인 창
 gp.b_smp_save.click(); wait(0.3)
+assert said == ["샘플 6장 저장됨"], said
 names = sorted(os.listdir(out)); print("저장:", names)
 assert names == [f"202611121205_{k}.png" for k in range(1, 7)]
 gp.set_output("vertical")
