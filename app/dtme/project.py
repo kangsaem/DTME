@@ -360,6 +360,9 @@ class Segment:
     gkeys: dict = field(default_factory=dict)    # 보낼 때 소스 색 키프레임의 사본
     off: list = field(default_factory=list)      # 보낼 때 잠시 꺼 둔 보정 항목의 사본(렌더에서 빼고 적용)
     grade: dict = field(default_factory=dict)    # 렌더 리스트로 보낼 때 보정값 사본(v0.16.2). 비면(옛 항목) 지금 클립 값
+    aud: str = "auto"                            # v0.16.66 원본 소리: auto(판단대로) | up(키움) | keep(키우지 않음)
+    loud: object = None                          # 자동 판단: True = 키움(말소리·수면 위) / False / None = 아직
+    why: str = ""                                # 판단 이유: 말소리 | 호흡기 | 수면 위 | 물속
 
     @property
     def frames(self) -> int:
@@ -368,7 +371,7 @@ class Segment:
     def copy(self) -> "Segment":
         return Segment(self.src, self.fin, self.fout, self.speed, layers=copy.deepcopy(self.layers),
                        trans=dict(self.trans), reframe=copy.deepcopy(self.reframe), gkeys=copy.deepcopy(self.gkeys),
-                       off=list(self.off), grade=copy.deepcopy(self.grade))
+                       off=list(self.off), grade=copy.deepcopy(self.grade), aud=self.aud, loud=self.loud, why=self.why)
 
 
 # 세로 크롭 위치 이동(리프레이밍). 4K 기준 ±540px(그 이상은 액션캠 가장자리 왜곡)
@@ -626,7 +629,8 @@ def new_music(path: str, t0: float, dur: float) -> dict:
 
 def default_mix() -> dict:
     """orig None = 자동(음악 없으면 1.0, 있으면 0.0)."""
-    return {"orig": None, "music": 1.0, "fin": 0.5, "fout": 2.0, "xfade": 2.0}     # xfade = 곡을 이어 붙일 때 겹침(초, v0.16.64)
+    return {"orig": None, "music": 1.0, "fin": 0.5, "fout": 2.0, "xfade": 2.0,     # xfade = 곡을 이어 붙일 때 겹침(초, v0.16.64)
+            "up_orig": 1.0, "up_music": 0.3}     # v0.16.66 말소리·수면 위 컷 = 원본 · 음악 볼륨
 
 
 def orig_volume(mix: dict, music: list) -> float:

@@ -421,6 +421,8 @@ class EditTab(QWidget):
 
         self.timeline = SeqTimeline()
         self.timeline.selected.connect(self._on_cut_selected)
+        self.timeline.cutMenu.connect(self._cut_menu)
+        self._loud_jobs = set()
         self.timeline.moved.connect(self._on_cut_moved)
         self.timeline.activated.connect(self._on_cut_activated)
         self.timeline.timeChanged.connect(self._on_tl_time)
@@ -1926,6 +1928,9 @@ class EditTab(QWidget):
         self.tl_time = t
         self.timeline.set_time(t)
         self._update_tl_titles(t)
+        if self.player.is_playing() and getattr(self, "_vol_seg", None) is not seg:      # 컷이 바뀜 = 볼륨(원본 키움)
+            self._vol_seg = seg
+            self._apply_tl_volumes()
         if self.player.is_playing() and self._music_player is not None:     # v0.16.64 재생 중 다음 곡 시작 = 그 곡으로(미리보기는 크로스페이드 없이 바로 바뀜)
             now = self._music_at(t)
             if now is not None and now.get("id") != getattr(self, "_music_cur", None):
@@ -1989,6 +1994,7 @@ class EditTab(QWidget):
         self._music_out.setVolume(min(1.0, float(p.mix.get("music", 1.0))))
         if self.player.audio:
             self.player.audio.setVolume(0.6 * min(1.0, orig_volume(p.mix, p.music)))
+        self._apply_tl_volumes()
         self._music_player.setSource(QUrl.fromLocalFile(m["path"]))
         self._music_player.setPosition(int((float(m.get("off", 0)) + self.tl_time - float(m["t0"])) * 1000))
         self._music_player.play()
@@ -2637,6 +2643,90 @@ class EditTab(QWidget):
         self.timeline.set_overlays(p.titles, p.music, self.sel_ov)
         tot = p.segs_seconds(segs)
         self.tl_len.setText(f"{tot:.1f}초" if items else "")
+        self._scan_loud()
+
+    # ---------------------------------------------------------------- 컷 원본 소리(v0.16.66): 말소리·수면 위 = 키움
+    def _loud_map(self):
+        from .music import seg_up
+        self.timeline.set_loud({g.id: (seg_up(g), g.aud, g.why) for g in self.state.project.segments})
+
+    def _scan_loud(self):
+        """판단 안 된 컷(loud None)을 뒤에서 판단: 소리(호흡기 → 안 키움 / 말소리 → 키움) 먼저, 아니면 화면(수면 위 → 키움)."""
+        from . import music
+        p = self.state.project
+        for g in p.segments:
+            src = p.source(g.src)
+            key = (g.src, g.fin, g.fout)
+            if g.loud is not None or src is None or not src.frames or key in self._loud_jobs:
+                continue
+            self._loud_jobs.add(key)
+            job = jobs.Job(lambda src=src, g=g.copy(): music.cut_scene(src, g))
+
+            def done(r, key=key):
+                self._loud_jobs.discard(key)
+                hit = False
+                for x in self.state.project.segments:           # (판단하는 사이 실행취소 등으로 컷 사본이 바뀌었을 수 있음 → 같은 구간 모두)
+                    if (x.src, x.fin, x.fout) == key and x.loud is None:
+                        x.loud, x.why = bool(r["up"]), r["why"]
+                        hit = True
+                if hit:
+                    self.state.dirty = True
+                    ff.log_info(f"컷 소리·장면 {Path(self.state.project.source(key[0]).path).name if self.state.project.source(key[0]) else key[0]} "
+                                f"{key[1]}~{key[2]}: {'키움' if r['up'] else '안 키움'}({r['why']}) {({k: v for k, v in r.items() if k not in ('up', 'why')})}")
+                    self._loud_map()
+
+            def err(msg, key=key):
+                self._loud_jobs.discard(key)
+                ff.log_error("컷 소리·장면", msg)
+            job.signals.done.connect(done)
+            job.signals.error.connect(err)
+            jobs.submit(jobs.AUTO_POOL, job, priority=-3)
+        self._loud_map()
+
+    def _cut_menu(self, cid, gpos):
+        from PySide6.QtWidgets import QMenu
+        g = next((x for x in self.state.project.segments if x.id == cid), None)
+        if g is None:
+            return
+        m = QMenu(self)
+        auto_txt = "원본 소리 자동" + (f" ({'키움' if g.loud else '안 키움'} · {g.why})" if g.loud is not None and g.why else "")
+        acts = {}
+        for key, txt in (("auto", auto_txt), ("up", "원본 소리 키움"), ("keep", "원본 소리 키우지 않음")):
+            a = m.addAction(txt)
+            a.setCheckable(True)
+            a.setChecked((g.aud or "auto") == key)
+            acts[a] = key
+        act = m.exec(gpos)
+        if act is not None:
+            self.set_cut_aud(cid, acts[act])
+
+    def set_cut_aud(self, cid, aud: str):
+        """컷 원본 소리 = auto | up | keep (실행취소 1번)."""
+        g = next((x for x in self.state.project.segments if x.id == cid), None)
+        if g is None or (g.aud or "auto") == aud:
+            return
+        self.state.checkpoint()
+        g = next(x for x in self.state.project.segments if x.id == cid)
+        g.aud = aud
+        self.state.dirty = True
+        self._loud_map()
+        if self.mode == "timeline" and self.player.is_playing():
+            self._apply_tl_volumes()
+
+    def _apply_tl_volumes(self):
+        """타임라인 재생 중 볼륨(미리보기): 지금 컷이 '원본 키움'이면 원본 ↑ · 음악 ↓ (경사 없이)."""
+        from .music import seg_up
+        from .project import orig_volume
+        p = self.state.project
+        seg = getattr(self, "_tl_seg", None)
+        up = bool(seg is not None and seg_up(seg))
+        vo = orig_volume(p.mix, p.music)
+        if up:
+            vo = max(vo, float(p.mix.get("up_orig", 1.0)))
+        if self.player.audio:
+            self.player.audio.setVolume(0.6 * min(1.0, vo))
+        if self._music_player is not None and getattr(self, "_music_out", None) is not None:
+            self._music_out.setVolume(min(1.0, float(p.mix.get("music", 1.0)) * (float(p.mix.get("up_music", 0.3)) if up else 1.0)))
 
 
 _ = (Path, QPixmap)

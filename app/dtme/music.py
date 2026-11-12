@@ -400,3 +400,134 @@ def plan(audios: list[dict], infos: dict, total: float, video: float, xfade: flo
         out.append({"path": a["path"], "t0": round(t, 3), "off": round(off, 3), "dur": dur, "len": round(ln, 3)})
         t = t + ln - min(xfade, ln / 2)
     return out
+
+
+# ------------------------------------------------------------------ 컷 소리·장면(v0.16.66): 수면 위·말소리 = 원본 소리 키움
+# 사용자 규칙: 말소리 → 키움 / 물속 호흡기 소리 → 안 키움(빨강이 많아도) / 둘 다 아니면 화면이 수면 위 → 키움 / 물속 → 안 키움.
+ASR = 16000
+HISS_MIN = 0.4                    # 호흡기 들숨 '쉬익' = 고음(2.5~7.5kHz) 잡음이 이만큼(초) 넘게 이어짐(말소리의 ㅅ·ㅆ 는 0.1~0.2초)
+HISS_RISE = 6.0                   # 바탕 고음보다 이만큼(dB) 큼
+HISS_FLAT = 0.35                  # 잡음 같음(스펙트럼 평탄도)
+VOICED = (0.15, 0.80)             # 말소리: 목소리 떨림(80~400Hz 주기)이 있는 시간 비율
+SWITCH = (2.5, 9.0)               # 말소리: 목소리가 켜졌다 꺼졌다 하는 횟수(초당, 음절)
+
+
+def _cut_audio(path: str, t0: float, dur: float) -> np.ndarray:
+    r = subprocess.run([paths.ffmpeg(), "-v", "error", "-ss", f"{max(0.0, t0):.3f}", "-t", f"{dur:.3f}", "-i", str(path), "-vn",
+                        "-ac", "1", "-ar", str(ASR), "-f", "f32le", "-"],
+                       capture_output=True, **({"creationflags": 0x08000000} if os.name == "nt" else {}))
+    return np.frombuffer(r.stdout, np.float32).copy()
+
+
+def sound_traits(y: np.ndarray) -> dict:
+    """소리 → {"level" dB, "voiced" 목소리 비율, "switch" 초당 켜짐/꺼짐, "hiss" 긴 쉬익 수, "speech", "breath"}.
+    실측(2026-11-12): 말소리(LibriSpeech 3개) 목소리 0.03~0.58 · 켜짐/꺼짐 1.9~7.3 · 쉬익 0 /
+    물속 호흡기(Ace Pro 6초 구간 4개) 쉬익 1개씩(0.4~1.0초) · 목소리 0.09~0.53 · 켜짐/꺼짐 8~21 / 음악 쉬익 0."""
+    hop, win = 256, 512                             # 16ms · 32ms
+    n = (len(y) - win) // hop
+    if n < 60:
+        return {"level": -99.0, "voiced": 0.0, "switch": 0.0, "hiss": 0, "speech": False, "breath": False}
+    level = float(20 * np.log10(np.sqrt((y ** 2).mean()) + 1e-9))
+    idx = np.arange(n)[:, None] * hop + np.arange(win)[None, :]
+    fr = y[idx] * np.hanning(win).astype(np.float32)
+    S = np.abs(np.fft.rfft(fr, axis=1))
+    f = np.fft.rfftfreq(win, 1 / ASR)
+    e = 10 * np.log10((fr ** 2).mean(axis=1) + 1e-12)
+    F = np.fft.rfft(fr, 2 * win, axis=1)
+    ac = np.fft.irfft(np.abs(F) ** 2, axis=1)[:, :win]
+    ac = ac / (ac[:, :1] + 1e-12)
+    voiced = (ac[:, ASR // 400:ASR // 80].max(axis=1) > 0.5) & (e > np.percentile(e, 30))
+    vf = float(voiced.mean())
+    sw = float(np.abs(np.diff(voiced.astype(int))).sum() / (n * hop / ASR))
+    hb = (f >= 2500) & (f < 7500)
+    hi = 10 * np.log10((S[:, hb] ** 2).mean(axis=1) + 1e-12)
+    flat = np.exp(np.log(S[:, hb] + 1e-9).mean(axis=1)) / (S[:, hb].mean(axis=1) + 1e-9)
+    on = (hi > np.median(hi) + HISS_RISE) & (flat > HISS_FLAT)
+    runs, k = [], 0
+    for v in list(on) + [False]:
+        if v:
+            k += 1
+        elif k:
+            runs.append(k * hop / ASR)
+            k = 0
+    hiss = sum(1 for r in runs if r >= HISS_MIN)
+    dur = n * hop / ASR
+    breath = hiss >= 1 and (hiss >= 2 or dur < 8)          # 8초 넘는 컷 = 숨 2번 이상
+    speech = level > -55 and VOICED[0] <= vf <= VOICED[1] and SWITCH[0] <= sw <= SWITCH[1] and hiss == 0
+    return {"level": round(level, 1), "voiced": round(vf, 2), "switch": round(sw, 2), "hiss": hiss,
+            "speech": bool(speech), "breath": bool(breath)}
+
+
+def _look(path: str, t: float):
+    """t 의 화면(320×180 RGB 0~1) 또는 None."""
+    r = subprocess.run([paths.ffmpeg(), "-v", "error", "-ss", f"{max(0.0, t):.3f}", "-i", str(path), "-an", "-frames:v", "1",
+                        "-vf", "scale=320:180,format=rgb24", "-f", "rawvideo", "-"],
+                       capture_output=True, **({"creationflags": 0x08000000} if os.name == "nt" else {}))
+    if len(r.stdout) < 320 * 180 * 3:
+        return None
+    return np.frombuffer(r.stdout[:320 * 180 * 3], np.uint8).reshape(180, 320, 3).astype(np.float32) / 255.0
+
+
+def above_water(a: np.ndarray) -> tuple[bool, float, float]:
+    """수면 위(배·육상·물 밖) 화면인가 → (판단, 빨강/초록, 물색 면적). 물속 = 빨강이 적고 물색(파랑·청록)이 넓음."""
+    y = a.mean(axis=2)
+    lit = y >= np.percentile(y, 40)
+    r, g, b = a[..., 0], a[..., 1], a[..., 2]
+    rg = float(r[lit].mean() / (g[lit].mean() + 1e-6))
+    water = float(((b > r * 1.25) & (g > r * 1.1) & (a.max(axis=2) > 0.12)).mean())
+    return bool(rg > 0.85 and water < 0.35), round(rg, 3), round(water, 3)
+
+
+def cut_scene(src, seg) -> dict:
+    """컷 1개 → {"up": 원본 키움?, "why": 말소리|호흡기|수면 위|물속, ...}. 소리가 화면보다 먼저(사용자)."""
+    fps = float(src.fps)
+    t0, t1 = seg.fin / fps, seg.fout / fps
+    dur = max(0.1, t1 - t0)
+    out = {}
+    if getattr(src, "has_audio", True):
+        tr = sound_traits(_cut_audio(src.path, t0, min(dur, 30.0)))
+        out.update(tr)
+        if tr["breath"]:                                   # 호흡기 소리 = 빨강이 많아도 안 키움(사용자)
+            return {**out, "up": False, "why": "호흡기"}
+        if tr["speech"]:
+            return {**out, "up": True, "why": "말소리"}
+    vid = src.proxy if getattr(src, "proxy", "") and Path(src.proxy).exists() else src.path
+    looks = [above_water(a) for a in (_look(vid, t0 + dur * k) for k in (0.3, 0.7)) if a is not None]
+    if not looks:
+        return {**out, "up": False, "why": "물속"}
+    up = sum(x[0] for x in looks) * 2 > len(looks)
+    out.update(rg=looks[0][1], water=looks[0][2])
+    return {**out, "up": bool(up), "why": "수면 위" if up else "물속"}
+
+
+def loud_spans(segs, lens, plan_, ramp_ok=True) -> list[tuple[float, float]]:
+    """원본을 키울 컷의 결과 영상 구간 [(시작, 끝)] — 전환 겹침 반영."""
+    out, t = [], 0.0
+    for i, (g, ln) in enumerate(zip(segs, lens)):
+        if i > 0 and plan_[i]:
+            t -= plan_[i][1]
+        if seg_up(g):
+            out.append((round(t, 4), round(t + ln, 4)))
+        t += ln
+    return out
+
+
+def seg_up(seg) -> bool:
+    """컷 원본 키움: 손으로 정함(aud = up | keep) 먼저, 아니면 자동 판단(loud)."""
+    a = getattr(seg, "aud", "auto") or "auto"
+    if a == "up":
+        return True
+    if a == "keep":
+        return False
+    return bool(getattr(seg, "loud", None))
+
+
+def ramp_expr(spans, r: float = 0.5) -> str:
+    """구간 안 = 1, 밖 = 0, 경계 앞뒤 r/2 에 걸쳐 직선으로(ffmpeg 식, t = 초)."""
+    if not spans:
+        return "0"
+    parts = [f"clip(min((t-{a - r / 2:.4f})/{r},({b + r / 2:.4f}-t)/{r}),0,1)" for a, b in spans]
+    e = parts[0]
+    for p_ in parts[1:]:
+        e = f"max({e},{p_})"
+    return e

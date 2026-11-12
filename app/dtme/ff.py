@@ -2431,7 +2431,16 @@ def post_graph(fparts: list, cmd: list, project: Project, extras: dict, total: f
     if not audio:
         return
     vo = orig_volume(mix, music)
-    fparts.append(f"[am]volume={vo:.3f}[ab]")
+    spans = extras.get("loud") or []
+    if spans:                                     # v0.16.66 말소리·수면 위 컷 = 원본을 키움(앞뒤 0.5초 경사)
+        from .music import ramp_expr
+        w = ramp_expr(spans)
+        up = max(vo, float(mix.get("up_orig", 1.0)))
+        fparts.append(f"[am]volume=eval=frame:volume='{vo:.3f}+{up - vo:.3f}*({w})'[ab]")
+        duck = f"1-{1 - float(mix.get('up_music', 0.3)):.3f}*({w})"
+    else:
+        fparts.append(f"[am]volume={vo:.3f}[ab]")
+        duck = ""
     labs = ["[ab]"]
     spans = [(float(x["t0"]), float(x["t0"]) + float(x.get("len", x.get("dur", 0)))) for x in music]
     for j, m in enumerate(music):
@@ -2454,6 +2463,8 @@ def post_graph(fparts: list, cmd: list, project: Project, extras: dict, total: f
         elif fo > 0.01:
             a.append(f"afade=t=out:st={ln - fo:.4f}:d={fo:.4f}")
         a += [f"volume={float(mix.get('music', 1.0)):.3f}", f"adelay=delays={int(t0 * 1000)}:all=1"]
+        if duck:                                  # 그 컷 동안 음악 낮춤(adelay 뒤 = 결과 영상 시간)
+            a.append(f"volume=eval=frame:volume='{duck}'")
         fparts.append(f"[{ii}:a:0]{','.join(a)}[mu{j}]")
         labs.append(f"[mu{j}]")
         ii += 1
@@ -2581,7 +2592,12 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orien
             fparts.append(f"{''.join(labels)}concat=n={n}:v=1:a=0[vo]")
     else:
         total = transition_graph(fparts, plan, lens, audio)
-    if extras and (extras.get("titles") or extras.get("music")):
+    if audio:                                     # v0.16.66 원본을 키울 컷(말소리·수면 위)의 결과 영상 구간
+        from .music import loud_spans
+        spans = loud_spans(segs, lens, plan if any(plan) else [None] * n)
+        if spans:
+            extras = {**(extras or {}), "loud": spans}
+    if extras and (extras.get("titles") or extras.get("music") or extras.get("loud")):
         fparts[:] = [f.replace("[vo]", "[vm]").replace("[ao]", "[am]") for f in fparts]
         post_graph(fparts, cmd, project, extras, total, orientation, audio, len(segs) + len(img_inputs))
         cwd = cwd or str(paths.cache_dir() / "lut")
@@ -2794,6 +2810,9 @@ def chunk_plan(project: Project, segs: list, orientation: str, extras: dict | No
     import dataclasses
     import math
     if fast or len(segs) != 1 or (extras and (extras.get("titles") or extras.get("music"))):
+        return None
+    from .music import seg_up
+    if seg_up(segs[0]):               # v0.16.66 원본 키움 경사가 조각 경계마다 생기지 않게 = 통째로
         return None
     if low_spec():                    # 코어가 적으면 나눠도 이득 없음(v0.16.48)
         return None

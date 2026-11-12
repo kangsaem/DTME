@@ -403,6 +403,7 @@ class SeqTimeline(QWidget):
     transDurEdited = Signal(str, float)   # 끌면서 바뀐 전환 길이(초)
     transRemove = Signal(str)         # 나비 우클릭 = 빼기
     transActivated = Signal(str)      # 나비 더블클릭 = 컷편집 창
+    cutMenu = Signal(str, object)     # v0.16.66 컷 우클릭 = (컷 id, 화면 좌표) → 원본 소리 메뉴
 
     RULER = 20
     TL = 18          # 글자·이미지 줄 높이
@@ -418,6 +419,7 @@ class SeqTimeline(QWidget):
         self.sel = ""
         self.trans_sel = ""           # 선택한 화면 전환(뒤 컷 id)
         self.titles, self.music = [], []
+        self.loud = {}                # v0.16.66 컷 id → (원본 키움?, aud, 이유)
         self.music_info = {}          # v0.16.64 음악 파일 → 분석(music.analyze): 파형 · 박자 · 마디 첫 박
         self.ov_sel = ("", "")
         self.t = 0.0
@@ -436,6 +438,10 @@ class SeqTimeline(QWidget):
     def set_overlays(self, titles, music, sel):
         self.titles, self.music, self.ov_sel = titles, music, sel
         self._resize()
+        self.update()
+
+    def set_loud(self, loud: dict):
+        self.loud = loud
         self.update()
 
     def set_music_info(self, info: dict):
@@ -561,10 +567,31 @@ class SeqTimeline(QWidget):
 
     def tooltip_at(self, x):
         i = self._index_at(x)
+        tip = []
         if i >= 0 and len(self.items[i]) > 5 and self.items[i][5]:
             n, d = self.items[i][5]
-            return f"{n} {d:.1f}초"
-        return ""
+            tip.append(f"{n} {d:.1f}초")
+        if i >= 0:
+            ld = self.loud.get(self.items[i][0])
+            if ld:
+                up, aud, why = ld
+                how = {"up": "키움(직접)", "keep": "안 키움(직접)"}.get(aud, ("키움" if up else "안 키움") + (f"({why})" if why else ""))
+                tip.append(f"원본 소리 {how}")
+        return "\n".join(tip)
+
+    @staticmethod
+    def _speaker(p, r, col):
+        p.save()
+        p.setPen(Qt.NoPen)
+        p.setBrush(col)
+        x, y, w, h = r.left(), r.top(), r.width(), r.height()
+        p.drawPolygon(QPolygonF([QPointF(x, y + h * 0.35), QPointF(x + w * 0.25, y + h * 0.35), QPointF(x + w * 0.55, y),
+                                 QPointF(x + w * 0.55, y + h), QPointF(x + w * 0.25, y + h * 0.65), QPointF(x, y + h * 0.65)]))
+        p.setPen(QPen(col, 1.4))
+        p.setBrush(Qt.NoBrush)
+        for k in (0.25, 0.45):
+            p.drawArc(QRectF(x + w * (0.45 - k), y + h * (0.5 - k * 1.3), w * k * 2.4, h * k * 2.6), -50 * 16, 100 * 16)
+        p.restore()
 
     # ---------------------------------------------------------------- 그리기
     def paintEvent(self, _):
@@ -597,6 +624,9 @@ class SeqTimeline(QWidget):
                 p.drawText(rr.adjusted(4, 2, -4, -2), Qt.AlignHCenter | Qt.AlignVCenter,
                            f"{speed_text(sp)}\n{label}" if rr.width() > 90 else speed_text(sp))
             draw_tag(p, rr, tag)
+            ld = self.loud.get(sid)
+            if ld and ld[0] and rr.width() > 22:          # 원본 소리 키움 = 스피커(손으로 정함 = 노랑)
+                self._speaker(p, QRectF(rr.right() - 20, rr.top() + 4, 16, 13), QColor("#f2c94c") if ld[1] == "up" else QColor("#ffffff"))
         for cid, r in self._trans_rects():     # 화면 전환 = 앞뒤 컷이 실제로 섞이는 구간(앞 컷 끝 d = 뒤 컷 앞 d)
             sel = cid == self.trans_sel
             p.setPen(Qt.NoPen)
@@ -800,6 +830,9 @@ class SeqTimeline(QWidget):
             return
         i = self._index_at(pos.x())
         _top, vid, _m = self._lanes()
+        if i >= 0 and vid.top() <= pos.y() <= vid.bottom() and e.button() == Qt.RightButton:
+            self.cutMenu.emit(self.items[i][0], e.globalPosition().toPoint())
+            return
         if i >= 0 and vid.top() <= pos.y() <= vid.bottom():
             self._press = (i, pos.x())
             self._drag_x = None
