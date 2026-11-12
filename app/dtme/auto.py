@@ -354,7 +354,41 @@ def classify(st_list: list[dict]) -> str:
 
 
 # ------------------------------------------------------------------ 값 계산
-def gains_for(st: dict, p: dict) -> tuple[float, float]:
+# v0.16.56 DJI 원본(D-Log M + LUT)이 아닌 영상 = 보라로 덜 돌게 화면을 재서(사용자 비교 사진 ⑥):
+# 색조 0 · 파랑은 빨강을 따라 올리지 않음(잰 값) · 물빛 = 물 색상각이 WATER_GOAL 에 못 미치는 만큼(0~WATER_CAP).
+# 근거: Ace Pro 일반 색 1클립(BJVS3373) — 프리셋 고정값(색조 +5 · 물빛 +8 · 파랑 ≥ 빨강×0.9)이면 물 +14~19°, 흰 모래가 연보라.
+WATER_GOAL = 209.0                # BJVS3373(자리 잡은 뒤 · 게인 뒤 물 색상각 중앙값 198.7°)에서 물빛 +16 이 나오는 값(사용자 ⑥). 이보다 파란 물 = 물빛 0
+WATER_PER_DEG = 0.65              # 물빛 1 = 물 색상각 약 0.65°(v0.16.45 실측)
+WATER_CAP = 20
+
+
+def is_dji_log(src, lut: str = "") -> bool:
+    """예전 값 그대로 쓸 클립: DJI D-Log M + LUT 로 확인됨(옛 프로젝트 = 색 모드 기록 없음 → 예전 그대로)."""
+    mode = getattr(src, "lut_mode", "") if src is not None else ""
+    return mode == "" or (mode == "dlog" and bool(lut))
+
+
+def water_angle(a: np.ndarray, r: float = 1.0, b: float = 1.0):
+    """물(파랑이 빨강보다 뚜렷이 센 곳)의 색상각 중앙값(°, 클수록 보라 쪽). 물이 화면의 3% 안 되면 None."""
+    a = np.clip(a * np.array([r, 1.0, b], np.float32), 0, 1)
+    rr, gg, bb = a[..., 0], a[..., 1], a[..., 2]
+    w = (bb > rr * 1.25) & (a.max(-1) > 0.15)
+    if w.mean() < 0.03:
+        return None
+    hue = np.degrees(np.arctan2(np.sqrt(3) * (gg - bb), 2 * rr - gg - bb)) % 360
+    return float(np.median(hue[w]))
+
+
+def measured_water(samples, gains) -> int | None:
+    """물빛 = 목표에 못 미치는 만큼(0~WATER_CAP). 물이 안 보이면 None(프리셋 값 그대로)."""
+    hs = [water_angle(a, r, b) for (_f, a), (r, b) in zip(samples, gains)]
+    hs = [h for h in hs if h is not None]
+    if not hs:
+        return None
+    return int(round(float(np.clip((WATER_GOAL - float(np.median(hs))) / WATER_PER_DEG, 0, WATER_CAP))))
+
+
+def gains_for(st: dict, p: dict, follow: bool = True) -> tuple[float, float]:
     """흰색 기준(밝은 쪽 ref 비율 평균)을 초록에 맞추는 정도 k·강도 → 빨강·파랑. 파랑은 절반만(물빛 짙은 파랑 유지)."""
     key = "top10" if p["ref"] <= 0.1 else "top30" if p["ref"] <= 0.3 else "top50"
     r, g, b = st[key]
@@ -365,7 +399,8 @@ def gains_for(st: dict, p: dict) -> tuple[float, float]:
     pr, pb = min(2.0, 1 + (p["r"] - 1) * p["st"]), 1 + (p["b"] - 1) * p["st"]
     rmax = min(2.0, 1 + (p["rmax"] - 1) * p["st"])
     r = float(np.clip(rg, max(1.0, pr - 0.15), min(rmax, pr + 0.15)))
-    return r, follow_blue(r, float(np.clip(bg, pb - 0.05, pb + 0.05)))
+    bq = float(np.clip(bg, pb - 0.05, pb + 0.05))
+    return r, (follow_blue(r, bq) if follow else bq)
 
 
 def tone_ends(a: np.ndarray) -> tuple[float, float]:
@@ -512,7 +547,7 @@ def _start_luma_keys(gkeys: dict, samples: list, si: int, g: dict) -> None:
 
 
 def recommend(samples: list[tuple[int, np.ndarray]], base: dict, scene: str | None = None, subject: str | None = None,
-              strength: str = "mid", fps: float | None = None) -> dict:
+              strength: str = "mid", fps: float | None = None, measure: bool = False) -> dict:
     """샘플 → {"grade": 클립 값(전체), "gkeys": 색 키프레임 또는 {}, "scene", "subject", "preset"}"""
     sts = [stats(a) for _f, a in samples]
     scene = normalize_key(scene or "")
@@ -525,7 +560,8 @@ def recommend(samples: list[tuple[int, np.ndarray]], base: dict, scene: str | No
             sc = "coral"
     sb = ""
     p = scene_params(sc, None, strength)
-    gains = [gains_for(s, p) for s in sts]
+    gains = [gains_for(s, p) for s in sts]        # 커브·시작 구간 판단 = 늘 예전 방식 게인으로(측정 쪽도 밝기 처리는 같게)
+    gout = [gains_for(s, p, follow=False) for s in sts] if measure else gains     # 클립에 들어갈 빨강·파랑
     frames = [f for f, _a in samples]
     ends = [tone_ends(np.clip(a * np.array([r, 1.0, b], np.float32), 0, 1)) for (_f, a), (r, b) in zip(samples, gains)]
     si = settle_index(frames, ends, fps)          # v0.16.34: 시작 구간이 안정되기 전 샘플은 클립 커브 계산에서 뺌
@@ -540,11 +576,16 @@ def recommend(samples: list[tuple[int, np.ndarray]], base: dict, scene: str | No
     sd = p.get("sd", 0) * st * keep
     g = builtin_grade(sc, base, strength)
     g["sat"] = round(1 + (float(g["sat"]) - 1) * keep, 3) if g["sat"] > 1 else g["sat"]
-    rs, bs = _med3([x[0] for x in gains]), _med3([x[1] for x in gains])
+    rs, bs = _med3([x[0] for x in gout]), _med3([x[1] for x in gout])
     g.update(r_gain=round(float(np.median(rs)), 3), b_gain=round(float(np.median(bs)), 3),
              curve=s_curve(lo - 0.01, hi + 0.01, s_amt * st, sd=sd))
     if p.get("lift"):
         g["curve"] = lift_curve(g["curve"], keep)
+    if measure:                                   # v0.16.56 DJI 원본이 아님 = 색조 0 · 물빛은 잰 만큼
+        g["hue"] = 0.0
+        wv = measured_water(samples[si:], gout[si:])
+        if wv is not None:
+            g["water"] = wv
 
     def mk(lo_, hi_):
         c = s_curve(lo_ * pd.get("lo", 0.9) - 0.01, hi_ + 0.01, s_amt * st, sd=sd)
@@ -570,13 +611,13 @@ def recommend(samples: list[tuple[int, np.ndarray]], base: dict, scene: str | No
         gkeys["curve"] = [{"f": frames[i], "v": mk(*ends[i])} for i in ck] + [{"f": frames[si], "v": g["curve"]}]
     if csi > 0:
         _start_luma_keys(gkeys, samples, csi, g)
-    return {"grade": g, "gkeys": gkeys, "scene": sc, "subject": sb, "preset": sc, "rich": round(1 - keep, 2)}
+    return {"grade": g, "gkeys": gkeys, "scene": sc, "subject": sb, "preset": sc, "rich": round(1 - keep, 2), "measured": bool(measure)}
 
 
 def analyze_source(src: Source, base: dict, scene=None, subject=None, strength="mid", gpu=False,
                    cancel=None, on_progress=None) -> dict:
     samples = grab_samples(src, base.get("lut", ""), gpu, cancel=cancel, on_progress=on_progress)
-    return recommend(samples, base, scene, subject, strength, fps=float(src.fps))
+    return recommend(samples, base, scene, subject, strength, fps=float(src.fps), measure=not is_dji_log(src, base.get("lut", "")))
 
 
 # ------------------------------------------------------------------ RGB 그래프 도움: 한 번에 맞추기 (현재 화면 1장)

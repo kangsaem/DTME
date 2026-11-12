@@ -924,7 +924,8 @@ class AutoDialog(DragMove, QDialog):
         base.update({k: v for k, v in s.grade.items() if k in ("sharpen", "lens")})
         base["lut"] = lut
         sc, sb = choice_args(r.choice)
-        r.result = auto.recommend(smp, base, sc, sb, self.strength.value() or "mid", fps=float(s.fps))
+        r.result = auto.recommend(smp, base, sc, sb, self.strength.value() or "mid", fps=float(s.fps),
+                                  measure=not auto.is_dji_log(s, lut))        # v0.16.56 DJI 원본이 아니면 화면을 재서
         r.result["grade"]["lens"] = self.lens_s.value()
         r.result["grade"]["stab"] = self.stab_s.value()
         r.rec = auto.recommend(smp, base)["preset"]

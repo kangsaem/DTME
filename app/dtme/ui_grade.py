@@ -923,7 +923,7 @@ class GradePanel(QWidget):
                 return
             base = dict(p.grade)
             base["lut"] = p.grade_for_source(sid, off=False).get("lut", "")      # 클립 LUT 그대로
-            r = auto.recommend(smp, base, sc, sb, strength, fps=float(s.fps))
+            r = auto.recommend(smp, base, sc, sb, strength, fps=float(s.fps), measure=not auto.is_dji_log(s, base["lut"]))
             rec = r["preset"] if key == "auto" else auto.recommend(smp, base)["preset"]
             s.grade = {k: v for k, v in r["grade"].items() if p.grade.get(k) != v}
             s.gkeys = r["gkeys"]
