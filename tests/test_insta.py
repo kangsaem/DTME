@@ -71,6 +71,14 @@ def main(work):
         assert project.auto_lut(p, s) == "Insta360_I-Log_to_Rec709.cube", project.auto_lut(p, s)
     finally:
         paths.lut_dir = old
+    # v0.16.51: 프로그램에 든 Insta360 LUT(사용자가 준 공식 파일) — I-Log 클립이면 자동 선택 · 읽히고 걸림
+    s.lut_mode = "ilog"
+    lut = project.auto_lut(p, s)
+    assert lut == "AcePro2_I-Log_To_Rec.709_V1.0.cube", lut
+    g = dict(project.NEUTRAL, lut=lut)
+    assert ff.render_preview(c, g) != ff.render_preview(c, dict(project.NEUTRAL, lut=""))
+    s.lut_mode = "normal"
+    assert project.auto_lut(p, s) == ""
     print("OK test_insta")
 
 
