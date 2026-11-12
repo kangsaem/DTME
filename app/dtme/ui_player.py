@@ -181,8 +181,26 @@ class Monitor(QWidget):
                 col.setAlphaF(max(0.0, min(1.0, float(t.get("opacity", 0.5)))))
                 p.setPen(Qt.NoPen)
                 p.setBrush(col)
-                rad = float(t.get("radius", 0)) * min(self.out_wh) / 1080 * k     # 렌더와 같은 기준(1080 px)
-                p.drawRoundedRect(self._title_rect(t, None), rad, rad)
+                k8 = min(self.out_wh) / 1080 * k                                  # 렌더와 같은 기준(1080 px)
+                rad = float(t.get("radius", 0)) * k8
+                rr = self._title_rect(t, None)
+                sd = max(0.0, float(t.get("shadow", 0))) * k8
+                if sd > 0.25:                                                     # v0.16.59 그림자(오른쪽 아래, 번짐은 3겹으로 흉내)
+                    for i, al in enumerate((0.10, 0.16, 0.24)):
+                        g_ = sd / 2 * (1 - i / 2)
+                        p.setBrush(QColor(0, 0, 0, int(255 * al)))
+                        p.drawRoundedRect(rr.translated(sd, sd).adjusted(-g_, -g_, g_, g_), rad + g_, rad + g_)
+                    p.setBrush(col)
+                p.drawRoundedRect(rr, rad, rad)
+                bw = max(0.0, min(min(rr.width(), rr.height()) / 2, float(t.get("border", 0)) * k8))
+                if bw > 0.25:                                                     # 테두리(사각형 안쪽으로)
+                    from PySide6.QtGui import QPen
+                    pen = QPen(QColor(t.get("bcolor", "#ffffff")), bw)
+                    pen.setJoinStyle(Qt.MiterJoin)
+                    p.setPen(pen)
+                    p.setBrush(Qt.NoBrush)
+                    p.drawRoundedRect(rr.adjusted(bw / 2, bw / 2, -bw / 2, -bw / 2), max(0.0, rad - bw / 2), max(0.0, rad - bw / 2))
+                    p.setPen(Qt.NoPen)
                 continue
             if t.get("kind") == "image":
                 if img is not None:

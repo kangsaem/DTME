@@ -213,7 +213,8 @@ class RectDialog(_Undoable):
         crow.addWidget(more)
         crow.addStretch(1)
         g.addLayout(crow, 0, 1, 1, 2)
-        rows = (("불투명도", "opacity", 0, 100, 100, "%"), ("둥글기", "radius", 0, 80, 1, ""), ("길이", "fade", 0, 20, 10, "초"))
+        rows = (("불투명도", "opacity", 0, 100, 100, "%"), ("둥글기", "radius", 0, 80, 1, ""),
+                ("테두리", "border", 0, 30, 1, ""), ("그림자", "shadow", 0, 60, 1, ""), ("길이", "fade", 0, 20, 10, "초"))   # 테두리 = 두께 · 그림자 = 거리(0 = 없음)
         self.vals = {}
         for i, (name, key, lo, hi, sc, unit) in enumerate(rows, 1):
             g.addWidget(QLabel(name), i, 0)
@@ -228,7 +229,24 @@ class RectDialog(_Undoable):
             g.addWidget(sl, i, 1)
             g.addWidget(lab, i, 2)
             self.vals[key] = sl
-        anim_rows(self, g, len(rows) + 1, rect)
+        n = len(rows) + 1
+        g.addWidget(QLabel("테두리 색"), n, 0)                 # v0.16.59
+        brow = QHBoxLayout()
+        self.bsw = []
+        for c in ("#ffffff", "#000000", "#ffe28a", "#9fd8ff"):
+            b = QPushButton("")
+            b.setFixedSize(24, 22)
+            b.clicked.connect(lambda _=False, c=c: self._bcolor(c))
+            self.bsw.append((c, b))
+            brow.addWidget(b)
+        bmore = QPushButton("…")
+        bmore.setFixedSize(30, 22)
+        bmore.setToolTip("다른 색")
+        bmore.clicked.connect(self._bpick)
+        brow.addWidget(bmore)
+        brow.addStretch(1)
+        g.addLayout(brow, n, 1, 1, 2)
+        anim_rows(self, g, n + 1, rect)
         g.setColumnStretch(1, 1)
         self.body.addLayout(g)
         self._paint_swatches()
@@ -239,6 +257,18 @@ class RectDialog(_Undoable):
         cur = (self.t.get("color") or "#000000").lower()
         for c, b in self.sw:
             ui_style.tone(b, color=c, sel=c == cur)
+        bcur = (self.t.get("bcolor") or "#ffffff").lower()
+        for c, b in self.bsw:
+            ui_style.tone(b, color=c, sel=c == bcur)
+
+    def _bcolor(self, c):
+        self._set("bcolor", c)
+        self._paint_swatches()
+
+    def _bpick(self):
+        c = QColorDialog.getColor(QColor(self.t.get("bcolor", "#ffffff")), self, "테두리 색")
+        if c.isValid():
+            self._bcolor(c.name())
 
     def _color(self, c):
         self._set("color", c)

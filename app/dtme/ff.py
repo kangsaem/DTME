@@ -2308,39 +2308,76 @@ def rect_box(t: dict, ow: int, oh: int) -> tuple[int, int, int, int]:
     return x, y, w, h
 
 
+RECT_SHADOW_ALPHA = 0.5          # 사각형 그림자 = 검정 50%(× 사각형 불투명도는 안 곱함), 가장자리 부드럽게
+
+
+def rect_margin(t: dict, k: float) -> int:
+    """그림자 때문에 사각형 그림이 사방으로 넓어지는 px(그림자 없음 = 0). 그림자 = 오른쪽 아래로 거리 d, 번짐 = d 의 절반."""
+    d = max(0.0, float(t.get("shadow", 0))) * k
+    import math
+    return int(math.ceil(d * 1.5)) + 1 if d > 0.25 else 0
+
+
 def rect_png(t: dict, w: int, h: int, k: float) -> str:
-    """사각형 레이어 그림(PNG, 색·불투명도·둥근 모서리, 가장자리 부드럽게) → 캐시 파일 경로. Qt 없이(작업 스레드 안전)."""
+    """사각형 레이어 그림(PNG, 색·불투명도·둥근 모서리, 가장자리 부드럽게) → 캐시 파일 경로. Qt 없이(작업 스레드 안전).
+    v0.16.59: 테두리(border = 두께 px·1080 기준, bcolor, 사각형 안쪽으로) · 그림자(shadow = 거리 px·1080 기준, 오른쪽 아래).
+    그림자가 있으면 그림이 사방 rect_margin 만큼 큼(얹을 때 그만큼 왼쪽 위로)."""
     import hashlib
     import struct
     import zlib
     import numpy as np
     col = (t.get("color") or "#000000").lstrip("#")
+    bcol = (t.get("bcolor") or "#ffffff").lstrip("#")
     op = max(0.0, min(1.0, float(t.get("opacity", 0.5))))
     rad = max(0.0, min(min(w, h) / 2, float(t.get("radius", 0)) * k))
-    key = hashlib.md5(f"{col}|{op:.3f}|{rad:.2f}|{w}|{h}".encode()).hexdigest()[:16]
+    bw = max(0.0, min(min(w, h) / 2, float(t.get("border", 0)) * k))
+    sd = max(0.0, float(t.get("shadow", 0))) * k
+    m = rect_margin(t, k)
+    key = hashlib.md5(f"{col}|{op:.3f}|{rad:.2f}|{w}|{h}|{bcol}|{bw:.2f}|{sd:.2f}".encode()).hexdigest()[:16]
     d = paths.cache_dir() / "rects"
     d.mkdir(parents=True, exist_ok=True)
     f = d / f"rect_{key}.png"
     if f.exists():
         return str(f)
-    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32) + 0.5
-    if rad > 0.5:
-        cx = np.clip(xx, rad, w - rad)
-        cy = np.clip(yy, rad, h - rad)
-        dist = np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2)
-        a = np.clip(rad + 0.5 - dist, 0.0, 1.0)
-    else:
-        a = np.ones((h, w), np.float32)
-    rgba = np.zeros((h, w, 4), np.uint8)
-    rgba[..., 0], rgba[..., 1], rgba[..., 2] = int(col[0:2], 16), int(col[2:4], 16), int(col[4:6], 16)
-    rgba[..., 3] = np.round(a * op * 255).astype(np.uint8)
-    raw = b"".join(b"\x00" + rgba[r].tobytes() for r in range(h))
+    W, H = w + 2 * m, h + 2 * m
+    yy, xx = np.mgrid[0:H, 0:W].astype(np.float32) + 0.5
+
+    def mask(x0, y0, ww, hh, r, soft=0.5):
+        """둥근 사각형 덮임(0~1). 가장자리 = 거리 ±soft 에 걸쳐 번짐(soft 0.5 = 1px 부드럽게)."""
+        r = max(0.0, min(r, ww / 2, hh / 2))
+        qx = np.abs(xx - (x0 + ww / 2)) - (ww / 2 - r)
+        qy = np.abs(yy - (y0 + hh / 2)) - (hh / 2 - r)
+        dist = np.sqrt(np.maximum(qx, 0) ** 2 + np.maximum(qy, 0) ** 2) + np.minimum(np.maximum(qx, qy), 0) - r   # 바깥 +, 안 −
+        return np.clip(0.5 - dist / (2 * soft), 0.0, 1.0).astype(np.float32)
+
+    fill = mask(m, m, w, h, rad)
+    rgb = np.zeros((H, W, 3), np.float32)
+    alpha = np.zeros((H, W), np.float32)
+
+    def over(c_hex, a):
+        nonlocal rgb, alpha
+        c = np.array([int(c_hex[0:2], 16), int(c_hex[2:4], 16), int(c_hex[4:6], 16)], np.float32)
+        na = a + alpha * (1 - a)
+        rgb = np.where(na[..., None] > 1e-6, (c * a[..., None] + rgb * (alpha * (1 - a))[..., None]) / np.maximum(na, 1e-6)[..., None], rgb)
+        alpha = na
+    if sd > 0.25:                                   # 그림자(맨 아래): 오른쪽 아래로 sd, 번짐 sd/2
+        sh = mask(m + sd, m + sd, w, h, rad, soft=max(0.5, sd / 2))
+        sh = sh * sh * (3 - 2 * sh)                 # 부드러운 감쇠
+        over("000000", sh * RECT_SHADOW_ALPHA)
+    over(col, fill * op)
+    if bw > 0.25:                                   # 테두리(맨 위, 불투명): 사각형 안쪽으로 bw
+        inner = mask(m + bw, m + bw, w - 2 * bw, h - 2 * bw, max(0.0, rad - bw)) if (w > 2 * bw and h > 2 * bw) else np.zeros_like(fill)
+        over(bcol, np.clip(fill - inner, 0.0, 1.0))
+    rgba = np.zeros((H, W, 4), np.uint8)
+    rgba[..., :3] = np.clip(np.round(rgb), 0, 255).astype(np.uint8)
+    rgba[..., 3] = np.round(np.clip(alpha, 0, 1) * 255).astype(np.uint8)
+    raw = b"".join(b"\x00" + rgba[r].tobytes() for r in range(H))
 
     def chunk(tag, data):
         return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
-    png = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0))
+    png = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", W, H, 8, 6, 0, 0, 0))
            + chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b""))
-    tmp = f.with_suffix(".tmp")
+    tmp = f.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
     tmp.write_bytes(png)
     os.replace(tmp, f)
     return str(f)
@@ -2365,6 +2402,8 @@ def post_graph(fparts: list, cmd: list, project: Project, extras: dict, total: f
             t0, t1 = float(t["t0"]), float(t["t1"])
             x, y, w, h = rect_box(t, ow, oh)
             png = rect_png(t, w, h, min(ow, oh) / 1080)
+            mg = rect_margin(t, min(ow, oh) / 1080)             # 그림자만큼 큰 그림 → 그만큼 왼쪽 위에 얹음
+            x, y, w, h = x - mg, y - mg, w + 2 * mg, h + 2 * mg
             cmd += ["-loop", "1", "-framerate", f"{OUT_FPS.numerator}/{OUT_FPS.denominator}", "-t", f"{total + 1:.3f}",
                     "-i", _abs(png)]
             chain = ["format=yuva420p"] + _fade_chain(t)
