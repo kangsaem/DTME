@@ -739,7 +739,7 @@ class AutoDialog(DragMove, QDialog):
             label = "자동"
         sub = []
         s = self.state.project.source(row.sid)
-        mode = {"dlog": "D-Log M", "normal": "일반", "unknown": "알 수 없음"}.get(getattr(s, "lut_mode", ""), "") if s else ""
+        mode = {"dlog": "D-Log M", "ilog": "I-Log", "normal": "일반", "unknown": "알 수 없음"}.get(getattr(s, "lut_mode", ""), "") if s else ""
         if s is not None and s.frames:
             nolut = self.row_lut(row) == ""
             sub.append(" · ".join(x for x in (mode, "LUT 없음" if nolut else "") if x))

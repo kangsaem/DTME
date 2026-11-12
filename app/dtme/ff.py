@@ -556,6 +556,20 @@ def _seek(frame: float, fps: Fraction) -> str:
 
 
 # ------------------------------------------------------------------ 분석
+def _rot_wh(v: dict) -> tuple[int, int, int]:
+    """ffprobe 영상 스트림 → (폭, 높이, 회전°). 세로로 찍은 영상(회전 정보 ±90°, v0.16.50 Insta360 Ace Pro 2)은
+    ffmpeg 이 읽을 때 돌려 주므로 실제 화면 = 폭·높이가 바뀐 것."""
+    w, h, rot = int(v["width"]), int(v["height"]), 0
+    for sd in v.get("side_data_list") or []:
+        try:
+            rot = int(round(float(sd.get("rotation", 0)))) if "rotation" in sd else rot
+        except (TypeError, ValueError):
+            pass
+    if abs(rot) % 180 == 90:
+        w, h = h, w
+    return w, h, rot
+
+
 def probe(path: str) -> dict:
     out = run([paths.ffprobe(), "-v", "error", "-print_format", "json",
                "-show_streams", "-show_format", path])
@@ -570,14 +584,38 @@ def probe(path: str) -> dict:
     dur = float(v.get("duration") or d["format"].get("duration") or 0)
     frames = int(v.get("nb_frames") or 0) or int(round(dur * float(fps)))
     vfr = aden != 0 and abs(float(Fraction(anum, aden)) - float(fps)) > 0.01
+    w, h, rot = _rot_wh(v)
     return {
         "fps_num": num, "fps_den": den, "frames": frames,
-        "width": int(v["width"]), "height": int(v["height"]),
+        "width": w, "height": h, "rotation": rot,
         "has_audio": any(s.get("codec_type") == "audio" for s in d["streams"]),
         "pix_fmt": v.get("pix_fmt", ""), "codec": v.get("codec_name", ""),
         "vfr": vfr, "duration": dur,
-        "color_mode": dji_color_mode(path, d),
+        "color_mode": (lambda m: m if m != "unknown" else insta_color_mode(path))(dji_color_mode(path, d)),
     }
+
+
+def insta_color_mode(path: str) -> str:
+    """Insta360(Ace Pro 2 등) 파일 끝의 기록에서 색 프로파일: 'ilog' | 'normal' | 'unknown'(v0.16.50).
+    사용자 파일(Ace Pro 2, vivid)로 확인한 것: 끝 3KB 안에 'Insta360 …' 모델명 · 색 이름('vivid') · 표식 8db42d69….
+    I-Log 파일은 아직 못 봄 → 이름에 log 가 들어가면 ilog 로 봄(실제 파일로 확인 필요)."""
+    import re
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            n = f.tell()
+            f.seek(max(0, n - 8192))
+            t = f.read()
+        if b"8db42d694ccc418790edff439fe026bf" not in t or b"Insta360" not in t:
+            return "unknown"
+        if re.search(rb"(?<![A-Za-z])i[-_ ]?log(?![A-Za-z])", t, re.I):
+            return "ilog"
+        if re.search(rb"(?<![A-Za-z])(vivid|standard|flat)(?![A-Za-z])", t, re.I):
+            return "normal"
+        return "unknown"
+    except Exception as e:  # noqa: BLE001
+        log_error(f"색 모드 {path}", str(e)[-200:])
+        return "unknown"
 
 
 # ------------------------------------------------------------------ DJI 메타(djmd)로 색 모드 판단
@@ -1063,6 +1101,9 @@ def find_preview(path: str) -> str | None:
     m = re.match(r"^(PRO_)?VID_(.+)_0(\d)_(\d+)$", stem, re.I)
     if m:
         cands += [f"{m.group(1) or ''}LRV_{m.group(2)}_{k}_{m.group(4)}.lrv" for k in ("01", "11", "00")]
+    m = re.match(r"^(PRO_)?VID_(.+)$", stem, re.I)          # Ace Pro 2: VID_날짜_시간_번호.mp4 ↔ LRV_날짜_시간_번호.lrv (v0.16.50)
+    if m:
+        cands.append(f"{m.group(1) or ''}LRV_{m.group(2)}.lrv")
     want = [c.lower() for c in cands]
     try:
         names = {f.name.lower(): f for f in p.parent.iterdir() if f.is_file() and f.suffix.lower() in (".lrf", ".lrv")}
@@ -1143,7 +1184,7 @@ def check_preview(src: Source, lut: str, pv: str | None = None, shift_hint: int 
         pfps = n / dd
         pdur = float(v.get("duration") or d["format"].get("duration") or 0)
         r["frames"] = int(v.get("nb_frames") or round(pdur * pfps))
-        r["w"], r["h"] = int(v["width"]), int(v["height"])
+        r["w"], r["h"], _rot = _rot_wh(v)
     except Exception as e:  # noqa: BLE001
         r["why"] = f"읽기 실패 {str(e)[-80:]}"
         return r
@@ -1360,7 +1401,7 @@ def _pv_meta(src: Source, path: str) -> dict:
         pfps = n / dd
         pdur = float(v.get("duration") or d["format"].get("duration") or 0)
         r["frames"] = int(v.get("nb_frames") or round(pdur * pfps))
-        r["w"], r["h"] = int(v["width"]), int(v["height"])
+        r["w"], r["h"], _rot = _rot_wh(v)
     except Exception as e:  # noqa: BLE001
         r["why"] = f"읽기 실패 {str(e)[-80:]}"
         return r

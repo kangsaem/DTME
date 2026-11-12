@@ -96,6 +96,14 @@ def auto_lut(project, s) -> str | None:
         if not lut and (paths.lut_dir() / DEFAULT_LUT).exists():
             lut = DEFAULT_LUT
         return lut
+    if mode == "ilog":                       # Insta360 I-Log(v0.16.50): LUT 폴더에서 이름에 insta/i-log 가 든 것(Rec709 먼저). 없으면 LUT 없음
+        try:
+            c = sorted(p.name for p in paths.lut_dir().iterdir() if p.suffix.lower() in (".cube", ".3dl")
+                       and re.search(r"insta|i[-_ ]?log", p.name, re.I))
+        except OSError:
+            c = []
+        c.sort(key=lambda n: (not re.search(r"709", n), n))
+        return c[0] if c else ""
     return ""
 
 
@@ -769,7 +777,10 @@ def short_name(path: str) -> str:
     """파일명에서 날짜·시간(YYYYMMDDhhmm) 추출. DJI_20261025100118_0148_D → 202610251001"""
     stem = Path(path).stem
     m = re.search(r"(?<!\d)(\d{14})(?!\d)", stem) or re.search(r"(?<!\d)(\d{12})", stem)
-    return m.group(1)[:12] if m else stem
+    if m:
+        return m.group(1)[:12]
+    m = re.search(r"(?<!\d)(20\d{6})_(\d{6})(?!\d)", stem)       # Insta360: VID_20260917_080520_006 → 202609170805 (v0.16.50)
+    return m.group(1) + m.group(2)[:4] if m else stem
 
 
 def spaced(n: str) -> str:

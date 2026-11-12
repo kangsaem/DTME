@@ -399,6 +399,7 @@ class GradePanel(QWidget):
         self._debounce.timeout.connect(self._emit_change)
 
         state.changed.connect(self._on_state)
+        state.sourceStatus.connect(self._on_src_status)
         state.sourceStatus.connect(lambda _sid: self._load_output())     # v0.16.32: 원본 크기를 읽은 뒤 출력 칸 갱신
         self._fill_luts()
         self._fill_presets()
@@ -1255,6 +1256,11 @@ class GradePanel(QWidget):
                 subprocess.Popen(["xdg-open", path])
 
     # ------------------------------------------------------------ 상태
+    def _on_src_status(self, sid):
+        """분석이 끝나 색 모드에 맞는 LUT 가 정해짐(일반·Insta360 = LUT 없음) → LUT 칸이 예전 값으로 남아 있으면 다시 읽음(v0.16.50)."""
+        if sid == self.cur_sid and self.target[0] == "src" and self.lut.currentData() != (self._effective().get("lut", "") or ""):
+            self._load_controls()
+
     def _on_state(self, what):
         if what in ("project", "sources", "undo"):
             self._fill_targets()
