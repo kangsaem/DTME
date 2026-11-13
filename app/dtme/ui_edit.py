@@ -2502,6 +2502,9 @@ class EditTab(QWidget):
             b["lut"] = p.grade_for_source(s.id, off=False).get("lut", "")
             bases[s.id] = b
         dlg.set_running(True)
+        from . import solo
+        solo.enter(dlg, self.window())                  # v0.16.74 작업 중 = 편집 창 숨김, 이 창만 작업 표시줄에(끝·취소 = 편집 창)
+        dlg.rejected.connect(lambda: solo.leave(dlg))
         n_steps = len(need_auto) + len(srcs) + (1 if auds else 0)
 
         def work(prog, cancel):
@@ -2512,11 +2515,12 @@ class EditTab(QWidget):
                 prog(min(0.99, k[0] / max(1, n_steps)))
                 dlg_text[0] = txt
             res = {}
-            for s in need_auto:
+            for i, s in enumerate(need_auto):
                 if cancel.is_set():
                     raise ff.Cancelled()
+                dlg_text[0] = f"AUTO {i + 1}/{len(need_auto)}"
                 res[s.id] = auto.analyze_source(s, bases[s.id], cancel=cancel)
-                step("AUTO")
+                step(f"AUTO {i + 1}/{len(need_auto)}")
             picks = []
             for s in srcs:
                 if cancel.is_set():
@@ -2531,7 +2535,7 @@ class EditTab(QWidget):
                     ff.log_error("자동 편집 화면 읽기", str(ex))
                     sc = None
                 picks.append({"src": s, "scene": scene, "score": sc, "surface": sf})
-                step("하이라이트")
+                step(f"하이라이트 {len(picks)}/{len(srcs)}")
             infos = {a["path"]: music.get(a["path"]) for a in auds}
             if auds:
                 step("음악")
@@ -2539,7 +2543,7 @@ class EditTab(QWidget):
         dlg_text = [""]
         job = jobs.Job(work, with_progress=True)
         dlg._job = job
-        job.signals.progress.connect(lambda v: dlg.set_progress(v, dlg_text[0]))
+        job.signals.progress.connect(lambda v: (dlg.set_progress(v, dlg_text[0]), solo.progress(dlg, v)))
 
         def done(r):
             res, picks, infos = r
@@ -2598,6 +2602,7 @@ class EditTab(QWidget):
                       + (f" · 음악 {len(p.music)}곡(마디 맞춤 {snapped})" if auds else ""), C_OK)
             ff.log_info(f"자동 편집: {st} → 컷 {[(Path(p.source(g.src).path).name, g.fin, g.fout) for g in p.segments]} · "
                         f"장면 {[x['scene'] for x in picks]} · 음악 {[(Path(m['path']).name, m['t0'], m['len']) for m in p.music] if auds else '-'}")
+            solo.leave(dlg)
             if p.segments:
                 self.set_mode("timeline")
                 self.show_timeline(0.0)
@@ -2605,6 +2610,7 @@ class EditTab(QWidget):
 
         def err(msg):
             dlg.set_running(False)
+            solo.leave(dlg, keep_dialog=True)
             if "Cancelled" in msg or not dlg.isVisible():
                 return
             ff.log_error("자동 편집", msg)
@@ -2801,6 +2807,8 @@ class EditTab(QWidget):
             self._load_current()
         if dlg.wait_then("start"):
             dlg.set_busy(True)
+            from . import solo
+            solo.enter(dlg, self.window())           # v0.16.74 분석 기다리는 동안 = AUTO 창만(편집 창 숨김)
             return
         rows = dlg.chosen_rows()
         if not rows:
@@ -2812,6 +2820,8 @@ class EditTab(QWidget):
         if rows:
             self._select_source(rows[0].sid)
         self._say(f"AUTO 완료: {len(rows)}개 클립", C_OK)
+        from . import solo
+        solo.leave(dlg)
         dlg.accept()
 
     def _auto_begin(self, dlg):
@@ -2857,6 +2867,8 @@ class EditTab(QWidget):
             if self.render_panel.running:
                 self.render_panel.cancel_all()
         self._set_auto_bar(1.0, "#555")
+        from . import solo
+        solo.leave(dlg, keep_dialog=True)
 
     def _auto_render_step(self, dlg):
         """[보정+렌더]: 분석이 끝난 영상부터 바로 값 넣고 렌더 시작(뒤 영상은 그동안 분석). 모두 끝나면 창 닫음."""
@@ -2882,13 +2894,16 @@ class EditTab(QWidget):
             if not self.render_panel.running:
                 self._set_auto_bar(0.0, "#d9604f")
             self.render_panel.enqueue(items)
+        from . import solo
         if dlg.pending():
             dlg.waiting = "start"
             dlg.set_busy(True)
+            solo.enter(dlg, self.window())           # v0.16.74 분석 기다리는 동안 = AUTO 창만
             dlg.analyze_all()
             return
         dlg.waiting = None
         self._auto_feeding = False
+        solo.leave(dlg)
         dlg.accept()
         if not dlg._applied:
             dlg.set_busy(False)
@@ -2928,6 +2943,8 @@ class EditTab(QWidget):
             dlg.set_busy(False)
             return
         dlg.set_busy(True, "#d9a646")
+        from . import solo
+        solo.enter(dlg, self.window())               # v0.16.74 샘플 만드는 동안 = AUTO 창만
         dlg.bar.setValue(0)
         gpu = p.output.gpu_decode
         size, fmt, layout = int(cfg.get("size", 1920)), cfg.get("fmt", "png8"), cfg.get("layout", "side")
@@ -2949,6 +2966,7 @@ class EditTab(QWidget):
         order = list(per)
 
         def on_prog(v):
+            solo.progress(dlg, v)
             k = int(round(v * len(todo)))
             dlg.bar.setValue(int(v * 100))
             for sid, idx in per.items():
@@ -2966,6 +2984,7 @@ class EditTab(QWidget):
 
         def done(n):
             self.state.clear_work("sample", set(per))
+            solo.leave(dlg, keep_dialog=True)
             dlg.set_busy(False)
             dlg.set_bar_color("#d9a646")
             dlg.bar.setValue(100)
@@ -2974,6 +2993,7 @@ class EditTab(QWidget):
 
         def err(m):
             self.state.clear_work("sample", set(per))
+            solo.leave(dlg, keep_dialog=True)
             dlg.set_busy(False)
             dlg._progress()
             self._say(f"샘플 실패: {m[-160:]}", C_WARN)

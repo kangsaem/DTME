@@ -667,6 +667,9 @@ class AutoDialog(DragMove, QDialog):
         lay.addSpacing(4)
         lay.addLayout(r1)
         self.resize(1040, 720)
+        from .solo import min_button
+        self.b_min = min_button(self)                     # v0.16.74 작업 중 [−] = 내림(오른쪽 위, 레이아웃 밖)
+        self.b_min.setParent(self)
         self._name_preview()
         if self.list.count():
             self.list.setCurrentRow(0)
@@ -873,6 +876,12 @@ class AutoDialog(DragMove, QDialog):
         self._row_changed()
 
     # ---------------------------------------------------------------- v0.16.37 체크 쓸기
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        if hasattr(self, "b_min"):
+            self.b_min.move(self.width() - self.b_min.width() - 6, 4)
+            self.b_min.raise_()
+
     def _media_count(self):
         p = self.state.project
         na, ni = len(p.audios), len(p.images)
@@ -1115,6 +1124,8 @@ class AutoDialog(DragMove, QDialog):
             col = SG.STAGE[kind][1]
             self.set_bar_color(col)
             self.bar.setValue(int(100 * val))
+            from .solo import progress as _sp
+            _sp(self, val)
             self.state_lab.setText(txt)
             self.state_lab.setStyleSheet(f"color:{col};")
         if self.waiting in ("start", "sample") and not self.pending():

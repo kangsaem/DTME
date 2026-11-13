@@ -57,8 +57,9 @@ def poke():
     dlg.dropEvent(ev); wait(1.0)
     seen["media2"] = dlg.media_lab.text()
     # 2) 작업 중 [취소] = 창 남김
+    for r in dlg.rows:                       # 분석 안 끝난 상태로(끝났으면 기다림 없이 바로 넘어감)
+        r.result, r.prog = None, 0.5
     dlg.mode = "each"; dlg.waiting = "start"; dlg.set_busy(True)     # [보정+편집] 누른 뒤 분석 기다리는 중(작업 중)
-    wait(0.1)
     seen["busy"] = bool(dlg.busy or dlg.waiting)
     dlg.cancel(); wait(0.3)
     seen["after_cancel_visible"] = dlg.isVisible()

@@ -131,6 +131,9 @@ class AutoEditDialog(DragMove, QDialog):
         title.setStyleSheet("font-weight:bold; font-size:14px;")
         top.addWidget(title)
         top.addWidget(Grip(), 1)
+        from .solo import min_button
+        self.b_min = min_button(self)                     # v0.16.74 작업 중 [−] = 내림(작업 표시줄 DTME 아이콘)
+        top.addWidget(self.b_min)
         v = QVBoxLayout(self)
         v.setContentsMargins(14, 10, 14, 12)
         v.setSpacing(10)
