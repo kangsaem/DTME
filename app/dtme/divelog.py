@@ -235,11 +235,16 @@ def dtmd_dives(obj, name: str = "") -> list:
             if len(pts) < 2 or max(dd for _t, dd in pts) <= 0.5:
                 continue
             start = _naive(int(m.group(1)), int(m.group(2)), int(m.group(3))) + cur * 60
-            if d.get("startUTC") is not None and d.get("localOff") is not None:     # 다이빙마다 정확한 입수 시각이 있으면 그것
+            if isinstance(d.get("sec0"), (int, float)):          # DTMD 새 형식: 다이빙마다 입수 시각 = 그날 0시부터 초(현지)
+                start = _naive(int(m.group(1)), int(m.group(2)), int(m.group(3))) + float(d["sec0"])
+            elif d.get("startUTC") is not None and d.get("localOff") is not None:     # 다이빙마다 정확한 입수 시각이 있으면 그것
                 start = float(d["startUTC"]) + float(d["localOff"])
             elif d.get("start") is not None and isinstance(d.get("start"), (int, float)) and d["start"] > 1e9:
                 start = float(d["start"])
+            pts, t0 = _trim(pts)                                 # 입수 전 수면 구간 = 뺌(FIT 과 같게), 입수 시각도 그만큼
+            start += t0
             out.append({"id": f"dtmd{int(start)}", "src": "dtmd", "name": name, "start": float(start),
+                        "sec": isinstance(d.get("sec0"), (int, float)),
                         "pts": [[round(t, 1), round(max(0.0, dd), 2)] for t, dd in pts],
                         "max": round(max(dd for _t, dd in pts), 1), "tz": True})
     return out

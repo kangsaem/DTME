@@ -61,6 +61,12 @@ def main(work):
     js2.write_text(json.dumps(logs), encoding="utf-8")
     dd = DL.read_dives(str(js2))
     assert dd[0]["start"] == naive(2026, 10, 28, 9, 15, 30), dd[0]["start"]
+    logs["logs"][0]["state"]["dives"][1]["sec0"] = 11 * 3600 + 7 * 60 + 9      # DTMD 새 형식(다이빙마다 입수 초, 그날 0시부터)
+    logs["logs"][0]["state"]["dives"][1]["pts"] = [{"t": 0, "d": 0}, {"t": 30, "d": 0}, {"t": 32, "d": 0.8}] + pts[1:]
+    js3 = d / "logbook3.json"
+    js3.write_text(json.dumps(logs), encoding="utf-8")
+    dd = DL.read_dives(str(js3))
+    assert dd[1]["start"] == naive(2026, 10, 28, 11, 7, 39), DL.fmt_hm(dd[1]["start"])   # 앞 수면 30초 = 뺌(입수 시각도 30초 뒤)
     proj_json = d / "project.json"
     proj_json.write_text(json.dumps({"sources": []}), encoding="utf-8")
     assert not DL.is_dive_file(str(proj_json))
