@@ -198,10 +198,14 @@ jobs:
           Write-Output $o3
           if ($o3 -notmatch "OK test_ui_v1670") { exit 1 }
           $global:LASTEXITCODE = 0
-          python tests/test_ui_v1671.py v1671_test
-          if ($LASTEXITCODE -ne 0) { exit 1 }
-          python tests/test_ui_v1672.py v1672_test
-          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $o_v1671 = python tests/test_ui_v1671.py v1671_test 2>&1 | Out-String
+          Write-Output $o_v1671
+          if ($o_v1671 -notmatch "OK test_ui_v1671") { exit 1 }
+          $global:LASTEXITCODE = 0
+          $o_v1672 = python tests/test_ui_v1672.py v1672_test 2>&1 | Out-String
+          Write-Output $o_v1672
+          if ($o_v1672 -notmatch "OK test_ui_v1672") { exit 1 }
+          $global:LASTEXITCODE = 0
           python tests/test_music_scene.py musicscene_test
           if ($LASTEXITCODE -ne 0) { exit 1 }
           # 끝난 뒤 Windows 종료 단계에서 접근 위반(시험 내용과 무관, test_ui_autocheck 와 같음 — 실측 2026-11-13) → 결과 줄로 판정

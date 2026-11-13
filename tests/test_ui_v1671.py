@@ -111,4 +111,4 @@ p = st.project
 assert p.lead == 0.0 and abs(next(x for x in p.titles if x["text"] == "A")["t0"] - 3.0) < 0.05, (p.lead, p.titles)
 w.undo(); wait(0.2)
 assert abs(st.project.lead - 2.0) < 0.05
-print("OK test_ui_v1671"); os._exit(0)
+print("OK test_ui_v1671", flush=True); os._exit(0)

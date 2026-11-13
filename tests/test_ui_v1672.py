@@ -93,4 +93,4 @@ e.timeline_to_render(); wait(0.1)
 assert p.render_items[-1].orientation == "horizontal"            # 정한 값
 from dtme.project import Project
 f = os.path.join(WORK, "p.json"); p.save(f); assert Project.load(f).tl_out == "horizontal"
-print("OK test_ui_v1672"); os._exit(0)
+print("OK test_ui_v1672", flush=True); os._exit(0)
