@@ -301,8 +301,8 @@ def merge(old: list, new: list) -> list:
         hit = next((i for i, o in enumerate(out) if same(o, d)), None)
         if hit is None:
             out.append(d)
-        elif d["src"] == "fit" and out[hit]["src"] != "fit":
-            out[hit] = d
+        elif (d["src"] == "fit" and out[hit]["src"] != "fit") or (d.get("utc") is not None and out[hit].get("utc") is None):
+            out[hit] = d                                  # FIT 우선 · UTC 있는 쪽 우선(같은 DTMD 백업을 새로 받으면 새 것)
     return sorted(out, key=lambda d: d["start"])
 
 

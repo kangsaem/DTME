@@ -133,6 +133,8 @@ def main(work):
     js4.write_text(json.dumps(logs), encoding="utf-8")
     d4 = DL.read_dives(str(js4))
     assert d4[0].get("utc") == naive(2026, 10, 28, 0, 15, 0) and d4[0]["start"] == naive(2026, 10, 28, 9, 15, 0)
+    m2 = DL.merge(DL.read_dives(str(js)), d4)                             # 예전 백업(UTC 없음) 위에 새 백업 = 새 것(UTC)
+    assert any(x.get("utc") == naive(2026, 10, 28, 0, 15, 0) for x in m2) and len(m2) == 2
     print("DIVE OK")
 
 
