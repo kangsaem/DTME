@@ -292,11 +292,14 @@ class MainWindow(QMainWindow):
 
     def dropEvent(self, e):
         files = [u.toLocalFile() for u in e.mimeData().urls()]
+        from .divelog import is_dive_file
         from .ui_launch import collect_videos
         vids = [f for f in files if Path(f).suffix.lower() in VIDEO_EXT]
         vids += collect_videos([f for f in files if Path(f).is_dir()])      # 폴더 = 그 안의 영상
-        projs = [f for f in files if f.endswith(".json")]
-        if vids:
-            self.edit.import_files(vids)
+        dives = [f for f in files if Path(f).is_file() and Path(f).suffix.lower() in (".fit", ".zip", ".json")
+                 and is_dive_file(f)]                                       # v0.16.84 다이빙 기록
+        projs = [f for f in files if f.endswith(".json") and f not in dives]
+        if vids or dives:
+            self.edit.import_files(vids + dives)
         elif projs and self._confirm_discard():
             self._load(projs[0])

@@ -888,9 +888,10 @@ class AutoDialog(DragMove, QDialog):
 
     def _media_count(self):
         p = self.state.project
-        na, ni = len(p.audios), len(p.images)
-        self.media_lab.setText(" · ".join(x for x in (f"음악 {na}" if na else "", f"사진 {ni}" if ni else "") if x))
-        self.media_lab.setVisible(bool(na or ni))
+        na, ni, nd = len(p.audios), len(p.images), len(p.dives)
+        self.media_lab.setText(" · ".join(x for x in (f"음악 {na}" if na else "", f"사진 {ni}" if ni else "",
+                                                      f"다이빙 {nd}" if nd else "") if x))
+        self.media_lab.setVisible(bool(na or ni or nd))
 
     def dragEnterEvent(self, e):
         if e.mimeData().hasUrls():
@@ -900,7 +901,8 @@ class AutoDialog(DragMove, QDialog):
         """v0.16.72 AUTO 창에 끌어다 놓기 = 음악·사진 추가(편집 화면에서 씀). 영상은 시작 창·편집 화면에서."""
         from .project import AUDIO_EXT, IMAGE_EXT
         from .ui_launch import collect_media
-        fs = [f for f in collect_media([u.toLocalFile() for u in e.mimeData().urls()]) if Path(f).suffix.lower() in AUDIO_EXT | IMAGE_EXT]
+        fs = [f for f in collect_media([u.toLocalFile() for u in e.mimeData().urls()])
+              if Path(f).suffix.lower() in AUDIO_EXT | IMAGE_EXT | {".fit", ".zip", ".json"}]     # v0.16.84 다이빙 기록 도
         if fs:
             self.state.import_files(fs)
             QTimer.singleShot(300, self._media_count)

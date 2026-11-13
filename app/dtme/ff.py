@@ -2401,6 +2401,18 @@ def rect_png(t: dict, w: int, h: int, k: float) -> str:
     return str(f)
 
 
+def _clean_old(root, days: float = 1.0):
+    """수심 그래프 그림 폴더: 하루 지난 것 지움."""
+    import shutil
+    import time
+    try:
+        for d in root.iterdir():
+            if d.is_dir() and time.time() - d.stat().st_mtime > days * 86400:
+                shutil.rmtree(d, ignore_errors=True)
+    except OSError:
+        pass
+
+
 def post_graph(fparts: list, cmd: list, project: Project, extras: dict, total: float, orientation: str,
                audio: bool, n_inputs: int) -> None:
     """[vm][am] → 타임라인 글자·이미지(아래→위) + 음악/원본 볼륨 → [vo][ao]."""
@@ -2409,6 +2421,25 @@ def post_graph(fparts: list, cmd: list, project: Project, extras: dict, total: f
     music = [m for m in extras.get("music", []) if os.path.exists(m.get("path", "")) and float(m["t0"]) < total]
     mix = extras.get("mix") or {}
     cur, k, ii = "[vm]", 0, n_inputs
+    lay = extras.get("dive_layers")
+    if lay:                                       # v0.16.84 수심 그래프(글자·이미지보다 아래)
+        fr = f"{OUT_FPS.numerator}/{OUT_FPS.denominator}"
+        y0, bh = int(lay["y0"]), int(lay["bh"])
+        for kind in ("mul", "add", "gr", "txt"):
+            cmd += ["-f", "concat", "-safe", "0", "-i", _abs(lay[kind])]
+        fparts.append(f"{cur}split=2[dvm][dvb]")
+        fparts.append(f"[dvb]crop={ow}:{bh}:0:{y0},format=gbrp10le[dvb0]")
+        fparts.append(f"[{ii}:v:0]fps={fr},scale={ow}:{bh},format=gbrp10le[dvM]")
+        fparts.append(f"[dvb0][dvM]blend=all_mode=multiply:shortest=0:repeatlast=1[dvb1]")
+        fparts.append(f"[{ii + 1}:v:0]fps={fr},scale={ow}:{bh},format=gbrp10le[dvA]")
+        fparts.append(f"[dvb1][dvA]blend=all_mode=addition:shortest=0:repeatlast=1[dvb2]")
+        fparts.append(f"[{ii + 2}:v:0]fps={fr},format=yuva420p[dvG]")
+        fparts.append(f"[dvb2]format=yuv420p[dvb3]")
+        fparts.append(f"[dvb3][dvG]overlay=0:0:format=yuv420:eof_action=pass[dvb4]")
+        fparts.append(f"[dvm][dvb4]overlay=0:{y0}:format=yuv420:eof_action=pass[dvo]")
+        fparts.append(f"[{ii + 3}:v:0]fps={fr},format=yuva420p[dvT]")
+        fparts.append(f"[dvo][dvT]overlay=0:0:format=yuv420:eof_action=pass[dvx]")
+        cur, ii = "[dvx]", ii + 4
     for t in titles:
         nxt = f"[tv{k}]"
         if t.get("kind") == "text":
@@ -2646,7 +2677,28 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orien
             dw.append(min(1.0, last))
         if spans or dsp:
             extras = {**(extras or {}), "loud": spans, "duck": dsp, "duck_w": dw}
-    if extras and (extras.get("titles") or extras.get("music") or extras.get("loud") or extras.get("duck")):
+    dv = (extras or {}).get("dive") or {}
+    if dv.get("dives") and not fast:              # v0.16.84 수심 그래프: 0.5초마다 그림(선·점·글자 / 띠 멀티플라이·애드)
+        from . import dive_draw
+        import uuid
+        starts, t_ = [], 0.0
+        for i in range(n):
+            if i > 0 and plan[i]:
+                t_ -= plan[i][1]
+            starts.append(t_)
+            t_ += lens[i]
+        spans = [(starts[i] + lead, starts[i] + lens[i] + lead, segs[i],
+                  float(plan[i + 1][1]) if i + 1 < n and plan[i + 1] else 0.0) for i in range(n)]
+        ow, oh = out_size(orientation)
+        root = paths.cache_dir() / "dive"
+        _clean_old(root)
+        lay = dive_draw.render_layers(project, dv["dives"], float(dv.get("off", 0.0)), spans, total, ow, oh,
+                                      root / uuid.uuid4().hex[:10], dv.get("cancel"))
+        if lay:
+            extras = {**extras, "dive_layers": lay}
+            log_info(f"수심 그래프: {lay['txt']}")
+    if extras and (extras.get("titles") or extras.get("music") or extras.get("loud") or extras.get("duck")
+                   or extras.get("dive_layers")):
         fparts[:] = [f.replace("[vo]", "[vm]").replace("[ao]", "[am]") for f in fparts]
         post_graph(fparts, cmd, project, extras, total, orientation, audio, len(segs) + len(img_inputs))
         cwd = cwd or str(paths.cache_dir() / "lut")
@@ -2915,7 +2967,8 @@ def chunk_plan(project: Project, segs: list, orientation: str, extras: dict | No
     """[(조각 Segment, 버릴 앞 출력 프레임 수, 출력 프레임 수)] 또는 None(통째로)."""
     import dataclasses
     import math
-    if fast or len(segs) != 1 or (extras and (extras.get("titles") or extras.get("music") or extras.get("lead"))):
+    if fast or len(segs) != 1 or (extras and (extras.get("titles") or extras.get("music") or extras.get("lead")
+                                              or extras.get("dive"))):
         return None
     from .music import seg_up
     if seg_up(segs[0]):               # v0.16.66 원본 키움 경사가 조각 경계마다 생기지 않게 = 통째로

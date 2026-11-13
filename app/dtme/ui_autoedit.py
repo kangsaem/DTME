@@ -1,6 +1,8 @@
 """자동 편집 창(v0.16.68): 고른 소스에서 하이라이트를 골라 정한 길이로 타임라인을 채움(작업 = ui_edit.run_autoedit · autoedit.py)."""
 from __future__ import annotations
 
+import os
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (QCheckBox, QDialog, QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QProgressBar,
@@ -143,6 +145,10 @@ class AutoEditDialog(DragMove, QDialog):
         self.full = full                                   # v0.16.81 [전부 자동] 팝업: 보정은 AUTO 창 값 → 보정 칸 대신 프로젝트 저장
         self.save_on = QCheckBox("프로젝트 저장 (영상 옆 .dtme.json — 나중에 편집 창에서 고침)")
         self.save_on.setChecked(True)
+        self.dive_on = QCheckBox("")                       # v0.16.84 수심 그래프(다이빙 기록이 있을 때) — 켜면 컷 최소 10초
+        self._dive_label()
+        self.dive_on.setChecked(bool(p.dives) and p.dive_on)
+        self.setAcceptDrops(True)                          # 이 창에 FIT·DTMD 파일을 끌어다 놓아도 됨
 
         def line():
             f = QFrame()
@@ -154,7 +160,7 @@ class AutoEditDialog(DragMove, QDialog):
         right.setContentsMargins(9, 4, 9, 9)
         right.addLayout(labeled("전체 길이", len_row))
         right.addWidget(line())
-        for cb in (self.title_on, self.music_on, self.save_on if full else self.grade_on):
+        for cb in (self.title_on, self.music_on, self.dive_on, self.save_on if full else self.grade_on):
             right.addLayout(labeled("", cb))
         right.addStretch(1)
         rw = QWidget()
@@ -224,12 +230,33 @@ class AutoEditDialog(DragMove, QDialog):
     def settings(self) -> dict:
         return {"sids": self.chosen(), "minutes": int(self.length.value()), "title": self.title_on.isChecked(),
                 "music": self.music_on.isChecked(), "grade": self.grade_on.isChecked() and not self.full,
-                "save": self.full and self.save_on.isChecked()}
+                "save": self.full and self.save_on.isChecked(),
+                "dive": self.dive_on.isChecked() and bool(self.state.project.dives)}
+
+    def _dive_label(self):
+        n = len(self.state.project.dives)
+        self.dive_on.setText(f"수심 그래프 (다이빙 {n}개 · 컷 최소 10초)" if n else
+                             "수심 그래프 (다이빙 기록 없음 — FIT·DTMD 파일을 이 창에 끌어다 놓기)")
+        self.dive_on.setEnabled(bool(n))
+
+    def dragEnterEvent(self, e):
+        if e.mimeData().hasUrls():
+            e.acceptProposedAction()
+
+    def dropEvent(self, e):
+        """v0.16.84 다이빙 기록(FIT · DTMD zip/json) 끌어다 놓기 → 수심 그래프 켬."""
+        from .divelog import is_dive_file
+        fs = [u.toLocalFile() for u in e.mimeData().urls()]
+        dv = [f for f in fs if os.path.isfile(f) and os.path.splitext(f)[1].lower() in (".fit", ".zip", ".json") and is_dive_file(f)]
+        if dv:
+            self.state.import_dives(dv)
+            self._dive_label()
+            self.dive_on.setChecked(bool(self.state.project.dives))
 
     def set_running(self, on: bool):
         self.b_start.setEnabled(not on)
         self.list.setEnabled(not on)
-        for w in (self.length, self.title_on, self.music_on, self.grade_on, self.save_on):
+        for w in (self.length, self.title_on, self.music_on, self.grade_on, self.save_on, self.dive_on):
             w.setEnabled(not on and (w is not self.music_on or bool(self.state.project.audios)))
         if on:
             self.set_progress(0.0, "")

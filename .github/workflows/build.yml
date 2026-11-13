@@ -126,6 +126,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
           python tests/test_quality.py test4k.mp4 quality_test
           if ($LASTEXITCODE -ne 0) { exit 1 }
+          python tests/test_dive.py dive_test
+          if ($LASTEXITCODE -ne 0) { exit 1 }
           python tests/test_titles.py test4k.mp4 titles_test
           if ($LASTEXITCODE -ne 0) { exit 1 }
           python tests/test_auto.py auto_test
@@ -237,6 +239,10 @@ jobs:
           $o_v1681 = python tests/test_ui_v1681.py v1681_test 2>&1 | Out-String
           Write-Output $o_v1681
           if ($o_v1681 -notmatch "OK test_ui_v1681") { exit 1 }
+          $global:LASTEXITCODE = 0
+          $o_v1684 = python tests/test_ui_v1684.py v1684_test 2>&1 | Out-String
+          Write-Output $o_v1684
+          if ($o_v1684 -notmatch "OK test_ui_v1684") { exit 1 }
           $global:LASTEXITCODE = 0
           # 끝난 뒤 Windows 종료 단계에서 접근 위반(시험 내용과 무관, test_ui_autocheck 와 같음 — 실측 2026-11-13) → 결과 줄로 판정
           $o2 = python tests/test_autoedit.py autoedit_test 2>&1 | Out-String

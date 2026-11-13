@@ -16,21 +16,23 @@ from . import __version__, paths, ui_style
 from .project import Project, get_setting, set_setting
 
 VIDEO_EXT = {".mp4", ".mov"}
-MEDIA_FILTER = ("영상·사진·음악 (*.mp4 *.MP4 *.mov *.MOV *.jpg *.JPG *.jpeg *.JPEG *.png *.PNG "
-                "*.mp3 *.MP3 *.m4a *.M4A *.wav *.WAV *.flac *.FLAC *.aac *.AAC)")
+MEDIA_FILTER = ("영상·사진·음악·다이빙 기록 (*.mp4 *.MP4 *.mov *.MOV *.jpg *.JPG *.jpeg *.JPEG *.png *.PNG "
+                "*.mp3 *.MP3 *.m4a *.M4A *.wav *.WAV *.flac *.FLAC *.aac *.AAC *.fit *.FIT *.zip *.json)")
 
 
 def collect_media(paths) -> list[str]:
     """v0.16.72 영상·사진·음악: 파일은 그대로, 폴더는 그 안의 것(하위 폴더 제외) 이름 순."""
     from .project import AUDIO_EXT, IMAGE_EXT
+    from .divelog import is_dive_file
     ok = VIDEO_EXT | IMAGE_EXT | AUDIO_EXT
     out = []
     for p in paths:
         p = Path(p)
         if p.is_dir():
-            out += sorted(str(f) for f in p.iterdir() if f.is_file() and f.suffix.lower() in ok)
-        elif p.suffix.lower() in ok:
-            out.append(str(p))
+            out += sorted(str(f) for f in p.iterdir() if f.is_file() and (f.suffix.lower() in ok or
+                                                                          (f.suffix.lower() == ".fit")))
+        elif p.suffix.lower() in ok or (p.suffix.lower() in (".fit", ".zip", ".json") and is_dive_file(str(p))):
+            out.append(str(p))       # v0.16.84 다이빙 기록(FIT · DTMD 백업 zip/json) 도
     return out
 
 

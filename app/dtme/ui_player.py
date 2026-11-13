@@ -72,6 +72,7 @@ class Monitor(QWidget):
         self.patch: QImage | None = None        # 확대 영역 고화질(원본에서 다시 만든 것)
         self.patch_rect = None                  # (x, y, w, h) 영상 기준 0~1
         self.titles = []                        # 타임라인 모드: [(title, alpha, QImage|None, (w, h) | None)]
+        self.dive = None                        # v0.16.84 수심 그래프 (다이빙, 입수부터 초, 실제 시각, 멀티플라이/애드)
         self.sel_title = ""
         self.playing = False          # v0.16.36 재생 중 = 고른 레이어·글자 틀(점선·손잡이) 숨김
         self._tdrag = None
@@ -111,6 +112,26 @@ class Monitor(QWidget):
     def set_mode_button(self, key):
         for b in self.mode_grp.buttons():
             b.setChecked(b.property("key") == key)
+
+    def set_dive(self, v):
+        if v != self.dive:
+            self.dive = v
+            self.update()
+
+    def _paint_dive(self, p: QPainter):
+        if not self.dive or self._out_rect.isEmpty():
+            return
+        from . import dive_draw
+        dive, t, when, mode, ta, rv, ga = self.dive
+        c = self._out_rect
+        W, H = self.out_wh
+        p.save()
+        p.setClipRect(c)
+        dive_draw.paint_fill(p, c, W, H, dive, t, mode, rv, ga)
+        p.translate(c.topLeft())
+        p.scale(c.width() / W, c.height() / H)
+        dive_draw.paint_top(p, W, H, dive, t, when, True, ta, rv, ga)
+        p.restore()
 
     def set_titles(self, titles, sel):
         self.titles, self.sel_title = titles, sel
@@ -727,6 +748,7 @@ class Monitor(QWidget):
             p.drawRect(c)
             self._out_rect = QRectF(c)
             self._paint_layers(p)
+        self._paint_dive(p)
         self._paint_titles(p)
         self._paint_scope(p)
         self._paint_loading(p)

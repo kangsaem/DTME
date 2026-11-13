@@ -12,11 +12,11 @@ from . import paths
 FONT_EXT = {".ttf", ".otf", ".ttc"}
 # 파일 이름 앞부분 → 보여줄 이름
 NICE = {"Pretendard": "Pretendard", "NotoSansKR": "Noto Sans KR", "BlackHanSans": "Black Han Sans",
-        "Montserrat": "Montserrat", "Inter": "Inter",
+        "Montserrat": "Montserrat", "Inter": "Inter", "TeXGyreHeros": "TeX Gyre Heros",
         # v0.16.67 Google Fonts(OFL) 9개
         "DoHyeon": "도현", "Jua": "주아", "Gugi": "구기", "Dokdo": "독도", "YeonSung": "연성", "Gaegu": "개구",
         "GamjaFlower": "감자꽃", "HiMelody": "하이멜로디", "KirangHaerang": "기랑해랑"}
-ORDER = ["Pretendard", "Noto Sans KR", "Black Han Sans", "Montserrat", "Inter", "맑은 고딕",
+ORDER = ["Pretendard", "Noto Sans KR", "Black Han Sans", "Montserrat", "Inter", "TeX Gyre Heros", "맑은 고딕",
          "도현", "주아", "구기", "독도", "연성", "개구", "감자꽃", "하이멜로디", "기랑해랑"]
 
 
@@ -65,3 +65,22 @@ def add_font(path: str) -> str:
     if Path(path).resolve() != dst.resolve():
         shutil.copyfile(path, dst)
     return _family_of(dst.stem)[0]
+
+
+_QT_FAM: dict = {}
+
+
+def family_of_file(name: str) -> str:
+    """fonts/ 안 글꼴 파일 → Qt 글꼴 이름(처음 한 번 등록). 없으면 ''(기본 글꼴).
+    등록은 화면 스레드에서 먼저(dive_draw.ensure_fonts) — 렌더 스레드는 등록된 이름만 씀."""
+    if name in _QT_FAM:
+        return _QT_FAM[name]
+    from PySide6.QtGui import QFontDatabase
+    f = paths.fonts_dir() / name
+    fam = ""
+    if f.exists():
+        fid = QFontDatabase.addApplicationFont(str(f))
+        fams = QFontDatabase.applicationFontFamilies(fid) if fid >= 0 else []
+        fam = fams[0] if fams else ""
+    _QT_FAM[name] = fam
+    return fam

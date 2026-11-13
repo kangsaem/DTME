@@ -712,6 +712,11 @@ class RenderPanel(QWidget):
         self.progress[it.id] = 0.0
         self.refresh()
         extras = {"titles": it.titles, "music": it.music, "mix": it.mix, "lead": getattr(it, "lead", 0.0)}
+        dvi = getattr(it, "dive", None) or {}
+        if dvi.get("on") and p.dives:                  # v0.16.84 수심 그래프(타임라인 항목만)
+            from . import dive_draw
+            dive_draw.ensure_fonts()                   # 글꼴 등록 = 화면 스레드에서
+            extras["dive"] = {"dives": list(p.dives), "off": float(dvi.get("off", 0.0))}
 
         def work(prog, cancel, it=it, path=path):
             precache_item(p, it, cancel)               # v0.16.26: HDD 원본을 순서대로 한 번 읽어 메모리에(조각들이 거기서 읽음)

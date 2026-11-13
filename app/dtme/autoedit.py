@@ -202,6 +202,35 @@ def fit_total(cuts: list[list[float]], total: float, n_trans: int) -> list[list[
     return [[float(np.clip(x * k, CUT_MIN, CUT_MAX)) if x >= CUT_MIN else x for x in c] for c in cuts]
 
 
+ROT_MAX = 2                         # v0.16.84 회전 줌 전환 최대 횟수(한 영상)
+DIVE_MIN = 10.0                     # v0.16.84 수심 그래프 컷 최소 길이(전환 겹침 포함, 사용자) = dive_draw.MIN_CUT
+
+
+def dive_src(project, src) -> bool:
+    """이 소스(가운데 시각)가 다이빙 기록 안인가 — 수심 그래프를 켰을 때만."""
+    if not (getattr(project, "dive_on", False) and getattr(project, "dives", None)):
+        return False
+    from . import dive_draw
+    t0 = dive_draw.shot_time(src)
+    if t0 is None or not src.frames or not src.fps:
+        return False
+    mid = t0 + src.frames / float(src.fps) / 2 + float(getattr(project, "dive_off", 0.0) or 0.0)
+    return dive_draw.state(project.dives, mid) is not None
+
+
+def dive_lens(lens: list, dur: float) -> list:
+    """수심 그래프 컷: 같은 시간을 10초 넘는 컷으로 다시 나눔(개수 줄임). 원본이 10초보다 짧으면 통째로."""
+    if not lens:
+        return lens
+    tot = sum(lens)
+    if min(lens) >= DIVE_MIN:
+        return lens
+    if dur <= DIVE_MIN:
+        return [dur]
+    k = max(1, int(max(tot, DIVE_MIN) // DIVE_MIN))
+    return [min(dur, max(DIVE_MIN, tot / k))] * k
+
+
 def build(project, picks: list[dict], minutes: int, seed: int = 0, titles: bool = True, cut_max: list | None = None) -> dict:
     """picks = [{"src": Source, "scene": str, "score": ndarray, "surface": bool 배열(칸마다 물 밖)}] (촬영순).
     → {"segs": [Segment], "titles": [dict], "scenes": {컷 id: scene | 'surface'}}"""
@@ -210,8 +239,11 @@ def build(project, picks: list[dict], minutes: int, seed: int = 0, titles: bool 
     cuts = allot(durs, total, cut_max)
     n = sum(len(c) for c in cuts)
     cuts = fit_total(cuts, total, max(0, n - 1))
+    cuts = [dive_lens(c, d) if c and dive_src(project, p["src"]) else c for c, d, p in zip(cuts, durs, picks)]
     rnd = random.Random(seed)
-    kinds = [k for k, _ in TRANSITIONS if k not in ("none", "rotzoomin", "rotzoomout")]   # v0.16.77 회전 줌 = 뺌(색 튐 원인 찾는 중)
+    kinds = [k for k, _ in TRANSITIONS if k != "none"]       # v0.16.84 회전 줌 다시(보라색 = ◆ 이름 문제였음, v0.16.79)
+    calm = [k for k in kinds if not k.startswith("rotzoom")]
+    rot_n, last_rot = 0, False
     segs, scene_of, firsts = [], {}, []
     for p, lens in zip(picks, cuts):
         s = p["src"]
@@ -228,7 +260,10 @@ def build(project, picks: list[dict], minutes: int, seed: int = 0, titles: bool 
             fout = min(s.frames, fin + max(1, int(round(ln * fps))))
             g = Segment(s.id, fin, fout, 1.0)
             if segs:
-                g.trans = {"type": rnd.choice(kinds), "dur": TRANS_SEC}
+                k = rnd.choice(kinds if (rot_n < ROT_MAX and not last_rot) else calm)   # 회전 줌 = 한 영상 2번까지 · 연달아 안 씀
+                last_rot = k.startswith("rotzoom")
+                rot_n += last_rot
+                g.trans = {"type": k, "dur": TRANS_SEC}
             if j == 0:
                 firsts.append((g.id, s))
             sf = p.get("surface")
@@ -248,7 +283,13 @@ def build(project, picks: list[dict], minutes: int, seed: int = 0, titles: bool 
         from .ff import out_size
         o = project.out_of(picks[0]["src"]) if picks else "horizontal"
         wh = (1080, 1920) if out_size(o)[0] < out_size(o)[1] else (1920, 1080)     # 위치 비율 = 화면 방향만(크기 무관)
+        seg_of = {g.id: g for g in segs}
+        dives = list(getattr(project, "dives", []) or []) if getattr(project, "dive_on", True) else []
         for cid, s in firsts:
+            if dives:                                  # v0.16.84 수심 그래프가 들어가는 컷 = 날짜·시간 사각형 안 넣음(좌상단에 날짜·시각)
+                from . import dive_draw
+                if dive_draw.state(dives, dive_draw.when_at(s, seg_of[cid], 0.0, getattr(project, "dive_off", 0.0))):
+                    continue
             t0 = start.get(cid, 0.0) + tdur.get(cid, 0.0) + TITLE_DELAY     # v0.16.72 디졸브 끝나고 1초 뒤(사용자)
             tts += title_pair(display_name(s.path), t0, wh)
     return {"segs": segs, "titles": tts, "scenes": scene_of}
@@ -382,6 +423,8 @@ def snap_to_bars(project, music_info: dict, tol_bar: float = 0.5) -> int:
         fps = float(s.fps)
         cur = (g.fout - g.fin) / fps
         want = float(np.clip(cur + best, CUT_MIN, CUT_MAX))
+        if want < DIVE_MIN <= cur and dive_src(p, s):     # v0.16.84 수심 그래프 컷 = 10초 아래로 줄이지 않음
+            continue
         fout = min(s.frames, g.fin + int(round(want * fps)))
         if fout == g.fout:
             continue

@@ -26,8 +26,8 @@ from .ui_player import Player
 from .ui_render import (ADD_W, MAIN_H, MAIN_W, RenderPanel, fix_size, item_base, out_dir,
                         render_list_button, unique)
 
-MEDIA_FILTER = ("영상·이미지·음악 (*.mp4 *.MP4 *.mov *.MOV *.jpg *.JPG *.jpeg *.JPEG *.png *.PNG "
-                "*.mp3 *.MP3 *.m4a *.M4A *.wav *.WAV *.flac *.FLAC *.aac *.AAC)")
+MEDIA_FILTER = ("영상·이미지·음악·다이빙 기록 (*.mp4 *.MP4 *.mov *.MOV *.jpg *.JPG *.jpeg *.JPEG *.png *.PNG "
+                "*.mp3 *.MP3 *.m4a *.M4A *.wav *.WAV *.flac *.FLAC *.aac *.AAC *.fit *.FIT *.zip *.json)")
 IMG_DISPLAY_MAX = 2048      # 모니터 표시용 이미지 최대 변(렌더는 원본 사용)
 
 # Windows 물리 키(스캔코드) — 한/영 상태와 무관하게 동작
@@ -415,6 +415,21 @@ class EditTab(QWidget):
         self.tl_out.setMinimumWidth(200)
         self.tl_out.activated.connect(self._tl_out_chosen)
         lbox.addWidget(self.tl_out)
+        # v0.16.84 수심 그래프: [수심] 켜기/끄기 · 시각 맞춤 ±초 (다이빙 기록이 있을 때만 보임)
+        from PySide6.QtWidgets import QSpinBox
+        self.b_dive = _btn("수심", "수심 그래프 넣기(다이빙 기록 FIT·DTMD)", self._toggle_dive)
+        self.dive_off = QSpinBox()
+        self.dive_off.setRange(-7200, 7200)
+        self.dive_off.setSuffix("초")
+        self.dive_off.setPrefix("시각 ")
+        self.dive_off.setToolTip("시각 맞춤: 카메라 시계가 다이빙 컴퓨터보다 늦으면 +, 빠르면 −")
+        self.dive_off.setFocusPolicy(Qt.ClickFocus)
+        self.dive_off.setFixedWidth(104)
+        self.dive_off.valueChanged.connect(self._dive_off_changed)
+        lbox.addWidget(self.b_dive)
+        lbox.addWidget(self.dive_off)
+        self.b_dive.setVisible(False)
+        self.dive_off.setVisible(False)
         b_down = _btn("▼", "↓", lambda: self._key("down"), main=True)
         ui_style.tone(b_down, "navy")
         f = b_down.font()
@@ -1421,6 +1436,7 @@ class EditTab(QWidget):
         it = self._new_item([p.snap_seg(g.copy()) for g in p.segments], tl=True)      # 보정값·◆·꺼 둔 항목 = 보내는 순간 값
         it.titles, it.music, it.mix = copy.deepcopy(p.titles), copy.deepcopy(p.music), dict(p.mix)
         it.lead = p.lead
+        it.dive = {"on": bool(p.dive_on and p.dives), "off": float(p.dive_off)}
         p.render_items.append(it)
         self.state.touch("render")
 
@@ -1842,7 +1858,49 @@ class EditTab(QWidget):
         jobs.submit(jobs.PREVIEW_POOL, job, priority=8)
 
     # ================================================================ 갱신
+    def _refresh_dive_ui(self):
+        p = self.state.project
+        has = bool(p.dives)
+        self.b_dive.setVisible(has)
+        self.dive_off.setVisible(has and p.dive_on)
+        ui_style.tone(self.b_dive, "key_on" if p.dive_on else "")
+        self.dive_off.blockSignals(True)
+        self.dive_off.setValue(int(round(p.dive_off)))
+        self.dive_off.blockSignals(False)
+        if has:
+            from . import divelog as DL
+            lines = [f"{DL.fmt_date(d['start'])} {DL.fmt_hm(d['start'])} · {d['max']}m · {int(DL.dur(d) // 60)}분 · "
+                     f"{'FIT' if d['src'] == 'fit' else 'DTMD'}" for d in p.dives[-12:]]
+            self.b_dive.setToolTip("수심 그래프 넣기 · 다이빙 기록\n" + "\n".join(lines))
+
+    def _toggle_dive(self):
+        p = self.state.project
+        self.state.checkpoint()
+        p.dive_on = not p.dive_on
+        self.state.touch("dives")
+
+    def _dive_off_changed(self, v):
+        p = self.state.project
+        if abs(p.dive_off - v) > 0.01:
+            self.state.checkpoint(tag="dive_off")
+            p.dive_off = float(v)
+            self.state.dirty = True
+            if self.mode == "timeline":
+                self._update_tl_titles(self.tl_time)
+
     def _on_state(self, what):
+        if what in ("project", "undo", "dives"):
+            self._refresh_dive_ui()
+            if what == "dives":
+                msg = getattr(self.state, "dive_msg", None)
+                if msg:
+                    n, total, bad = msg
+                    self.state.dive_msg = None
+                    self._say(f"다이빙 기록 {total}개 읽음" + (f" (새로 {n})" if n != total else "")
+                              + (f" · 못 읽은 파일 {bad}" if bad else "")
+                              + ("" if total else " — FIT·DTMD 다이빙이 없음"), C_OK if total and not bad else "#d9a646")
+                if self.mode == "timeline":
+                    self._update_tl_titles(self.tl_time)
         if what in ("project", "undo"):
             if what == "project" or not self._cur():
                 self.cur_sid = ""
@@ -2114,6 +2172,7 @@ class EditTab(QWidget):
             self._gap_timer.stop()
             self._music_stop()
             self.player.mon.set_titles([], "")
+            self.player.mon.set_dive(None)
             self.timeline.update()
         elif load:
             self.show_timeline(self.tl_time)
@@ -2226,6 +2285,34 @@ class EditTab(QWidget):
             out.append((d, a, img, wh))
         self.player.mon.title_anim = anim
         self.player.mon.set_titles(out, self.sel_ov[1] if self.sel_ov[0] == "title" else "")
+        self.player.mon.set_dive(self._dive_at(t))
+
+    def _dive_at(self, t):
+        """v0.16.84 타임라인 t → 모니터 수심 그래프 (다이빙, 입수부터 초, 실제 시각, 섞는 방식) 또는 None."""
+        p = self.state.project
+        if not (p.dives and p.dive_on) or self.mode != "timeline":
+            return None
+        loc = self._tl_locate(t)
+        if loc is None:
+            return None
+        seg, st, _f = loc
+        src = p.source(seg.src)
+        if src is None:
+            return None
+        from . import dive_draw
+        w = dive_draw.when_at(src, seg, t - st, p.dive_off)
+        s = dive_draw.state(p.dives, w)
+        if not s:
+            return None
+        W, H = self.player.mon.out_wh
+        ln = next((c[2] for c in self._tl_cuts if c[0] is seg), 0.0)
+        i = next((j for j, c in enumerate(self._tl_cuts) if c[0] is seg), -1)
+        nxt = self._tl_cuts[i + 1][0] if 0 <= i < len(self._tl_cuts) - 1 else None
+        tail = float((nxt.trans or {}).get("dur", 0) or 0) if nxt is not None and (nxt.trans or {}).get("type") else 0.0
+        ta, rv, ga = dive_draw.anim(t - st, ln, tail)
+        if not (self.player.is_playing() or self._gap_timer.isActive()):
+            ta, rv, ga = 1.0, 1.0, 1.0                   # 멈춤 = 다 보이게(글자 사각형과 같음), 재생할 때만 애니메이션
+        return (s[0], s[1], w, dive_draw.cut_mode(src, seg, W, H), ta, rv, ga)
 
     def _on_title_pressed(self, tid):
         self.state.checkpoint()
@@ -2668,6 +2755,8 @@ class EditTab(QWidget):
                           "nkeys": len({kk["f"] for ks in rr["gkeys"].values() for kk in ks})}
                 self.state.ensure_proxy(s)
             seed = len(p.segments) * 7 + len(picks)
+            if p.dives:                                      # v0.16.84 수심 그래프 체크 = 프로젝트 설정(컷 최소 10초)
+                p.dive_on = bool(st.get("dive"))
             plan = autoedit.build(p, picks, st["minutes"], seed=seed, titles=st.get("title", True))
             p.segments = plan["segs"]
 
@@ -2702,6 +2791,7 @@ class EditTab(QWidget):
             self.sel_cut = ""
             self.state.touch("segments")
             self.state.touch("titles")
+            self.state.touch("dives")
             self.state.changed.emit("grade")
             self.grade._load_controls()
             self._refresh_tips()

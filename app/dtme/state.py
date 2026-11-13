@@ -207,6 +207,11 @@ class AppState(QObject):
 
     # ------------------------------------------------------------ 불러오기 (즉시 목록 등록)
     def import_files(self, files: list[str]) -> int:
+        from .divelog import is_dive_file
+        dvs = [f for f in files if Path(f).suffix.lower() in (".fit", ".zip", ".json") and is_dive_file(f)]
+        if dvs:
+            self.import_dives(dvs)
+        files = [f for f in files if f not in dvs]
         imgs = [f for f in files if Path(f).suffix.lower() in IMAGE_EXT]
         auds = [f for f in files if Path(f).suffix.lower() in AUDIO_EXT]
         files = [f for f in files if Path(f).suffix.lower() not in IMAGE_EXT | AUDIO_EXT]
@@ -233,6 +238,26 @@ class AppState(QObject):
             self.touch("sources")
             self.importProgress.emit()
         return added
+
+    def import_dives(self, files: list[str]) -> tuple[int, int]:
+        """v0.16.84 다이빙 기록(FIT · DTMD zip/json) → project.dives(같은 다이빙 = FIT 우선). (새로 들어간 수, 못 읽은 파일 수)."""
+        from . import divelog
+        p = self.project
+        new, bad = [], 0
+        for f in files:
+            try:
+                new += divelog.read_dives(f)
+            except Exception as ex:  # noqa: BLE001
+                bad += 1
+                ff.log_error("다이빙 기록 읽기", f"{f}: {ex}")
+        before = {d["id"] for d in p.dives}
+        self.checkpoint(label="다이빙 기록")
+        p.dives = divelog.merge(p.dives, new)
+        n = len([d for d in p.dives if d["id"] not in before])
+        ff.log_info(f"다이빙 기록: 파일 {len(files)} · 다이빙 {len(new)}(새로 {n}) · 못 읽음 {bad} · 전체 {len(p.dives)}")
+        self.dive_msg = (n, len(new), bad)
+        self.touch("dives")
+        return n, bad
 
     def retune(self):
         """원본 저장장치에 맞춰 동시 분석·렌더 수(jobs.tune)."""
