@@ -31,9 +31,9 @@ s = st.project.sources[0]; e._select_source(s.id); wait(1.0)
 e.player.seek(30); wait(2.5, lambda: e.player.overlay_frame == 30)
 
 # 1) 버튼 순서: 영상 추가 · AUTO · 삭제
-row = [b for b in e.findChildren(QPushButton) if b.text() in ("영상 추가", "AUTO", "삭제") and b.parent() is e.b_auto.parent()]
+row = [b for b in e.findChildren(QPushButton) if b.text() in ("파일 추가", "AUTO", "삭제") and b.parent() is e.b_auto.parent()]
 xs = {b.text(): b.x() for b in row if b.y() == e.b_auto.y()}
-assert xs["영상 추가"] < xs["AUTO"] < xs["삭제"], xs
+assert xs["파일 추가"] < xs["AUTO"] < xs["삭제"], xs
 
 # 2) 다시 실행
 gp._set("r_gain", 1.30); wait(0.2)

@@ -10,7 +10,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QEvent, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QImage, QImageReader, QPainter, QPen, QPixmap
-from PySide6.QtWidgets import (QAbstractSpinBox, QApplication, QButtonGroup, QCheckBox, QDialog, QFileDialog, QFrame,
+from PySide6.QtWidgets import (QAbstractSpinBox, QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QFileDialog, QFrame,
                                QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
                                QMenu, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSlider,
                                QSplitter, QStyle, QStyledItemDelegate, QTextEdit, QVBoxLayout, QWidget)
@@ -269,13 +269,13 @@ class EditTab(QWidget):
         ab.setSpacing(4)
         self.b_auto.setMinimumWidth(64)         # 열이 좁으면(노트북) 셋이 같이 줄어듦
         self.b_auto.setMaximumWidth(MAIN_W)
-        for text, fn in (("영상 추가", self.add_files), ("삭제", self._remove_selected)):
-            b = _btn(text, "", fn)
+        for text, fn in (("파일 추가", self.add_files), ("삭제", self._remove_selected)):
+            b = _btn(text, "영상·사진·음악" if text == "파일 추가" else "", fn)       # v0.16.72 이름(예전 '영상 추가')
             b.setFixedHeight(MAIN_H)
             b.setMinimumWidth(48)
             b.setMaximumWidth(ADD_W)
             ab.addWidget(b, 3)
-            if text == "영상 추가":
+            if text == "파일 추가":
                 ab.addWidget(self.b_auto, 4)
         ab.addStretch(1)
         left = QVBoxLayout()
@@ -400,6 +400,12 @@ class EditTab(QWidget):
         lbox.addWidget(self.b_autoedit)
         lbox.addWidget(b_trans)
         lbox.addWidget(self.tl_len)
+        self.tl_out = QComboBox()                          # v0.16.72 타임라인 출력(자동 = 첫 컷 소스)
+        self.tl_out.setToolTip("타임라인 출력")
+        self.tl_out.setFocusPolicy(Qt.NoFocus)
+        self.tl_out.setMinimumWidth(200)
+        self.tl_out.activated.connect(self._tl_out_chosen)
+        lbox.addWidget(self.tl_out)
         b_down = _btn("▼", "↓", lambda: self._key("down"), main=True)
         ui_style.tone(b_down, "navy")
         f = b_down.font()
@@ -731,7 +737,7 @@ class EditTab(QWidget):
 
     # ================================================================ 소스
     def add_files(self):
-        files, _ = QFileDialog.getOpenFileNames(self, "영상 추가", "", MEDIA_FILTER)
+        files, _ = QFileDialog.getOpenFileNames(self, "파일 추가", "", MEDIA_FILTER)
         if files:
             self.import_files(files)
 
@@ -778,7 +784,7 @@ class EditTab(QWidget):
             self.src_list.setCurrentRow(0)
         elif not p.sources:
             self.cur_sid = ""
-            self.player.clear("영상 추가")
+            self.player.clear("파일 추가")
             self.grade.set_current_source("")
             self._refresh_sbar()
 
@@ -1314,7 +1320,7 @@ class EditTab(QWidget):
         QTimer.singleShot(0, lambda: self.tl_scroll.horizontalScrollBar().setValue(
             self.tl_scroll.horizontalScrollBar().maximum()))
 
-    def _new_item(self, segs):
+    def _new_item(self, segs, tl: bool = False):
         """➜ · 타임라인 → 렌더 리스트. v0.16.32: 출력이 원본(들 중 가장 큰 것)보다 크면 낮춤."""
         from .project import clamp_out, source_out_h, source_vw
         p = self.state.project
@@ -1325,6 +1331,8 @@ class EditTab(QWidget):
         vw = min([source_vw(x) for x in srcs] or [0])              # 세로 1440·4K = 모든 컷이 그만한 세로 원본일 때만
         first = srcs[0] if srcs else None             # v0.16.55 출력 = 첫 컷 소스의 출력(여러 소스를 이은 타임라인도 영상 1개 = 출력 1개)
         want = p.out_of(first) if first is not None else o.orientation   # v0.16.70 세로 촬영 = 돌린 크기
+        if tl and p.tl_out:                                              # v0.16.72 타임라인 출력을 정했으면 그것
+            want = p.tl_out
         return RenderItem(name=item_base(p, segs), segs=segs, orientation=clamp_out(want, h, vw), audio=o.audio)
 
     def send_to_render(self):
@@ -1371,7 +1379,7 @@ class EditTab(QWidget):
         m = QMenu(self)
         a_r = m.addAction("렌더 리스트로")
         a_r.setEnabled(bool(self._selected_sids()))
-        a_add = m.addAction("영상 추가…")
+        a_add = m.addAction("파일 추가…")
         a_link = m.addAction("원본 폴더 지정…") if self.state.missing() else None      # 원본 없음이 있을 때만(v0.16.41)
         act = m.exec(self.src_list.viewport().mapToGlobal(pos))
         if act is None:
@@ -1388,7 +1396,7 @@ class EditTab(QWidget):
         if not p.segments:
             return
         self.state.checkpoint()
-        it = self._new_item([p.snap_seg(g.copy()) for g in p.segments])      # 보정값·◆·꺼 둔 항목 = 보내는 순간 값
+        it = self._new_item([p.snap_seg(g.copy()) for g in p.segments], tl=True)      # 보정값·◆·꺼 둔 항목 = 보내는 순간 값
         it.titles, it.music, it.mix = copy.deepcopy(p.titles), copy.deepcopy(p.music), dict(p.mix)
         it.lead = p.lead
         p.render_items.append(it)
@@ -1634,6 +1642,47 @@ class EditTab(QWidget):
         if g is not None and (g.fin, g.fout) != (fin0, fout0):
             g.loud, g.why = None, ""                 # 구간이 바뀜 → 원본 소리 다시 판단
             self.state.touch("segments")
+
+    def _tl_out_key(self, segs=None):
+        """타임라인 출력: 정한 값(원본보다 크면 낮춤) 또는 첫 컷 소스의 출력."""
+        from .project import clamp_out, source_out_h, source_vw
+        p = self.state.project
+        segs = p.segments if segs is None else segs
+        srcs = [p.source(g.src) for g in segs if p.source(g.src)]
+        if not srcs:
+            return p.output.orientation
+        hs = [source_out_h(x) for x in srcs]
+        h = 0 if 0 in hs else max(hs)
+        vw = min(source_vw(x) for x in srcs)
+        return clamp_out(p.tl_out or p.out_of(srcs[0]), h, vw)
+
+    def _fill_tl_out(self):
+        from .project import outputs_for, out_label, source_out_h, source_vw
+        p = self.state.project
+        srcs = [p.source(g.src) for g in p.segments if p.source(g.src)]
+        self.tl_out.setVisible(bool(srcs))
+        if not srcs:
+            return
+        hs = [source_out_h(x) for x in srcs]
+        ok = outputs_for(0 if 0 in hs else max(hs), min(source_vw(x) for x in srcs))
+        first = srcs[0]
+        auto_key = self._tl_out_key() if not p.tl_out else p.out_of(first)
+        items = [("", f"첫 컷 따라감 · {out_label(auto_key, first)}")] + [(k, out_label(k, None if k == "vertical" else first)) for k in ok]
+        self.tl_out.blockSignals(True)
+        self.tl_out.clear()
+        for k, t in items:
+            self.tl_out.addItem(t, k)
+        self.tl_out.setCurrentIndex(max(0, self.tl_out.findData(p.tl_out)))
+        self.tl_out.blockSignals(False)
+
+    def _tl_out_chosen(self, *_):
+        p = self.state.project
+        k = self.tl_out.currentData() or ""
+        if k == p.tl_out:
+            return
+        self.state.checkpoint()
+        p.tl_out = k
+        self.state.touch("segments")
 
     def _ov_drag_end(self, _kind, _oid):
         """v0.16.71 글자·음악을 0초 앞으로 끌어 놓음 = 앞 검은 구간(모두 뒤로) / 앞이 비면 줄임."""
@@ -2664,6 +2713,7 @@ class EditTab(QWidget):
         dlg = AutoDialog(self.state, self)
         dlg.startRequested.connect(lambda: self._auto_start(dlg))
         dlg.sampleRequested.connect(lambda: self._auto_sample(dlg))
+        dlg.on_cancel_work = lambda: self._auto_cancel_work(dlg)
         geo = self.window().geometry()
         dlg.move(geo.center().x() - dlg.width() // 2, geo.center().y() - dlg.height() // 2)
         self._auto_dlg = dlg
@@ -2750,6 +2800,15 @@ class EditTab(QWidget):
         self.grade._load_controls()
         self.grade.keysChanged.emit()
         self._refresh_tips()
+
+    def _auto_cancel_work(self, dlg):
+        """AUTO 창 작업 중 [취소](v0.16.72): [보정+렌더]로 시작한 렌더·샘플 멈춤, 창은 남김(다시 누르면 처음부터)."""
+        if getattr(dlg, "_started", False):
+            self._auto_feeding = False
+            dlg._started = False
+            if self.render_panel.running:
+                self.render_panel.cancel_all()
+        self._set_auto_bar(1.0, "#555")
 
     def _auto_render_step(self, dlg):
         """[보정+렌더]: 분석이 끝난 영상부터 바로 값 넣고 렌더 시작(뒤 영상은 그동안 분석). 모두 끝나면 창 닫음."""
@@ -2929,6 +2988,7 @@ class EditTab(QWidget):
         vend = p.lead + p.segs_seconds(segs)
         tail = p.tail_of(p.titles, vend) if items else 0.0
         self.timeline.set_pads(p.lead if items else 0.0, vend, vend + tail)
+        self._fill_tl_out()
         tot = vend + tail
         self.tl_len.setText(f"{tot:.1f}초" if items else "")
         self._scan_loud()

@@ -896,7 +896,7 @@ class Player(QWidget):
         self._grab_want: int | None = None
         self._token = 0                 # 소스가 바뀌면 증가 → 이전 소스의 늦은 결과 무시
         self.overlay_frame: int | None = None
-        self.mon.set_text("영상 추가")
+        self.mon.set_text("파일 추가")
 
     # ---------------------------------------------------------------- 표시
     def show_image(self, pix: QPixmap | QImage):

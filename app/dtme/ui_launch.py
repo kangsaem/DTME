@@ -16,19 +16,27 @@ from . import __version__, paths, ui_style
 from .project import Project, get_setting, set_setting
 
 VIDEO_EXT = {".mp4", ".mov"}
-MEDIA_FILTER = "영상 (*.mp4 *.MP4 *.mov *.MOV)"
+MEDIA_FILTER = ("영상·사진·음악 (*.mp4 *.MP4 *.mov *.MOV *.jpg *.JPG *.jpeg *.JPEG *.png *.PNG "
+                "*.mp3 *.MP3 *.m4a *.M4A *.wav *.WAV *.flac *.FLAC *.aac *.AAC)")
 
 
-def collect_videos(paths) -> list[str]:
-    """파일은 그대로(영상만), 폴더는 그 안의 영상(하위 폴더 제외) 이름 순."""
+def collect_media(paths) -> list[str]:
+    """v0.16.72 영상·사진·음악: 파일은 그대로, 폴더는 그 안의 것(하위 폴더 제외) 이름 순."""
+    from .project import AUDIO_EXT, IMAGE_EXT
+    ok = VIDEO_EXT | IMAGE_EXT | AUDIO_EXT
     out = []
     for p in paths:
         p = Path(p)
         if p.is_dir():
-            out += sorted(str(f) for f in p.iterdir() if f.is_file() and f.suffix.lower() in VIDEO_EXT)
-        elif p.suffix.lower() in VIDEO_EXT:
+            out += sorted(str(f) for f in p.iterdir() if f.is_file() and f.suffix.lower() in ok)
+        elif p.suffix.lower() in ok:
             out.append(str(p))
     return out
+
+
+def collect_videos(paths) -> list[str]:
+    """파일은 그대로(영상만), 폴더는 그 안의 영상(하위 폴더 제외) 이름 순."""
+    return [f for f in collect_media(paths) if Path(f).suffix.lower() in VIDEO_EXT]
 
 
 IMG = 400                                      # 그림 한 변(논리 px). 그림 파일은 800×800(고배율 화면용)
@@ -193,7 +201,7 @@ class Launcher(QWidget):
         act = m.exec(self.b_auto.mapToGlobal(self.b_auto.rect().bottomLeft()))
         start = get_setting("last_src_folder", "") or ""
         if act is a_f:
-            files, _ = QFileDialog.getOpenFileNames(self, "영상 선택", start, MEDIA_FILTER)
+            files, _ = QFileDialog.getOpenFileNames(self, "파일 선택", start, MEDIA_FILTER)
             if files:
                 self.run_auto(files)
         elif act is a_d:
@@ -218,7 +226,8 @@ class Launcher(QWidget):
     def run_auto(self, paths):
         if self.rendering:
             return
-        files = collect_videos(paths)
+        allf = collect_media(paths)                 # v0.16.72 음악·사진도 같이 받음(편집 화면에서 씀)
+        files = [f for f in allf if Path(f).suffix.lower() in VIDEO_EXT]
         if not files:
             self._say("영상 없음")
             return
@@ -231,7 +240,7 @@ class Launcher(QWidget):
         mw = self.mw
         mw.state.set_project(Project())             # 시작 창 AUTO = 늘 새 작업
         mw.state.defer_proxy = True                 # 프록시(재생용)는 [보정+편집] 때 — 분석·샘플·렌더는 원본에서
-        mw.edit.import_files(files)
+        mw.edit.import_files(allf)
         if not mw.state.project.sources:
             mw.state.defer_proxy = False
             self._say("영상 없음")

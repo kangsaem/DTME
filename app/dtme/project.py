@@ -736,6 +736,7 @@ class Project:
     output: OutputSettings = field(default_factory=lambda: load_default_output())
     file: str = ""
     lead: float = 0.0                                # v0.16.71 첫 컷 앞 검은 구간(초) — 글자·음악을 0초 앞으로 끌면 생김
+    tl_out: str = ""                                 # v0.16.72 타임라인 출력("" = 첫 컷 소스를 따라감)
 
     def tail_of(self, titles=None, video_end: float | None = None) -> float:
         """영상 끝 뒤 검은 구간(초) = 글자·사각형·이미지가 영상 끝을 넘은 만큼(음악은 안 늘림)."""
@@ -844,7 +845,7 @@ class Project:
             "stills": [asdict(s) for s in self.stills],
             "titles": self.titles, "music": self.music, "mix": self.mix, "audios": self.audios,
             "grade": self.grade,
-            "output": asdict(self.output), "lead": self.lead,
+            "output": asdict(self.output), "lead": self.lead, "tl_out": self.tl_out,
         }
 
     @classmethod
@@ -868,6 +869,7 @@ class Project:
         p.music = list(d.get("music", []))
         p.mix = {**default_mix(), **d.get("mix", {})}
         p.lead = float(d.get("lead", 0.0) or 0.0)
+        p.tl_out = str(d.get("tl_out", "") or "")
         g = dict(FACTORY_GRADE)
         g.update(upgrade_grade(dict(d.get("grade", {}))))
         p.grade = g

@@ -23,6 +23,7 @@ SW, SH = 96, 54
 CUT_MIN, CUT_MAX = 5.0, 60.0
 TRANS_SEC = 0.5
 TITLE_SEC = 5.0
+TITLE_DELAY = 1.0                # 전환(디졸브)이 끝나고 이만큼 뒤에 글자·사각형
 CALM = ("shallow", "coral", "light")          # 장면 → 음악 묶음
 GRAND = ("bluewater",)
 
@@ -238,11 +239,12 @@ def build(project, picks: list[dict], minutes: int, seed: int = 0, titles: bool 
         tmp.segments = segs
         tmp.lead = project.lead
         start = {c: t for c, t, _l in cut_spans(tmp)}
+        tdur = {g.id: float((g.trans or {}).get("dur", 0) or 0) for g in segs}
         from .ff import out_size
         o = project.out_of(picks[0]["src"]) if picks else "horizontal"
         wh = (1080, 1920) if out_size(o)[0] < out_size(o)[1] else (1920, 1080)     # 위치 비율 = 화면 방향만(크기 무관)
         for cid, s in firsts:
-            t0 = start.get(cid, 0.0)
+            t0 = start.get(cid, 0.0) + tdur.get(cid, 0.0) + TITLE_DELAY     # v0.16.72 디졸브 끝나고 1초 뒤(사용자)
             tts += title_pair(display_name(s.path), t0, wh)
     return {"segs": segs, "titles": tts, "scenes": scene_of}
 
@@ -281,7 +283,8 @@ def title_pair(text: str, t0: float, out_wh: tuple[int, int] = (1920, 1080)) -> 
     cy = ((1 - TITLE_BOTTOM) * H - rh / 2) / H
     tx.update(cx=round(cx, 4), cy=round(cy, 4))
     rc = new_rect(t0, t0 + TITLE_SEC)
-    rc.update(cx=round(cx, 4), cy=round(cy, 4), w=round(rw / W, 4), h=round(rh / H, 4), opacity=0.5, ain="right", aout="left",
+    full = TITLE_LEFT * W + rw                       # v0.16.72 사각형 = 화면 왼쪽 끝부터 글자 오른쪽 여백까지(사용자)
+    rc.update(cx=round(full / 2 / W, 4), cy=round(cy, 4), w=round(full / W, 4), h=round(rh / H, 4), opacity=0.5, ain="right", aout="left",
               follow=True, auto_edit=True)
     return [rc, tx]
 

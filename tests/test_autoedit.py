@@ -62,9 +62,9 @@ for wh in ((1920, 1080), (1080, 1920)):
     rc, tx = autoedit.title_pair("2026 0624 1014", 1.0, wh)
     tw, th = autoedit.text_size(tx)
     W, H = wh
-    assert abs(rc["w"] * W - (tw + 48)) < 1 and abs(rc["h"] * H - (th + 24)) < 1, (wh, rc, tw, th)
-    assert abs((rc["cx"] - rc["w"] / 2) * W - 0.05 * W) < 1 and abs((rc["cy"] + rc["h"] / 2) * H - 0.88 * H) < 1
-    assert (rc["cx"], rc["cy"]) == (tx["cx"], tx["cy"])
+    assert abs(rc["w"] * W - (tw + 48 + 0.05 * W)) < 1 and abs(rc["h"] * H - (th + 24)) < 1, (wh, rc, tw, th)
+    assert abs((rc["cx"] - rc["w"] / 2) * W) < 1 and abs((rc["cy"] + rc["h"] / 2) * H - 0.88 * H) < 1     # 왼쪽 끝 = 화면 끝
+    assert abs((rc["cx"] + rc["w"] / 2) * W - (tx["cx"] * W + (tw + 48) / 2)) < 1 and rc["cy"] == tx["cy"]   # 오른쪽 = 글자 + 여백
 print("엔진 OK", flush=True)
 
 # ---------------------------------------------------------------- 2) 화면 흐름
@@ -139,7 +139,8 @@ firsts = {}
 for g in segs:
     firsts.setdefault(g.src, g.id)
 texts = sorted((x["text"], round(x["t0"], 2)) for x in tt if x["kind"] == "text")
-want = sorted((display_name(p.source(sid).path), round(starts[cid], 2)) for sid, cid in firsts.items())
+tdur = {g.id: float((g.trans or {}).get("dur", 0) or 0) for g in segs}
+want = sorted((display_name(p.source(sid).path), round(starts[cid] + tdur[cid] + 1.0, 2)) for sid, cid in firsts.items())
 assert texts == want, (texts, want)
 assert p.sources[2].auto.get("preset"), p.sources[2].auto       # 보정 안 된 소스 = AUTO 먼저
 assert p.music and all(m.get("follow") for m in p.music)

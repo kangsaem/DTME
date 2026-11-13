@@ -521,6 +521,7 @@ class AutoDialog(DragMove, QDialog):
         self.jobs = []
         self.waiting = None              # 'start' | 'sample' (분석 끝나길 기다리는 중)
         self.busy = False
+        self.on_cancel_work = None                # v0.16.72 작업 중 취소 때 밖(EditTab)에서 할 일(렌더 멈춤 등)
 
         # 왼쪽 목록
         self.list = QListWidget()
@@ -598,8 +599,16 @@ class AutoDialog(DragMove, QDialog):
         rw.setFixedWidth(470)
         mid = QHBoxLayout()
         mid.setSpacing(16)
-        mid.addWidget(self.list, 1)
+        lcol = QVBoxLayout()                     # v0.16.72 목록 아래 = 넣은 음악·사진 개수(끌어다 놓기로 추가)
+        lcol.setSpacing(4)
+        lcol.addWidget(self.list, 1)
+        self.media_lab = QLabel("")
+        self.media_lab.setStyleSheet(f"color:{SUB};")
+        lcol.addWidget(self.media_lab)
+        mid.addLayout(lcol, 1)
         mid.addWidget(rw)
+        self.setAcceptDrops(True)
+        self._media_count()
         # 아래
         self.bar = QProgressBar()
         self.bar.setTextVisible(False)
@@ -864,6 +873,26 @@ class AutoDialog(DragMove, QDialog):
         self._row_changed()
 
     # ---------------------------------------------------------------- v0.16.37 체크 쓸기
+    def _media_count(self):
+        p = self.state.project
+        na, ni = len(p.audios), len(p.images)
+        self.media_lab.setText(" · ".join(x for x in (f"음악 {na}" if na else "", f"사진 {ni}" if ni else "") if x))
+        self.media_lab.setVisible(bool(na or ni))
+
+    def dragEnterEvent(self, e):
+        if e.mimeData().hasUrls():
+            e.acceptProposedAction()
+
+    def dropEvent(self, e):
+        """v0.16.72 AUTO 창에 끌어다 놓기 = 음악·사진 추가(편집 화면에서 씀). 영상은 시작 창·편집 화면에서."""
+        from .project import AUDIO_EXT, IMAGE_EXT
+        from .ui_launch import collect_media
+        fs = [f for f in collect_media([u.toLocalFile() for u in e.mimeData().urls()]) if Path(f).suffix.lower() in AUDIO_EXT | IMAGE_EXT]
+        if fs:
+            self.state.import_files(fs)
+            QTimer.singleShot(300, self._media_count)
+            self._media_count()
+
     def showEvent(self, e):
         super().showEvent(e)
         self._vp.installEventFilter(self)
@@ -1004,6 +1033,11 @@ class AutoDialog(DragMove, QDialog):
                 self._progress()
 
             def err(msg, r=r):
+                if msg == "취소됨":                       # v0.16.72 작업 중 [취소] = 줄을 처음 상태로(다시 누르면 다시 분석)
+                    r.prog, r.running = 0.0, False
+                    self.state.set_work(r.sid, None)
+                    self.list.viewport().update()
+                    return
                 ff.log_error("AUTO 분석", msg)
                 if msg != "취소됨" and not getattr(r, "retried", False):
                     r.retried, r.prog, r.running = True, 0.0, False
@@ -1126,6 +1160,25 @@ class AutoDialog(DragMove, QDialog):
         if self.waiting == "proxy":                  # 프록시 기다리는 중 [취소] = 기다리지 않고 편집 화면으로(값 유지, 프록시는 계속)
             self.waiting = None
             self.accept()
+            return
+        if self.busy or self.waiting:                # v0.16.72 작업 중 [취소] = 그 작업만 멈추고 AUTO 창은 그대로(사용자)
+            for j in self.jobs:
+                j.cancel.set()
+                jobs.AUTO_POOL.tryTake(j)
+            self.jobs = []
+            self.waiting = None
+            self.armed = False
+            for r in self.rows:
+                if r.result is None:
+                    r.prog, r.running = 0.0, False
+            self.state.clear_work("analyze", {r.sid for r in self.rows})
+            self.state.clear_work("sample", {r.sid for r in self.rows})
+            if self.on_cancel_work is not None:
+                self.on_cancel_work()
+            self.set_busy(False)
+            self.bar.setValue(0)
+            self.show_state("취소됨", "analyze")
+            self.list.viewport().update()
             return
         for j in self.jobs:
             j.cancel.set()
