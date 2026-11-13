@@ -850,11 +850,11 @@ WATER_OPT = "colors=c+g:strength=2"
 GY_OPT = "colors=g+y:strength=1.5"
 
 
-def grade_chain(g: dict, lut_file: str | None, width: int = 1920, named: bool = False) -> list[str]:
+def grade_chain(g: dict, lut_file: str | None, width: int = 1920, named: bool = False, tag: str = "") -> list[str]:
     """(YUV) 노이즈 → 밝기 샤픈·디헤이즈 → (RGB 16bit) LUT → R/B 게인 → 커브 → Hue → 채도
     named = 색 키프레임용: 게인·Hue·채도 필터를 항상 넣고 이름(@g)을 붙임 → sendcmd 로 프레임마다 값 변경."""
     if named:
-        return _grade_named(g, lut_file, width)
+        return _grade_named(g, lut_file, width, tag)
     f = denoise_chain(g) + sharpen_chain(g, width)
     f.append("format=gbrp16le")
     if lut_file:
@@ -925,20 +925,21 @@ def graph(chain: list[str], inlab: str, outlab: str, uid: str = "0") -> str:
     return ";".join(parts)
 
 
-def _grade_named(g, lut_file, width):
+def _grade_named(g, lut_file, width, tag=""):
+    """tag = 컷 번호. 이름이 컷마다 같으면 sendcmd 가 그래프의 첫 컷 필터를 바꿈 → 전환 때 뒷컷 색이 앞컷에(v0.16.79)."""
     f = denoise_chain(g) + sharpen_chain(g, width) + ["format=gbrp16le"]
     if lut_file:
         f.append(f"lut3d=file={lut_file}:interp=tetrahedral")
-    f.append(f"colorchannelmixer@g=rr={float(g.get('r_gain', 1)):.4f}:bb={float(g.get('b_gain', 1)):.4f}")
+    f.append(f"colorchannelmixer@g{tag}=rr={float(g.get('r_gain', 1)):.4f}:bb={float(g.get('b_gain', 1)):.4f}")
     curve = sorted(g.get("curve") or [[0, 0], [1, 1]])
     if g.get("_ck"):                               # 커브 ◆ = 이름 붙여 늘 넣음(프레임마다 바꿈)
-        f.append(f"curves@g=m='{_curve_arg(curve)}'")
+        f.append(f"curves@g{tag}=m='{_curve_arg(curve)}'")
     elif not curve_is_identity(curve):
         f.append(f"curves=m='{' '.join(f'{x:.4f}/{y:.4f}' for x, y in curve)}'")
-    f.append(f"huesaturation@g=hue={float(g.get('hue', 0)):.2f}")
-    f.append(f"huesaturation@w={WATER_OPT}:hue={float(g.get('water', 0)):.2f}")
-    f.append(f"huesaturation@y={GY_OPT}:saturation={-float(g.get('gy', 0)) / 100:.4f}")
-    f.append(f"vibrance@g=intensity={max(-2.0, min(2.0, float(g.get('sat', 1)) - 1)):.3f}")
+    f.append(f"huesaturation@g{tag}=hue={float(g.get('hue', 0)):.2f}")
+    f.append(f"huesaturation@w{tag}={WATER_OPT}:hue={float(g.get('water', 0)):.2f}")
+    f.append(f"huesaturation@y{tag}={GY_OPT}:saturation={-float(g.get('gy', 0)) / 100:.4f}")
+    f.append(f"vibrance@g{tag}=intensity={max(-2.0, min(2.0, float(g.get('sat', 1)) - 1)):.3f}")
     return f + wnr_mark(g, width)
 
 
@@ -950,7 +951,7 @@ def _curve_arg(curve) -> str:
     return " ".join(f"{float(x):.4f}/{float(y):.4f}" for x, y in sorted(curve or [[0, 0], [1, 1]]))
 
 
-def gkey_cmds(g: dict, seg: Segment, src: Source, n_out: int, frames_per_sec: float) -> str:
+def gkey_cmds(g: dict, seg: Segment, src: Source, n_out: int, frames_per_sec: float, tag: str = "") -> str:
     """sendcmd 명령: 출력 프레임마다 색 키프레임 보간값(바뀔 때만). 커브 ◆ 가 있으면 curves@g 도(v0.16.34)."""
     lines, last = [], None
     ck = bool(seg.gkeys.get(CURVE_KEY))
@@ -963,10 +964,11 @@ def gkey_cmds(g: dict, seg: Segment, src: Source, n_out: int, frames_per_sec: fl
         if cur == last:
             continue
         last = cur
-        lines.append(f"{max(0.0, t - 0.25 / float(OUT_FPS)):.6f} [enter] colorchannelmixer@g rr {cur[0]}, "
-                     f"colorchannelmixer@g bb {cur[1]}, huesaturation@g hue {cur[2]}, vibrance@g intensity {cur[3]}, "
-                     f"huesaturation@w hue {cur[4]}, huesaturation@y saturation {cur[5]}"
-                     + (f", curves@g m '{cur[6]}'" if ck else "") + ";")
+        k = tag
+        lines.append(f"{max(0.0, t - 0.25 / float(OUT_FPS)):.6f} [enter] colorchannelmixer@g{k} rr {cur[0]}, "
+                     f"colorchannelmixer@g{k} bb {cur[1]}, huesaturation@g{k} hue {cur[2]}, vibrance@g{k} intensity {cur[3]}, "
+                     f"huesaturation@w{k} hue {cur[4]}, huesaturation@y{k} saturation {cur[5]}"
+                     + (f", curves@g{k} m '{cur[6]}'" if ck else "") + ";")
     return "\n".join(lines) + "\n"
 
 
@@ -2555,14 +2557,14 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orien
                 v += frame_chain(orientation)
         if has_gkeys(seg):          # 색 키프레임: 프레임마다 값 변경(sendcmd, 파일은 LUT 와 같은 작업 폴더)
             n_out = int(round(seg_src_sec / seg.speed * float(OUT_FPS))) + 2
-            cmdtxt = gkey_cmds(g, seg, src, n_out, float(src.fps) * seg.speed)
+            cmdtxt = gkey_cmds(g, seg, src, n_out, float(src.fps) * seg.speed, tag=str(i))
             cfile = paths.cache_dir() / "lut" / f"gk_{hashlib.sha1(cmdtxt.encode()).hexdigest()[:12]}.txt"
             cfile.parent.mkdir(parents=True, exist_ok=True)
             cfile.write_text(cmdtxt, encoding="utf-8")
             cwd = cwd or str(cfile.parent)
             v.append(f"sendcmd=f={cfile.name}")
             gn = dict(g, _ck=True) if seg.gkeys.get(CURVE_KEY) else g
-            v += grade_chain(gn, lut, min(out_size(orientation)) * 16 // 9, named=True)
+            v += grade_chain(gn, lut, min(out_size(orientation)) * 16 // 9, named=True, tag=str(i))
         else:
             v += grade_chain(g, lut, min(out_size(orientation)) * 16 // 9)
         lays = seg_layers(project, seg)

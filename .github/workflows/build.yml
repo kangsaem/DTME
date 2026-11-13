@@ -122,6 +122,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
           python tests/test_gkeys.py test4k.mp4 gkeys_test
           if ($LASTEXITCODE -ne 0) { exit 1 }
+          python tests/test_gkeys_cuts.py test4k.mp4 gkeys_cuts_test
+          if ($LASTEXITCODE -ne 0) { exit 1 }
           python tests/test_titles.py test4k.mp4 titles_test
           if ($LASTEXITCODE -ne 0) { exit 1 }
           python tests/test_auto.py auto_test
