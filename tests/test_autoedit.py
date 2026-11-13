@@ -111,7 +111,8 @@ print("컷", len(segs), [round(x, 2) for x in lens], "결과", round(tot, 2), "�
 assert len(st._undo) == nu + 1                       # 실행취소 1번
 assert len(segs) >= 4 and all(autoedit.CUT_MIN - 0.05 <= x <= autoedit.CUT_MAX + 0.05 for x in lens)
 assert abs(tot - 60) < 3.0, tot
-assert [p.source(g.src).path for g in segs] == sorted([p.source(g.src).path for g in segs], key=vids.index)   # 목록순
+names = [os.path.basename(p.source(g.src).path) for g in segs]
+assert names == sorted(names), names                 # 목록순(이름에 날짜 없음)
 assert not segs[0].trans and all(g.trans.get("dur") == 0.5 for g in segs[1:])
 assert len({g.trans["type"] for g in segs[1:]}) >= 1
 tt = [x for x in p.titles if x.get("auto_edit")]
@@ -128,7 +129,7 @@ assert texts == want, (texts, want)
 assert p.sources[2].auto.get("preset"), p.sources[2].auto       # 보정 안 된 소스 = AUTO 먼저
 assert p.music and all(m.get("follow") for m in p.music)
 assert max(float(m["t0"]) + float(m["len"]) for m in p.music) >= tot - 0.2
-assert p.music[0]["path"] == f_epic                  # 첫 구간 = 블루워터 = 웅장한 곡
+assert os.path.basename(p.music[0]["path"]) == "epic.wav"                  # 첫 구간 = 블루워터 = 웅장한 곡
 w.grab().save(os.path.join(d, "autoedit_after.png"))
 e.timeline.grab().save(os.path.join(d, "autoedit_tl.png"))
 w.undo(); wait(0.3)
