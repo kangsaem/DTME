@@ -646,6 +646,7 @@ class SeqTimeline(QWidget):
         p.fillRect(top, QColor("#202020"))
         p.fillRect(mus, QColor("#202020"))
         rects = self._rects()
+        trs_now = dict(self._trans_rects())
         f = QFont(self.font())
         for i, (it, r) in enumerate(zip(self.items, rects)):
             sid, sec, label, sp, tag = it[:5]
@@ -666,7 +667,8 @@ class SeqTimeline(QWidget):
                 p.setFont(f)
                 p.drawText(rr.adjusted(4, 2, -4, -2), Qt.AlignHCenter | Qt.AlignVCenter,
                            f"{speed_text(sp)}\n{label}" if rr.width() > 90 else speed_text(sp))
-            draw_tag(p, rr, tag)
+            tr = trs_now.get(sid)                          # v0.16.69 전환 나비가 있으면 C 표시는 나비 오른쪽 뒤로
+            draw_tag(p, QRectF(tr.right() + 1, rr.top(), max(0.0, rr.right() - tr.right() - 1), rr.height()) if tr is not None and not dragging else rr, tag)
             ld = self.loud.get(sid)
             if ld and ld[0] and rr.width() > 22:          # 원본 소리 키움 = 스피커(손으로 정함 = 노랑)
                 self._speaker(p, QRectF(rr.right() - 20, rr.top() + 4, 16, 13), QColor("#f2c94c") if ld[1] == "up" else QColor("#ffffff"))

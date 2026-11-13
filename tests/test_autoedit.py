@@ -5,6 +5,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 os.environ["QT_QPA_PLATFORM"] = "offscreen"; os.environ["DTME_NO_AUDIO"] = "1"
 import numpy as np
 from dtme import autoedit, music, paths
+from PySide6.QtWidgets import QApplication
+app = QApplication(sys.argv)
 
 d = sys.argv[1] if len(sys.argv) > 1 else tempfile.mkdtemp()
 os.makedirs(d, exist_ok=True)
@@ -55,6 +57,14 @@ assert cov >= 59.5, items
 spans = [("a", 0.0, 10.0), ("b", 10.0, 10.0), ("c", 20.0, 30.0), ("d", 50.0, 15.0)]
 mr = autoedit.music_runs(spans, {"a": "bluewater", "b": "bluewater", "c": "shallow", "d": "deep"})
 assert [g for _a, _b, g in mr] == ["grand", "calm"] and mr[0][1] == 20.0, mr      # 20초 미만 '깊은' 구간 = 앞에 붙음
+# 글자 사각형(v0.16.69): 세로 화면에서도 사각형 = 글자 + 여백, 왼쪽 5% · 아래 12%
+for wh in ((1920, 1080), (1080, 1920)):
+    rc, tx = autoedit.title_pair("2026 0624 1014", 1.0, wh)
+    tw, th = autoedit.text_size(tx)
+    W, H = wh
+    assert abs(rc["w"] * W - (tw + 48)) < 1 and abs(rc["h"] * H - (th + 24)) < 1, (wh, rc, tw, th)
+    assert abs((rc["cx"] - rc["w"] / 2) * W - 0.05 * W) < 1 and abs((rc["cy"] + rc["h"] / 2) * H - 0.88 * H) < 1
+    assert (rc["cx"], rc["cy"]) == (tx["cx"], tx["cy"])
 print("엔진 OK", flush=True)
 
 # ---------------------------------------------------------------- 2) 화면 흐름
@@ -69,7 +79,7 @@ for i, src in enumerate(["testsrc2", "smptebars", "testsrc2", "rgbtestsrc"]):
     subprocess.run([ffm, "-v", "error", "-y", "-f", "lavfi", "-i", f"{src}=s=640x360:r=30:d=40", "-f", "lavfi",
                     "-i", "sine=f=300:d=40", "-c:v", "libx264", "-g", "15", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", v], check=True)
     vids.append(v)
-app = QApplication(sys.argv); M.dark(app)
+M.dark(app)
 w = MainWindow(); w.resize(1700, 950); w.show()
 
 
@@ -92,6 +102,8 @@ p.audios = [{"id": "a1", "path": f_epic, "dur": ie["dur"]}, {"id": "a2", "path":
 p.segments = [__import__("dtme.project", fromlist=["Segment"]).Segment(p.sources[0].id, 0, 90)]
 st.touch("segments"); wait(0.2)
 
+for s in p.sources:
+    s.out = "vertical"                                # 세로 출력에서 글자 사각형 확인(v0.16.69)
 from dtme.ui_autoedit import AutoEditDialog  # noqa: E402
 dlg = AutoEditDialog(st, {s.id for s in p.sources}, e)
 dlg.length.setValue(1)
@@ -133,7 +145,10 @@ assert p.sources[2].auto.get("preset"), p.sources[2].auto       # 보정 안 된
 assert p.music and all(m.get("follow") for m in p.music)
 assert max(float(m["t0"]) + float(m["len"]) for m in p.music) >= tot - 0.2
 assert os.path.basename(p.music[0]["path"]) == "epic.wav"                  # 첫 구간 = 블루워터 = 웅장한 곡
+e.show_timeline(1.2); wait(1.5)
 w.grab().save(os.path.join(d, "autoedit_after.png"))
+rx = next(x for x in tt if x["kind"] == "rect")
+assert abs(rx["h"] * 1920 - (autoedit.text_size(next(x for x in tt if x["kind"] == "text"))[1] + 24)) < 1   # 세로 기준
 e.timeline.grab().save(os.path.join(d, "autoedit_tl.png"))
 print("단계: 실행취소", flush=True)
 w.undo(); wait(0.3)

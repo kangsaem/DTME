@@ -237,20 +237,50 @@ def build(project, picks: list[dict], minutes: int, seed: int = 0, titles: bool 
         tmp.sources = project.sources
         tmp.segments = segs
         start = {c: t for c, t, _l in cut_spans(tmp)}
+        from .ff import out_size
+        o = project.out_of(picks[0]["src"]) if picks else "horizontal"
+        wh = (1080, 1920) if out_size(o)[0] < out_size(o)[1] else (1920, 1080)     # 위치 비율 = 화면 방향만(크기 무관)
         for cid, s in firsts:
             t0 = start.get(cid, 0.0)
-            tts += title_pair(display_name(s.path), t0)
+            tts += title_pair(display_name(s.path), t0, wh)
     return {"segs": segs, "titles": tts, "scenes": scene_of}
 
 
-def title_pair(text: str, t0: float) -> list[dict]:
-    """글자 + 배경 사각형: 왼쪽에서 들어와 왼쪽으로 나감, 5초, 따라감. → [사각형, 글자] (사각형이 아래)."""
-    size = 52
+TITLE_SIZE = 52
+TITLE_PAD = (24, 12)               # 사각형 = 글자 + 좌우 24 · 위아래 12 (1080 기준 px)
+TITLE_LEFT, TITLE_BOTTOM = 0.05, 0.12   # 사각형 왼쪽 = 화면 폭 5%, 아래 = 화면 높이 12% 위
+
+
+def text_size(t: dict) -> tuple[float, float]:
+    """글자 상자 (폭, 높이) — 출력 px(1080 기준 = 글자 크기 그대로). 화면 모니터와 같은 글꼴·계산(Qt)."""
+    try:
+        from PySide6.QtGui import QFontMetricsF, QGuiApplication
+        if QGuiApplication.instance() is None:          # 화면 없이 Qt 글꼴을 쓰면 죽음 → 어림
+            raise RuntimeError("no app")
+        from .ui_player import Monitor
+        fm = QFontMetricsF(Monitor._title_font(None, t, 1.0))
+        lines = (t.get("text") or " ").split("\n")
+        return (max(fm.horizontalAdvance(x) for x in lines) + 4,
+                fm.lineSpacing() * len(lines) + 8 * (len(lines) - 1))
+    except Exception:  # noqa: BLE001 — 화면 없이(시험) = 어림
+        n = max(len(x) for x in (t.get("text") or " ").split("\n"))
+        return n * float(t.get("size", 64)) * 0.58 + 4, float(t.get("size", 64)) * 1.3
+
+
+def title_pair(text: str, t0: float, out_wh: tuple[int, int] = (1920, 1080)) -> list[dict]:
+    """글자 + 배경 사각형(v0.16.69: 실제 글자 크기 + 여백, 출력 가로·세로에 맞춘 비율): 왼쪽에서 들어와 왼쪽으로 나감, 5초, 따라감.
+    → [사각형, 글자] (사각형이 아래). 글자 크기·여백은 1080 기준 px → 출력 짧은 쪽/1080 배."""
+    W, H = out_wh
+    k = min(W, H) / 1080
     tx = new_text(t0, t0 + TITLE_SEC, text)
-    tx.update(size=size, cx=0.2, cy=0.86, bg="none", ain="right", aout="left", follow=True, auto_edit=True)
+    tx.update(size=TITLE_SIZE, bg="none", ain="right", aout="left", follow=True, auto_edit=True)
+    tw, th = text_size(tx)
+    rw, rh = (tw + 2 * TITLE_PAD[0]) * k, (th + 2 * TITLE_PAD[1]) * k
+    cx = (TITLE_LEFT * W + rw / 2) / W
+    cy = ((1 - TITLE_BOTTOM) * H - rh / 2) / H
+    tx.update(cx=round(cx, 4), cy=round(cy, 4))
     rc = new_rect(t0, t0 + TITLE_SEC)
-    w = (len(text) * size * 0.58 + 64) / 1920
-    rc.update(cx=0.2, cy=0.86, w=round(min(0.6, w), 4), h=0.085, opacity=0.5, ain="right", aout="left",
+    rc.update(cx=round(cx, 4), cy=round(cy, 4), w=round(rw / W, 4), h=round(rh / H, 4), opacity=0.5, ain="right", aout="left",
               follow=True, auto_edit=True)
     return [rc, tx]
 
