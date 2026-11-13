@@ -719,6 +719,7 @@ class OutputSettings:
     folder: str = ""
     bitrate_mbps: int = 40
     prefix: str = ""                  # 렌더 파일명 앞에 붙일 명칭
+    quality: str = "normal"           # v0.16.80 용량: high(예전 그대로) | normal | small — [렌더] 누를 때 고름
 
 
 @dataclass

@@ -231,6 +231,41 @@ def remove_later(path) -> None:
     threading.Thread(target=go, daemon=True).start()
 
 
+def ask_quality(parent, state, items=None) -> bool:
+    """v0.16.80 [렌더] 누르는 순간 용량 고르기 [고화질|보통|작게] → 그다음 저장폴더. 취소 = False.
+    items = 렌더할 항목(예상 크기 = 길이 × 평균 목표, 없으면 1분당). 고른 값 = 다음에도 기본(빨강)."""
+    from .project import get_setting, set_setting
+    o = state.project.output
+    last = get_setting("last_quality", "") or o.quality or "normal"
+    p = state.project
+    secs, ori = 0.0, "horizontal"
+    for it in items or []:
+        for g in it.segs:
+            src = p.source(g.src)
+            if src is not None and src.fps:
+                secs += g.frames / float(src.fps) / max(0.01, g.speed)
+        ori = it.orientation
+    lines = []
+    for k in ("high", "normal", "small"):
+        mb = ff.est_mb(k, secs if secs else 60.0, ori)
+        lines.append(f"{ff.QUALITY[k]['label']}  약 {mb:,.0f}MB")
+    head = f"렌더 용량 — {int(secs // 60)}분 {int(secs % 60)}초 예상" if secs else "렌더 용량 — 1분당 예상"
+    txt = head + "\n\n" + "\n".join(lines) + "\n\n보통·작게 = GPU H.265(PC) / H.264(노트북) · 화면이 자잘하면 더 큼"
+    bt = [("cancel", "취소", 72, None)] + [(k, ff.QUALITY[k]["label"], 80, "red" if k == last else None)
+                                         for k in ("high", "normal", "small")]
+    v = ui_style.confirm(parent, txt, bt)
+    if v == "cancel":
+        return False
+    if o.quality != v:
+        o.quality = v
+        state.dirty = True
+    try:
+        set_setting("last_quality", v)
+    except Exception:  # noqa: BLE001
+        pass
+    return True
+
+
 def ensure_folder(parent, state) -> bool:
     """저장폴더가 비어 있으면 먼저 물어봄(취소하면 False). 고른 폴더는 다음 프로젝트에서도 처음 위치로."""
     o = state.project.output
@@ -527,6 +562,13 @@ class RenderPanel(QWidget):
         """[렌더] 버튼(v0.16.54, MOSCO v0.7.80 과 같음): 렌더 중 = 전체 취소 / 아니면 저장폴더를 매번 묻고 시작."""
         if self.running:
             self.cancel_all()
+            return
+        p = self.state.project
+        todo = [it for it in p.render_items if not it.done and not self.status.get(it.id, "").startswith("완료")]
+        if not todo:
+            self.message.emit("새 항목 없음")
+            return
+        if not ask_quality(self, self.state, todo):       # v0.16.80 용량 먼저 → 저장폴더
             return
         if not self._ask_folder():
             return

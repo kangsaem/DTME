@@ -720,7 +720,7 @@ class EditTab(QWidget):
             self.toggle_star()
         elif name == "down":
             if self._del_target == "mus" and self.mus_list.currentItem() is not None:     # v0.16.75 음악 목록을 골랐으면 = 그 곡을 재생 위치에
-                self.add_music_at(self.mus_list.currentItem().data(Qt.UserRole), self.tl_time)
+                self.add_music_at(self.mus_list.currentItem().data(Qt.UserRole), self.tl_time, gap_to_tail=True)
             else:
                 self.send_to_timeline()
         elif name == "enter":
@@ -1426,12 +1426,19 @@ class EditTab(QWidget):
 
     # ================================================================ 타임라인
     def clear_timeline(self):
-        if not self.state.project.segments:
+        """v0.16.80 컷·글자·이미지·음악 전부(예전 = 컷만 → 음악이 남음). 실행취소 1번."""
+        p = self.state.project
+        if not (p.segments or p.titles or p.music):
             return
         self.state.checkpoint(label="전체 삭제")
-        self.state.project.segments.clear()
-        self.sel_cut = ""
+        p.segments.clear()
+        p.titles, p.music, p.lead = [], [], 0.0
+        self.sel_cut, self.sel_ov = "", ("", "")
+        self._music_stop()
         self.state.touch("segments")
+        self.state.touch("titles")
+        if self.mode == "timeline":
+            self.show_timeline(0.0)
 
     def delete_cut(self):
         p = self.state.project
@@ -2135,16 +2142,15 @@ class EditTab(QWidget):
         self._tl_gap = loc is None and bool(self._tl_cuts)
         self.timeline.set_time(t)
         self._update_tl_titles(t)
-        if loc is None:
-            if self._tl_gap:
-                self._tl_seg = None
-                self.player.pause()
-                w_, h_ = self.player.mon.out_wh
-                blk = QImage(max(2, w_ // 4), max(2, h_ // 4), QImage.Format_RGB32)
-                blk.fill(QColor("black"))
-                self.player.show_image(blk)
-                if play:
-                    self._gap_play(True)
+        if loc is None:                                      # v0.16.80 컷이 하나도 없어도 = 검은 화면(예전 = 마지막 화면이 남음)
+            self._tl_seg = None
+            self.player.pause()
+            w_, h_ = self.player.mon.out_wh
+            blk = QImage(max(2, w_ // 4), max(2, h_ // 4), QImage.Format_RGB32)
+            blk.fill(QColor("black"))
+            self.player.show_image(blk)
+            if play and self._tl_gap:
+                self._gap_play(True)
             return
         if self._gap_timer.isActive():
             self._gap_timer.stop()
@@ -2522,10 +2528,7 @@ class EditTab(QWidget):
         if not a:
             return
         p = self.state.project
-        t0 = max([float(m["t0"]) + float(m["len"]) for m in p.music] + [0.0])
-        if p.music:                                     # v0.16.64 이어 붙일 때 = 곡 사이 겹침(크로스페이드)만큼 앞으로
-            last = max(p.music, key=lambda m: float(m["t0"]) + float(m["len"]))
-            t0 = max(0.0, t0 - min(float(p.mix.get("xfade", 2.0)), float(last["len"]) / 2, float(a["dur"]) / 2))
+        t0 = self.music_tail(float(a.get("dur") or 0))   # v0.16.64 이어 붙일 때 = 곡 사이 겹침(크로스페이드)만큼 앞으로
         self.state.checkpoint(label="음악 넣음")
         from . import music
         dur = float(a.get("dur") or 0)
@@ -2535,13 +2538,27 @@ class EditTab(QWidget):
         p.music.append(d)
         self.state.touch("titles")
 
-    def add_music_at(self, aid: str, t: float, snap: bool = True):
-        """음악 목록의 곡 → 음악 줄 t 초(v0.16.75 ▼ · 끌어다 놓기). 마디 첫 박이 컷 경계 가까이면 붙임. 실행취소 1번."""
+    def music_tail(self, dur: float) -> float:
+        """음악 줄 맨 끝 곡 뒤에 붙일 자리(겹침 = 크로스페이드만큼). 곡이 없으면 0."""
+        p = self.state.project
+        if not p.music:
+            return 0.0
+        last = max(p.music, key=lambda m: float(m["t0"]) + float(m["len"]))
+        end = float(last["t0"]) + float(last["len"])
+        return max(0.0, end - min(float(p.mix.get("xfade", 2.0)), float(last["len"]) / 2, (dur or 600.0) / 2))
+
+    def add_music_at(self, aid: str, t: float, snap: bool = True, gap_to_tail: bool = False):
+        """음악 목록의 곡 → 음악 줄 t 초(v0.16.75 ▼ · 끌어다 놓기). 마디 첫 박이 컷 경계 가까이면 붙임. 실행취소 1번.
+        gap_to_tail(▼) = 재생 위치가 마지막 곡보다 뒤(빈 곳)면 마지막 곡 끝에 붙임(v0.16.80 — 지운 곡 자리 끝에 떨어지던 것)."""
         from . import music
         p = self.state.project
         a = next((x for x in p.audios if x["id"] == aid), None)
         if a is None:
             return
+        if gap_to_tail and p.music:                     # 곡이 하나도 없으면 = 재생 위치 그대로
+            tail = self.music_tail(float(a.get("dur") or 0))
+            if t > tail:
+                t, snap = tail, False
         self.state.checkpoint(label="음악 넣음")
         dur = float(a.get("dur") or 0)
         d = {**new_music(a["path"], max(0.0, t), dur or 600.0),       # 길이 읽는 중 = 임시(읽히면 맞춤)
@@ -2884,6 +2901,9 @@ class EditTab(QWidget):
     def _auto_start(self, dlg):
         """[시작] 저장폴더 → (분석 덜 끝났으면 기다림) → 클립에 적용 → 바로 렌더 또는 개별 보정."""
         if dlg.mode == "render" and not dlg.busy and not getattr(dlg, "_folder", ""):   # [보정+편집]은 파일을 안 만들어 폴더 안 물음
+            from .ui_render import ask_quality
+            if not ask_quality(dlg, self.state):          # v0.16.80 용량 먼저(1분당 예상) → 저장폴더
+                return
             d = self._ask_folder()
             if not d:
                 return

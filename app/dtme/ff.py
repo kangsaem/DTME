@@ -2658,13 +2658,39 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orien
     cmd += [*filter_complex_args(";".join(fparts)), "-map", "[vo]"]
     if audio:
         cmd += ["-map", "[ao]", "-c:a", "aac", "-b:a", "192k"]
-    br = int(o.bitrate_mbps * {"horizontal1440": 1.5, "horizontal2160": 2.5, "vertical1440": 1.5, "vertical2160": 2.5}.get(orientation, 1.0))   # 설정값 = 1080p 기준
+    rf = res_factor(orientation)
+    br = int(o.bitrate_mbps * rf)    # 설정값 = 1080p 기준
     rate = ["-maxrate", f"{int(br * 1.5)}M", "-bufsize", f"{br * 2}M"]
     pix = "yuv420p"
+    q = getattr(o, "quality", "high") or "high"
+    if q not in QUALITY:
+        q = "high"
     if TEST_LOSSLESS:                # 시험 전용: 무손실(조각 ↔ 통째 화면 비교)
         cmd += ["-c:v", "libx264", "-preset", "ultrafast", "-qp", "0"]
     elif fast:                       # 미리보기 렌더: 작고 빠르게
         cmd += ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "26"]
+    elif q != "high":                # v0.16.80 보통·작게: GPU = H.265(안 되면 H.264), CPU = H.264(노트북에서도 빠르게)
+        qv = QUALITY[q]
+        tb, mb = max(1, round(qv["mbps"] * rf)), max(2, round(qv["max"] * rf))
+        crate = ["-b:v", f"{tb}M", "-maxrate", f"{mb}M", "-bufsize", f"{mb * 2}M"]
+        if enc in ("nvenc", "nvenc_hevc10") and hevc_nvenc_ok():
+            if enc == "nvenc_hevc10":
+                pix = "p010le"
+            cmd += ["-c:v", "hevc_nvenc", "-preset", "p6", "-tune", "hq", "-rc", "vbr", "-cq", str(qv["cq"] + 2), *crate,
+                    "-profile:v", "main10" if pix == "p010le" else "main", "-tag:v", "hvc1", *nvenc_aq("hevc_nvenc")]
+        elif enc in ("nvenc", "nvenc_hevc10"):
+            cmd += ["-c:v", "h264_nvenc", "-preset", "p6", "-tune", "hq", "-rc", "vbr", "-cq", str(qv["cq"]), *crate,
+                    "-profile:v", "high", *nvenc_aq("h264_nvenc")]
+        elif enc == "qsv":
+            pix = "nv12"
+            cmd += ["-c:v", "h264_qsv", "-preset", "medium", *crate, "-profile:v", "high"]
+        elif enc == "x265_10":
+            pix = "yuv420p10le"
+            cmd += ["-c:v", "libx265", "-preset", "medium", "-crf", str(qv["crf"] + 3), "-maxrate", f"{mb}M", "-bufsize", f"{mb * 2}M",
+                    "-tag:v", "hvc1", "-x265-params", "log-level=error"]
+        else:
+            cmd += ["-c:v", "libx264", "-preset", "faster" if low_spec() else "medium", "-crf", str(qv["crf"]),
+                    "-maxrate", f"{mb}M", "-bufsize", f"{mb * 2}M"]
     elif enc == "qsv":               # 인텔 내장 그래픽(Quick Sync, v0.16.48) — 이 환경에서 못 돌려 봄(노트북 로그로 확인)
         pix = "nv12"
         cmd += ["-c:v", "h264_qsv", *qsv_args(br), "-profile:v", "high"]
@@ -2687,6 +2713,36 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orien
     # 모든 LUT 는 같은 캐시 폴더에 있으므로 cwd 하나로 충분
     _ctx.last_cmd = cmd
     return cmd, total, cwd
+
+
+# ------------------------------------------------------------------ 용량(v0.16.80): [렌더] 누를 때 고름
+# mbps = 1080 기준 평균 목표(예상 크기 계산에도 씀), max = 상한. 고화질 = 예전 설정 그대로(평균은 실측 아님, 대략).
+QUALITY = {"high": {"label": "고화질", "mbps": 20, "max": 60, "cq": 19, "crf": 18},
+           "normal": {"label": "보통", "mbps": 8, "max": 12, "cq": 24, "crf": 22},
+           "small": {"label": "작게", "mbps": 4, "max": 6, "cq": 28, "crf": 26}}
+
+
+def res_factor(orientation: str) -> float:
+    return {"horizontal1440": 1.5, "horizontal2160": 2.5, "vertical1440": 1.5, "vertical2160": 2.5}.get(orientation, 1.0)
+
+
+def est_mb(quality: str, secs: float, orientation: str = "horizontal", audio: bool = True) -> float:
+    """예상 크기(MB) = 평균 목표 × 길이(+ 소리 192k). 화면이 자잘하면 더 큼."""
+    q = QUALITY.get(quality, QUALITY["normal"])
+    mbps = q["mbps"] * res_factor(orientation) + (0.192 if audio else 0)
+    return mbps * secs / 8
+
+
+_hevc_ok: list = []
+
+
+def hevc_nvenc_ok() -> bool:
+    """이 GPU 가 H.265 를 만들 수 있나(오래된 GPU 는 H.264 만). 실행마다 1번."""
+    if not _hevc_ok:
+        ok, msg = _enc_probe("hevc_nvenc", ["-preset", "p6"], "yuv420p")
+        _hevc_ok.append(ok)
+        log_info(f"H.265 GPU: {'됨' if ok else '안 됨 → H.264'}{'' if ok else ' · ' + msg}")
+    return _hevc_ok[0]
 
 
 # ------------------------------------------------------------------ 인코더(v0.16.41)
