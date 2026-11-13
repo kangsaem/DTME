@@ -408,6 +408,7 @@ class SeqTimeline(QWidget):
     cutMenu = Signal(str, object)     # v0.16.66 컷 우클릭 = (컷 id, 화면 좌표) → 원본 소리 메뉴
     ovFollow = Signal(str, str)       # v0.16.67 Shift+클릭 = 따라감 켜고 끄기
     ovDragEnd = Signal(str, str)      # v0.16.71 끌기 끝(0초 앞으로 나갔으면 앞 검은 구간)
+    audioDropped = Signal(float)      # v0.16.75 음악 목록에서 끌어 놓음 = 놓은 시각(초)
     cutEdgeStart = Signal(str, str)   # v0.16.67 나비 아래 날개 끌기 시작 = (컷 id, 'in'|'out')
     cutEdgeDragged = Signal(str, str, float)   # 누른 곳부터 끈 거리(초, 타임라인)
     cutEdgeEnd = Signal()
@@ -439,6 +440,24 @@ class SeqTimeline(QWidget):
         self._tdur = None             # 전환 길이 끌기: (컷 id, 누른 x, 처음 길이, 왼쪽 반?, 시작함?)
         self._edge = None             # 컷 인·아웃 끌기: (컷 id, 'in'|'out', 누른 x, 시작함?)
         self.setMouseTracking(True)
+        self.setAcceptDrops(True)
+
+    # ---------------------------------------------------------------- 음악 끌어다 놓기(v0.16.75)
+    def dragEnterEvent(self, e):
+        if e.source() is not None and e.source() is not self and e.source().objectName() == "mus_list":
+            e.acceptProposedAction()
+
+    def dragMoveEvent(self, e):
+        if e.source() is not None and e.source().objectName() == "mus_list":
+            self.t = self._t(e.position().x())          # 놓을 자리 = 빨간 선
+            self.update()
+            e.acceptProposedAction()
+
+    def dropEvent(self, e):
+        if e.source() is not None and e.source().objectName() == "mus_list":
+            t = self._snap(self._t(e.position().x()), self._snap_targets(None))
+            e.acceptProposedAction()
+            self.audioDropped.emit(t)
 
     # ---------------------------------------------------------------- 데이터
     def set_items(self, items, sel):

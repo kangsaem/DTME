@@ -2433,15 +2433,18 @@ def post_graph(fparts: list, cmd: list, project: Project, extras: dict, total: f
         return
     vo = orig_volume(mix, music)
     spans = extras.get("loud") or []
+    from .music import ramp_expr
     if spans:                                     # v0.16.66 말소리·수면 위 컷 = 원본을 키움(앞뒤 0.5초 경사)
-        from .music import ramp_expr
         w = ramp_expr(spans)
-        wd = ramp_expr(spans, weights=extras.get("loud_w"))
         up = max(vo, float(mix.get("up_orig", 1.0)))
         fparts.append(f"[am]volume=eval=frame:volume='{vo:.3f}+{up - vo:.3f}*({w})'[ab]")
-        duck = f"1-{1 - float(mix.get('up_music', 0.3)):.3f}*({wd})"
     else:
         fparts.append(f"[am]volume={vo:.3f}[ab]")
+    dsp = extras.get("duck") or []                # 음악 낮춤: 키운 컷(30%) · 첫 컷(70%) · 마지막 컷(50%, v0.16.75)
+    if dsp:
+        wd = ramp_expr(dsp, weights=extras.get("duck_w"))
+        duck = f"1-{1 - float(mix.get('up_music', 0.3)):.3f}*({wd})"
+    else:
         duck = ""
     labs = ["[ab]"]
     spans = [(float(x["t0"]), float(x["t0"]) + float(x.get("len", x.get("dur", 0)))) for x in music]
@@ -2464,7 +2467,8 @@ def post_graph(fparts: list, cmd: list, project: Project, extras: dict, total: f
             a.append(f"afade=t=out:st={ln - co:.4f}:d={co:.4f}:curve=qsin")
         elif fo > 0.01:
             a.append(f"afade=t=out:st={ln - fo:.4f}:d={fo:.4f}")
-        a += [f"volume={float(mix.get('music', 1.0)):.3f}", f"adelay=delays={int(t0 * 1000)}:all=1"]
+        g_ = float(m.get("gain", 1.0) or 1.0) * float(m.get("boost", 1.0) or 1.0)     # v0.16.75 곡 음량 맞추기 · 블루워터 첫 등장 +3dB
+        a += [f"volume={float(mix.get('music', 1.0)) * g_:.3f}", f"adelay=delays={int(t0 * 1000)}:all=1"]
         if duck:                                  # 그 컷 동안 음악 낮춤(adelay 뒤 = 결과 영상 시간)
             a.append(f"volume=eval=frame:volume='{duck}'")
         fparts.append(f"[{ii}:a:0]{','.join(a)}[mu{j}]")
@@ -2604,13 +2608,28 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orien
         total += lead + tail
     if audio:                                     # v0.16.66 원본을 키울 컷(말소리·수면 위)의 결과 영상 구간
         from .music import EDGE_MUSIC, loud_spans
+        from .music import LAST_MUSIC
         sp3 = loud_spans(segs, lens, plan if any(plan) else [None] * n, with_index=True)
         spans = [(a + lead, b + lead) for a, b, _i in sp3]
-        if spans:
-            um = float(((extras or {}).get("mix") or {}).get("up_music", 0.3))
-            edge = (1 - EDGE_MUSIC) / (1 - um) if um < EDGE_MUSIC else 1.0      # v0.16.73 첫·마지막 컷 = 음악 덜 줄임
-            extras = {**(extras or {}), "loud": spans, "loud_w": [edge if i in (0, n - 1) else 1.0 for _a, _b, i in sp3]}
-    if extras and (extras.get("titles") or extras.get("music") or extras.get("loud")):
+        um = float(((extras or {}).get("mix") or {}).get("up_music", 0.3))
+        edge = (1 - EDGE_MUSIC) / (1 - um) if um < EDGE_MUSIC else 1.0          # v0.16.73 첫 컷(키움) = 음악 70%
+        last = (1 - LAST_MUSIC) / (1 - um) if um < 1 else 1.0                     # v0.16.75 마지막 컷 = 음악 50%(키움 아니어도)
+        dsp, dw = [], []
+        for a, b, i in sp3:
+            dsp.append((a + lead, b + lead))
+            dw.append(min(1.0, last) if i == n - 1 else edge if i == 0 else 1.0)
+        if n and (extras or {}).get("music") and not any(i == n - 1 for _a, _b, i in sp3):
+            t_, starts = 0.0, []
+            for i in range(n):
+                if i > 0 and plan[i]:
+                    t_ -= plan[i][1]
+                starts.append(t_)
+                t_ += lens[i]
+            dsp.append((starts[-1] + lead, starts[-1] + lens[-1] + lead + 5.0))   # 뒤 검은 구간까지
+            dw.append(min(1.0, last))
+        if spans or dsp:
+            extras = {**(extras or {}), "loud": spans, "duck": dsp, "duck_w": dw}
+    if extras and (extras.get("titles") or extras.get("music") or extras.get("loud") or extras.get("duck")):
         fparts[:] = [f.replace("[vo]", "[vm]").replace("[ao]", "[am]") for f in fparts]
         post_graph(fparts, cmd, project, extras, total, orientation, audio, len(segs) + len(img_inputs))
         cwd = cwd or str(paths.cache_dir() / "lut")

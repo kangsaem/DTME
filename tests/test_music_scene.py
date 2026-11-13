@@ -29,9 +29,10 @@ runs = [(0.0, 12.0, "surface"), (12.0, 40.0, "calm"), (40.0, 70.0, "grand"), (70
 items = music.plan_runs(auds, infos, runs, 2.0, targets=autoedit.RUN_TARGET)
 at = lambda tt: next(os.path.basename(x["path"]) for x in items if x["t0"] <= tt < x["t0"] + x["len"])   # noqa: E731
 print([(os.path.basename(x["path"]), x["t0"], x["len"]) for x in items])
-assert at(5) == os.path.basename(bright), "물 밖 = 발랄"
+assert at(5) == os.path.basename(calm), "v0.16.75 시작 = 잔잔(예전 v0.16.73 = 물 밖 발랄)"
 assert at(55) == os.path.basename(epic), "블루워터 = 웅장"
-assert all(os.path.basename(x["path"]) != os.path.basename(bright) for x in items if x["t0"] > 10.5), "물속엔 발랄한 노래 안 씀"
+assert at(85) == os.path.basename(calm), "끝 = 잔잔"
+assert all(os.path.basename(x["path"]) != os.path.basename(bright) for x in items), "발랄한 곡 안 씀(v0.16.75)"
 # 직접 정함(노래)이 추정보다 먼저
 auds2 = [dict(a, kind="vocal") if a["path"] == epic else a for a in auds]
 items2 = music.plan_runs(auds2, infos, [(0.0, 30.0, "grand")], 2.0, targets=autoedit.RUN_TARGET)
@@ -50,4 +51,4 @@ mr = autoedit.music_runs([("a", 0, 6), ("b", 6, 40), ("c", 46, 30)], {"a": "surf
 assert [g for _a, _b, g in mr] == ["surface", "calm", "grand"], mr
 # 첫·마지막 컷 음악 덜 줄임(가중치 식)
 assert "*0.4286" in music.ramp_expr([(0, 5), (5, 9)], weights=[(1 - 0.7) / (1 - 0.3), 1.0])
-print("OK test_music_scene")
+print("OK test_music_scene", flush=True)

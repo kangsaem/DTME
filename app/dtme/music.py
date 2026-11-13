@@ -317,15 +317,17 @@ def fit_score(info: dict, mood_t: float, grand_t: float | None, group: str = "",
     v0.16.73(사용자): 물속(group ≠ surface) = 연주곡 우선(노래 +0.8) · 발랄한 곡 거의 안 씀(+1.2) / 물 밖(surface) = 발랄·노래 좋음."""
     d = abs(mood(info) - mood_t)
     if grand_t is not None:
-        d += 0.7 * abs(grand(info) - grand_t)
-    if group and group != "surface":
-        sk = song_kind(info, kind)
-        d += 0.8 if sk == "vocal" else -0.2 if sk == "inst" else 0.0      # 모름 = 그대로
-        if is_bright(info):
-            d += 1.2
-    elif group == "surface":
-        if is_bright(info):
-            d -= 0.2
+        d += (1.0 if group else 0.7) * abs(grand(info) - grand_t)       # v0.16.75 장면별 = 웅장함 차이를 더 크게
+    if not group:
+        return d
+    # v0.16.75(사용자 16:29): 시작·끝 = 잔잔 · 노래는 앞부분(첫 구간)에만 · 발랄한 곡 안 씀 · 블루워터 첫 등장 = 웅장·거친 곡 가능
+    sk = song_kind(info, kind)
+    if sk == "vocal":
+        d += 0.0 if group == "edge_first" else 2.0       # 노래 = 첫 구간만(다른 곡이 없으면 어쩔 수 없이)
+    elif sk == "inst" and group != "edge_first":
+        d -= 0.2
+    if is_bright(info) and group != "grand_first":
+        d += 2.0
     return d
 
 
@@ -453,6 +455,17 @@ def first_bar(inf: dict, lead: float) -> float:
     return lead
 
 
+GRAND_BOOST = 1.41              # v0.16.75 블루워터 첫 등장 곡 = +3dB(사용자: 볼륨 업)
+LOUD_TARGET = -18.0             # 곡 음량 맞추기: 소리 나는 부분 평균(dB)을 이 값으로
+
+
+def norm_gain(info: dict | None) -> float:
+    """곡 음량 맞추기(v0.16.75): 곡마다 잰 평균 세기(loud) → 목표 -18dB 로 맞추는 배율(0.25~3)."""
+    if not info or "loud" not in info:
+        return 1.0
+    return round(float(np.clip(10 ** ((LOUD_TARGET - float(info["loud"])) / 20), 0.25, 3.0)), 3)
+
+
 SONG_MAX = 90.0                 # v0.16.69 한 곡을 쓰는 최대 길이(초, 사용자 2026-11-13) — 넘으면 마디 첫 박에서 다음 곡으로
 
 
@@ -507,17 +520,16 @@ def plan(audios: list[dict], infos: dict, total: float, video: float, xfade: flo
         inf = infos.get(a["path"])
         if not inf or float(inf.get("dur", 0)) < 5:
             continue
-        cand.append((fit_score(inf, target, grand_t, group, a.get("kind", "")) + (0.25 if a["path"] == avoid else 0.0), a, inf))
+        cand.append((fit_score(inf, target, grand_t, group, a.get("kind", "")), a, inf))
     if not cand or total <= 0.5:
         return []
     cand.sort(key=lambda c: c[0])
     out, t, last = [], 0.0, avoid
     while t < total - 0.05 and (max_songs is None or len(out) < max_songs):
-        free = [c for c in cand if c[1]["path"] not in used] or cand
-        if len(free) == len(cand) and len(used) >= len(cand):
-            used.clear()                                   # 다 썼으면 처음부터 다시
-        pick = next((c for c in free if c[1]["path"] != last), free[0])
-        _d, a, inf = pick
+        # 쓴 곡 = 벌점 0.6(v0.16.75: 예전 = 아예 뺌 → 노래·발랄한 곡이 대신 들어가던 것), 바로 앞 곡 = 벌점 3
+        ranked = sorted(cand, key=lambda c: c[0] + (0.4 if c[1]["path"] in used else 0.0)
+                        + (3.0 if c[1]["path"] == last and out else 0.3 if c[1]["path"] == last else 0.0))
+        _d, a, inf = ranked[0]
         lead = float(inf.get("lead", 0))
         need = total - t
         want = min(song_max, need)
@@ -611,7 +623,8 @@ def above_water(a: np.ndarray) -> tuple[bool, float, float]:
     r, g, b = a[..., 0], a[..., 1], a[..., 2]
     rg = float(r[lit].mean() / (g[lit].mean() + 1e-6))
     water = float(((b > r * 1.25) & (g > r * 1.1) & (a.max(axis=2) > 0.12)).mean())
-    return bool(rg > 0.85 and water < 0.35), round(rg, 3), round(water, 3)
+    # v0.16.75: 배 위에서 바다 수면이 화면 절반이면 '물색 면적'이 커서 물속으로 보던 것(사용자 로그: 배 rg 0.89~0.93 · 물속 0.59~0.75)
+    return bool((rg > 0.85 and water < 0.6) or rg >= 0.9), round(rg, 3), round(water, 3)
 
 
 def cut_scene(src, seg) -> dict:
@@ -636,6 +649,7 @@ def cut_scene(src, seg) -> dict:
     return {**out, "up": bool(up), "why": "수면 위" if up else "물속"}
 
 
+LAST_MUSIC = 0.5                  # v0.16.75 마지막 컷 = 음악 50%(사용자: 끝에 센 음악이 튀지 않게)
 EDGE_MUSIC = 0.7                  # v0.16.73 첫·마지막 컷이 '키움'(수면 위 등)이어도 음악은 이만큼(사용자: 시작·끝 = 음악이 주인공)
 
 
@@ -680,6 +694,19 @@ def plan_runs(audios: list[dict], infos: dict, runs: list, xfade: float = 2.0, v
     구간 사이 = xfade 초 겹침(앞 곡 끝을 늘림), 다음 곡의 마디 첫 박이 구간 경계에 오게 둠. 바로 앞 곡은 되도록 안 겹침."""
     targets = targets or {}
     out, last, used = [], "", set()
+    # v0.16.75 구간 역할: 맨 앞 = edge_first(잔잔, 노래 가능) · 맨 끝 = edge_last(잔잔) · 처음 나오는 블루워터 = grand_first(웅장·거친 곡, 음량 업)
+    roles, seen_grand = [], False
+    for k, (_a, _b, grp) in enumerate(runs):
+        if k == 0:
+            roles.append("edge_first")
+        elif k == len(runs) - 1:
+            roles.append("edge_last")
+        elif grp == "grand" and not seen_grand:
+            roles.append("grand_first")
+        else:
+            roles.append("calm" if grp == "surface" else grp)
+        seen_grand = seen_grand or grp == "grand" and roles[-1] == "grand_first"
+    runs = [(a, b, r) for (a, b, _g), r in zip(runs, roles)]
     for k, (a, b, grp) in enumerate(runs):
         mt, gt = targets.get(grp, (None, None))
         if mt is None:
@@ -694,6 +721,8 @@ def plan_runs(audios: list[dict], infos: dict, runs: list, xfade: float = 2.0, v
             room = float(pv["dur"]) - float(pv["off"]) - float(pv["len"])
             pv["len"] = round(float(pv["len"]) + max(0.0, min(lead_in, room)), 3)
         for x in items:
+            if grp == "grand_first":
+                x["boost"] = GRAND_BOOST
             x["t0"] = round(float(x["t0"]) + a - lead_in, 3)
             if x is items[0] and lead_in:                     # 곡 첫 마디 첫 박이 경계(a)에: 곡 안 시작을 앞당겨 겹침 구간을 채움
                 ob = float(x["off"])

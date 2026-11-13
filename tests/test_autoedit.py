@@ -49,11 +49,12 @@ assert music.grand(ie) > 0.7 and music.grand(ic) < 0.3
 # 장면별 곡: 블루워터 구간 = 웅장한 곡, 얕은 구간 = 잔잔한 곡
 auds = [{"path": f_epic, "dur": ie["dur"]}, {"path": f_calm, "dur": ic["dur"]}]
 infos = {f_epic: ie, f_calm: ic}
-runs = [(0.0, 30.0, "grand"), (30.0, 60.0, "calm")]
+runs = [(0.0, 20.0, "calm"), (20.0, 50.0, "grand"), (50.0, 70.0, "calm")]          # v0.16.75 시작·끝 = 잔잔, 가운데 블루워터 = 웅장
 items = music.plan_runs(auds, infos, runs, 2.0, targets=autoedit.RUN_TARGET)
-assert items[0]["path"] == f_epic and items[-1]["path"] == f_calm, [(x["path"], x["t0"]) for x in items]
+at_ = lambda tt: next(x["path"] for x in items if x["t0"] <= tt < x["t0"] + x["len"])     # noqa: E731
+assert at_(5) == f_calm and at_(35) == f_epic and at_(65) == f_calm, [(x["path"], x["t0"]) for x in items]
 cov = max(x["t0"] + x["len"] for x in items)
-assert cov >= 59.5, items
+assert cov >= 69.5, items
 spans = [("a", 0.0, 10.0), ("b", 10.0, 10.0), ("c", 20.0, 30.0), ("d", 50.0, 15.0)]
 mr = autoedit.music_runs(spans, {"a": "bluewater", "b": "bluewater", "c": "shallow", "d": "deep"})
 assert [g for _a, _b, g in mr] == ["grand", "calm"] and mr[0][1] == 20.0, mr      # 20초 미만 '깊은' 구간 = 앞에 붙음
@@ -145,7 +146,8 @@ assert texts == want, (texts, want)
 assert p.sources[2].auto.get("preset"), p.sources[2].auto       # 보정 안 된 소스 = AUTO 먼저
 assert p.music and all(m.get("follow") for m in p.music)
 assert max(float(m["t0"]) + float(m["len"]) for m in p.music) >= tot - 0.2
-assert os.path.basename(p.music[0]["path"]) == "epic.wav"                  # 첫 구간 = 블루워터 = 웅장한 곡
+assert os.path.basename(p.music[0]["path"]) == "calm.wav" and os.path.basename(p.music[-1]["path"]) == "calm.wav"   # v0.16.75 시작·끝 = 잔잔
+assert all("gain" in m for m in p.music) and p.mix["fout"] >= 4.0
 e.show_timeline(1.2); wait(1.5)
 w.grab().save(os.path.join(d, "autoedit_after.png"))
 rx = next(x for x in tt if x["kind"] == "rect")

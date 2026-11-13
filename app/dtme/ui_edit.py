@@ -10,7 +10,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QEvent, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QImage, QImageReader, QPainter, QPen, QPixmap
-from PySide6.QtWidgets import (QAbstractSpinBox, QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QFileDialog, QFrame,
+from PySide6.QtWidgets import (QAbstractItemView, QAbstractSpinBox, QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QFileDialog, QFrame,
                                QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
                                QMenu, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSlider,
                                QSplitter, QStyle, QStyledItemDelegate, QTextEdit, QVBoxLayout, QWidget)
@@ -240,10 +240,14 @@ class EditTab(QWidget):
         self.img_list.setVisible(False)
         # 음악 소스 — 클릭 = 타임라인 음악 줄 끝에 붙임
         self.mus_list = QListWidget()
+        self.mus_list.setObjectName("mus_list")
         self.mus_list.setFocusPolicy(Qt.NoFocus)
         self.mus_list.setItemDelegate(ImageDelegate(self, "#8fc4a4"))
         self.mus_list.setStyleSheet("QListWidget{background:#1a1a1a; border:none; border-top:1px solid #333;}")
-        self.mus_list.itemClicked.connect(self._on_mus_clicked)
+        self.mus_list.itemClicked.connect(lambda _it: self._set_target("mus"))          # v0.16.75 클릭 = 고르기만
+        self.mus_list.itemDoubleClicked.connect(self._on_mus_clicked)                  # 더블클릭 = 음악 줄 끝에 붙임(예전 클릭)
+        self.mus_list.setDragEnabled(True)                                              # 끌어서 타임라인 음악 줄에 놓기
+        self.mus_list.setDragDropMode(QAbstractItemView.DragOnly)
         self.mus_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.mus_list.customContextMenuRequested.connect(self._mus_menu)
         self.mus_list.setVisible(False)
@@ -447,6 +451,8 @@ class EditTab(QWidget):
         self.timeline.transDurStart.connect(lambda _cid: self.state.checkpoint())
         self.timeline.ovFollow.connect(self.toggle_follow)                 # v0.16.67
         self.timeline.ovDragEnd.connect(self._ov_drag_end)                # v0.16.71 앞 검은 구간
+        self.timeline.audioDropped.connect(lambda t: self.mus_list.currentItem() is not None and
+                                           self.add_music_at(self.mus_list.currentItem().data(Qt.UserRole), t))
         self._tl_gap = False
         self._gap_timer = QTimer(self)
         self._gap_timer.setInterval(33)
@@ -700,7 +706,10 @@ class EditTab(QWidget):
         elif name == "m":
             self.toggle_star()
         elif name == "down":
-            self.send_to_timeline()
+            if self._del_target == "mus" and self.mus_list.currentItem() is not None:     # v0.16.75 음악 목록을 골랐으면 = 그 곡을 재생 위치에
+                self.add_music_at(self.mus_list.currentItem().data(Qt.UserRole), self.tl_time)
+            else:
+                self.send_to_timeline()
         elif name == "enter":
             self.send_to_render()
 
@@ -1643,6 +1652,14 @@ class EditTab(QWidget):
             g.loud, g.why = None, ""                 # 구간이 바뀜 → 원본 소리 다시 판단
             self.state.touch("segments")
 
+    def _keep_tl_visible(self):
+        """v0.16.75 실행취소·삭제로 내용이 줄었는데 화면이 빈 끝에 머물면 = 내용이 보이게 되돌림."""
+        sb = self.tl_scroll.horizontalScrollBar()
+        end = self.timeline._x(self.timeline.total())
+        vw = self.tl_scroll.viewport().width()
+        if sb.value() > max(0.0, end - 40):
+            sb.setValue(int(max(0.0, end - vw + 60)))
+
     def _tl_out_key(self, segs=None):
         """타임라인 출력: 정한 값(원본보다 크면 낮춤) 또는 첫 컷 소스의 출력."""
         from .project import clamp_out, source_out_h, source_vw
@@ -2468,8 +2485,28 @@ class EditTab(QWidget):
             last = max(p.music, key=lambda m: float(m["t0"]) + float(m["len"]))
             t0 = max(0.0, t0 - min(float(p.mix.get("xfade", 2.0)), float(last["len"]) / 2, float(a["dur"]) / 2))
         self.state.checkpoint()
-        p.music.append(new_music(a["path"], t0, a["dur"]))
+        from . import music
+        p.music.append({**new_music(a["path"], t0, a["dur"]), "gain": music.norm_gain(self.music_info.get(a["path"]) or music.cached(a["path"]))})
         self.state.touch("titles")
+
+    def add_music_at(self, aid: str, t: float, snap: bool = True):
+        """음악 목록의 곡 → 음악 줄 t 초(v0.16.75 ▼ · 끌어다 놓기). 마디 첫 박이 컷 경계 가까이면 붙임. 실행취소 1번."""
+        from . import music
+        p = self.state.project
+        a = next((x for x in p.audios if x["id"] == aid), None)
+        if a is None:
+            return
+        self.state.checkpoint()
+        d = {**new_music(a["path"], max(0.0, t), a["dur"]),
+             "gain": music.norm_gain(self.music_info.get(a["path"]) or music.cached(a["path"]))}
+        if snap:
+            sb = self.timeline._bar_snap(d, d["t0"])
+            if sb is not None:
+                d["t0"] = max(0.0, sb)
+        p.music.append(d)
+        self.sel_ov = ("music", d["id"])
+        self.state.touch("titles")
+        self._say(f"음악 넣음 {d['t0']:.1f}초 · {Path(a['path']).stem}")
 
     def open_autoedit(self):
         from .ui_autoedit import AutoEditDialog
@@ -2583,7 +2620,9 @@ class EditTab(QWidget):
             snapped = 0
             if auds:
                 items = music_for(plan)
-                p.music = [{**new_music(x["path"], x["t0"], x["dur"]), "off": x["off"], "len": x["len"], "follow": True} for x in items]
+                p.music = [{**new_music(x["path"], x["t0"], x["dur"]), "off": x["off"], "len": x["len"], "follow": True,
+                            "gain": music.norm_gain(infos.get(x["path"])), "boost": x.get("boost", 1.0)} for x in items]
+                p.mix["fout"] = max(4.0, float(p.mix.get("fout", 2.0)))     # v0.16.75 끝 = 4초 동안 줄임
                 self.music_info.update(infos)
                 self.timeline.set_music_info(self.music_info)
                 snapped = autoedit.snap_to_bars(p, infos)
@@ -2662,7 +2701,9 @@ class EditTab(QWidget):
                 self._say("쓸 수 있는 음악이 없음", C_WARN)
                 return
             self.state.checkpoint()
-            p.music = [{**new_music(x["path"], x["t0"], x["dur"]), "off": x["off"], "len": x["len"]} for x in items]
+            p.music = [{**new_music(x["path"], x["t0"], x["dur"]), "off": x["off"], "len": x["len"],
+                        "gain": music.norm_gain(infos.get(x["path"])), "boost": x.get("boost", 1.0)} for x in items]
+            p.mix["fout"] = max(4.0, float(p.mix.get("fout", 2.0)))
             self.state.touch("titles")
             names = " → ".join(f"{Path(x['path']).stem}({music.mood_word(music.mood(infos[x['path']]))}"
                                f"{' · 웅장' if music.grand(infos[x['path']]) >= 0.6 else ''})" for x in items)
@@ -3059,6 +3100,7 @@ class EditTab(QWidget):
         self._fill_tl_out()
         tot = vend + tail
         self.tl_len.setText(f"{tot:.1f}초" if items else "")
+        QTimer.singleShot(0, self._keep_tl_visible)
         self._scan_loud()
 
     # ---------------------------------------------------------------- 컷 원본 소리(v0.16.66): 말소리·수면 위 = 키움

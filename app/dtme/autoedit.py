@@ -323,7 +323,8 @@ def music_runs(spans, scenes: dict, min_len: float = 20.0) -> list[tuple[float, 
 
 SURFACE_MIN = 4.0                 # 물 밖 구간은 4초만 넘어도 따로 곡(입수 전 맨 앞 = 발랄한 곡, 사용자)
 # v0.16.73 (분위기, 웅장함) 목표: 물 밖 = 발랄 / 블루워터 = 웅장 / 얕은·산호 = 잔잔 / 그 밖 물속 = 잔잔~보통. 물속 = 연주곡 우선(music.fit_score)
-RUN_TARGET = {"surface": (0.8, None), "grand": (0.6, 0.85), "calm": (0.25, 0.25), "mid": (0.4, None)}
+RUN_TARGET = {"edge_first": (0.25, 0.25), "edge_last": (0.2, 0.2), "grand_first": (0.7, 0.85),    # v0.16.75 시작·끝 = 잔잔
+              "surface": (0.3, None), "grand": (0.55, 0.8), "calm": (0.25, 0.25), "mid": (0.35, None)}
 
 
 def bar_len(info: dict) -> float:

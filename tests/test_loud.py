@@ -86,9 +86,9 @@ def tone(a, b):
 
 lv = [tone(a, a + 4) for a in (1, 7, 13, 19)]
 print("음악(12kHz) 세기 — 말소리·물속·수면 위·빨강+호흡기:", [round(v, 4) for v in lv])
-assert abs(lv[0] / lv[1] - 0.7) < 0.08, "v0.16.73 첫 컷(키움) = 음악 70%(시작·끝은 음악이 주인공)"
-assert abs(lv[2] / lv[3] - 0.3) < 0.06, "키운 컷 = 음악 30%"
-assert abs(lv[1] / lv[3] - 1) < 0.1
+assert abs(lv[0] / lv[1] - 0.7) < 0.08, "v0.16.73 첫 컷(키움) = 음악 70%"
+assert abs(lv[2] / lv[1] - 0.3) < 0.06, "키운 컷 = 음악 30%"
+assert abs(lv[3] / lv[1] - 0.5) < 0.07, "v0.16.75 마지막 컷 = 음악 50%"
 mid = [tone(5.75 + k * 0.1, 5.85 + k * 0.1) for k in range(5)]                    # 6초 경계: 경사(0.5초)
 assert mid[0] < mid[2] < mid[4], ("경사", mid)
 print("OK test_loud")
