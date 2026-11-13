@@ -593,7 +593,18 @@ def probe(path: str) -> dict:
         "vfr": vfr, "duration": dur,
         "color_mode": (lambda m: m if m != "unknown" else insta_color_mode(path))(dji_color_mode(path, d)),
         "ctime": _ctime12((d.get("format", {}).get("tags") or {}).get("creation_time", "")),
+        "cutc": utc_secs((d.get("format", {}).get("tags") or {}).get("creation_time", "")),
     }
+
+
+def utc_secs(t: str) -> float:
+    """파일 안의 만든 시각(UTC) → 초(epoch). 없음·이상한 값 = 0. (v0.16.86 수심 그래프 UTC 맞추기)"""
+    try:
+        from datetime import datetime, timezone
+        dt = datetime.strptime(t.strip()[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+        return 0.0 if dt.year < 2005 else dt.timestamp()
+    except Exception:  # noqa: BLE001
+        return 0.0
 
 
 def _ctime12(t: str) -> str:

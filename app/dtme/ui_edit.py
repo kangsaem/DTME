@@ -2300,10 +2300,10 @@ class EditTab(QWidget):
         if src is None:
             return None
         from . import dive_draw
-        w = dive_draw.when_at(src, seg, t - st, p.dive_off)
-        s = dive_draw.state(p.dives, w)
+        s = dive_draw.match(p.dives, src, seg.fin / float(src.fps) + (t - st) * float(seg.speed or 1.0), p.dive_off)
         if not s:
             return None
+        w = s[2]
         W, H = self.player.mon.out_wh
         ln = next((c[2] for c in self._tl_cuts if c[0] is seg), 0.0)
         i = next((j for j, c in enumerate(self._tl_cuts) if c[0] is seg), -1)

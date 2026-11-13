@@ -361,6 +361,7 @@ class Source:
     auto: dict = field(default_factory=dict)     # AUTO·프리셋 기록 {"preset": 키, "by": "auto"|"user", "rec": 인식 키, "nkeys": n}
     out: str = ""                                # 이 소스의 출력(orientation, v0.16.55 보정 패널 출력 칸 = 소스별). "" = 프로젝트 출력
     ctime: str = ""                              # 파일 안의 만든 시각 YYYYMMDDhhmm(현지 시간) — 이름에 날짜가 없을 때 표시·렌더 이름(v0.16.55)
+    cutc: float = 0.0                            # v0.16.86 파일 안의 만든 시각(UTC 초). 0 = 아직 안 읽음, -1 = 없음
     off: list = field(default_factory=list)      # 이름을 눌러 잠시 끈 보정 항목(미리보기·보낼 때 빼고 적용)
     lut_mode: str = ""                           # DJI 메타로 판단한 색 모드 dlog | normal | unknown ("" = 옛 프로젝트, 판단 안 함)
     rotation: int = 0                            # v0.16.78 파일의 회전 정보(세로 촬영 ±90) — GPU 프레임 경로는 자동 회전이 안 돼서 피함

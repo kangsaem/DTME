@@ -211,11 +211,9 @@ def dive_src(project, src) -> bool:
     if not (getattr(project, "dive_on", False) and getattr(project, "dives", None)):
         return False
     from . import dive_draw
-    t0 = dive_draw.shot_time(src)
-    if t0 is None or not src.frames or not src.fps:
+    if not src.frames or not src.fps:
         return False
-    mid = t0 + src.frames / float(src.fps) / 2 + float(getattr(project, "dive_off", 0.0) or 0.0)
-    return dive_draw.state(project.dives, mid) is not None
+    return dive_draw.match(project.dives, src, src.frames / float(src.fps) / 2, getattr(project, "dive_off", 0.0)) is not None
 
 
 def dive_lens(lens: list, dur: float) -> list:
@@ -288,7 +286,7 @@ def build(project, picks: list[dict], minutes: int, seed: int = 0, titles: bool 
         for cid, s in firsts:
             if dives:                                  # v0.16.84 수심 그래프가 들어가는 컷 = 날짜·시간 사각형 안 넣음(좌상단에 날짜·시각)
                 from . import dive_draw
-                if dive_draw.state(dives, dive_draw.when_at(s, seg_of[cid], 0.0, getattr(project, "dive_off", 0.0))):
+                if dive_draw.match(dives, s, seg_of[cid].fin / float(s.fps), getattr(project, "dive_off", 0.0)):
                     continue
             t0 = start.get(cid, 0.0) + tdur.get(cid, 0.0) + TITLE_DELAY     # v0.16.72 디졸브 끝나고 1초 뒤(사용자)
             tts += title_pair(display_name(s.path), t0, wh)

@@ -282,6 +282,7 @@ class AppState(QObject):
             for k in ("fps_num", "fps_den", "frames", "width", "height", "has_audio"):
                 setattr(s, k, info[k])
             s.rotation = int(info.get("rotation", 0) or 0)
+            s.cutc = float(info.get("cutc") or 0.0) or -1.0      # v0.16.86 UTC 촬영 시각(수심 그래프)
             first = not s.lut_mode
             if first:                              # v0.16.55 처음 불러올 때만: 이름에 날짜 없으면 만든 시각 · 아이폰 자르기(AAE) → 인/아웃
                 from .project import name_has_date, set_name_hint

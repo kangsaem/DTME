@@ -178,6 +178,7 @@ def fit_dives(o: dict, name: str = "") -> list:
             continue
         pts, t0 = _trim(_rdp(raw, 0.1))
         dives.append({"id": f"fit{st}", "src": "fit", "name": name, "start": float(st + t0 + FIT_EPOCH + (off or 0)),
+                      "utc": float(st + t0 + FIT_EPOCH),
                       "pts": [[round(t, 1), round(max(0.0, d), 2)] for t, d in pts],
                       "max": round(max(d for _t, d in raw), 1), "tz": off is not None})
     return dives
@@ -235,15 +236,20 @@ def dtmd_dives(obj, name: str = "") -> list:
             if len(pts) < 2 or max(dd for _t, dd in pts) <= 0.5:
                 continue
             start = _naive(int(m.group(1)), int(m.group(2)), int(m.group(3))) + cur * 60
+            utc = None
+            u0, o0 = d.get("utc0", d.get("startUTC")), d.get("off0", d.get("localOff"))
+            if isinstance(u0, (int, float)) and isinstance(o0, (int, float)) and u0 > 1e9:   # DTMD: 입수 UTC + 현지 시차
+                utc = float(u0)
             if isinstance(d.get("sec0"), (int, float)):          # DTMD 새 형식: 다이빙마다 입수 시각 = 그날 0시부터 초(현지)
                 start = _naive(int(m.group(1)), int(m.group(2)), int(m.group(3))) + float(d["sec0"])
-            elif d.get("startUTC") is not None and d.get("localOff") is not None:     # 다이빙마다 정확한 입수 시각이 있으면 그것
-                start = float(d["startUTC"]) + float(d["localOff"])
+            elif utc is not None:
+                start = utc + float(o0)
             elif d.get("start") is not None and isinstance(d.get("start"), (int, float)) and d["start"] > 1e9:
                 start = float(d["start"])
             pts, t0 = _trim(pts)                                 # 입수 전 수면 구간 = 뺌(FIT 과 같게), 입수 시각도 그만큼
             start += t0
             out.append({"id": f"dtmd{int(start)}", "src": "dtmd", "name": name, "start": float(start),
+                        **({"utc": utc + t0} if utc is not None else {}),
                         "sec": isinstance(d.get("sec0"), (int, float)),
                         "pts": [[round(t, 1), round(max(0.0, dd), 2)] for t, dd in pts],
                         "max": round(max(dd for _t, dd in pts), 1), "tz": True})
@@ -323,6 +329,15 @@ def depth_at(d: dict, t: float) -> float:
             hi = mid
     (ta, da), (tb, db) = pts[lo], pts[hi]
     return float(da + (db - da) * (t - ta) / ((tb - ta) or 1))
+
+
+def find_utc(dives: list, utc: float):
+    """UTC 초 → 그 시각이 들어가는 다이빙(UTC 를 아는 다이빙만)."""
+    for d in dives or []:
+        u = d.get("utc")
+        if u is not None and u <= utc <= u + dur(d):
+            return d
+    return None
 
 
 def find(dives: list, when: float, margin: float = 0.0):

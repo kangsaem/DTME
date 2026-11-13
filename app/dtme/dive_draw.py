@@ -330,6 +330,56 @@ def shot_time(src) -> float | None:
     return t
 
 
+def clip_utc(src) -> float | None:
+    """클립 시작 UTC(파일 안 만든 시각). 처음 한 번 읽어 src.cutc 에 둠(-1 = 없음).
+    믿을 만한지: 파일 이름 현지 시각과의 차이가 15분 단위 시간대(±2초)여야 함. 차이 0 = 현지 시각을 UTC 로 적는 기종일 수 있어 안 씀."""
+    c = float(getattr(src, "cutc", 0.0) or 0.0)
+    if c == 0.0:
+        try:
+            from . import ff
+            info = ff.probe(src.path)
+            c = float(info.get("cutc") or 0.0) or -1.0
+        except Exception:  # noqa: BLE001
+            c = -1.0
+        try:
+            src.cutc = c
+        except Exception:  # noqa: BLE001
+            pass
+    if c <= 0:
+        return None
+    loc = shot_time(src)
+    if loc is None:
+        return c
+    diff = loc - c
+    q = round(diff / 900) * 900
+    if abs(diff - q) > 2.5 or abs(q) > 14 * 3600 or q == 0:
+        return None
+    return c + (diff - q)          # 1~2초 차이는 이름 쪽(초까지 정확)에 맞춤
+
+
+def match(dives: list, src, src_sec: float, off: float = 0.0):
+    """클립 안 원본 위치(초) → (다이빙, 입수부터 초, 표시 시각(카메라 현지)) 또는 None.
+    v0.16.86: 클립·다이빙 모두 UTC 를 알면 UTC 로(카메라·다이빙 컴퓨터 시간대가 달라도 맞음), 아니면 현지 시각끼리."""
+    if not dives:
+        return None
+    loc0 = shot_time(src)
+    pos = max(0.0, src_sec) + float(off or 0.0)
+    if any(d.get("utc") is not None for d in dives):
+        u0 = clip_utc(src)
+        if u0 is not None:
+            d = DL.find_utc(dives, u0 + pos)
+            if d is not None:
+                t = u0 + pos - d["utc"]
+                return d, t, (loc0 + pos) if loc0 is not None else d["start"] + t
+            if all(x.get("utc") is not None for x in dives):
+                return None
+    if loc0 is None:
+        return None
+    w = loc0 + pos
+    d = DL.find(dives, w)
+    return (d, w - d["start"], w) if d else None
+
+
 def when_at(src, seg, t_in_cut: float, off: float = 0.0) -> float | None:
     """컷 안 재생 위치(출력 초) → 실제 시각 = 촬영 시작 + 원본 위치 + 시각 맞춤."""
     t0 = shot_time(src)
@@ -385,13 +435,12 @@ def render_layers(project, dives: list, off: float, spans: list, total: float, W
             return None
         a, b, seg, tail = cur
         src = project.source(seg.src)
-        if src is None:
+        if src is None or not src.fps:
             return None
-        w = when_at(src, seg, T - a, off)
-        s_ = state(dives, w)
-        if not s_:
+        m_ = match(dives, src, seg.fin / float(src.fps) + (T - a) * float(seg.speed or 1.0), off)
+        if not m_:
             return None
-        return s_[0], s_[1], w, seg, src, T - a, b - a, tail
+        return m_[0], m_[1], m_[2], seg, src, T - a, b - a, tail
 
     times, T = [], 0.0
     any_dive = False

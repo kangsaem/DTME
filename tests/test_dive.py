@@ -113,6 +113,26 @@ def main(work):
     assert res[3.0][0] > 60 and res[5.0][0] > 60 and res[5.0][1] > 60    # 글자 · 그래프 보임
     assert res[8.0][0] < 16 and res[8.0][1] > 60                          # 7초 뒤 글자 사라짐, 그래프는 9초까지
     assert res[10.5][0] < 16 and res[10.5][1] < 16                        # 9.5초 뒤 다 사라짐
+    # 6) v0.16.86 UTC 로 맞추기: 카메라 = 필리핀(UTC+8) · 다이빙 컴퓨터 = 한국(UTC+9). 현지끼리면 1시간 어긋남
+    v8 = d / "DJI_20261027094000_0002_D.MP4"                              # 09:40 PH = 01:40 UTC = 입수(01:31 UTC) 9분 뒤
+    subprocess.run([paths.ffmpeg(), "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=0x1c5a8a:s=640x360:r=30:d=4",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+                    "-metadata", "creation_time=2026-10-27T01:40:01.000000Z", str(v8)], check=True)
+    i8 = ff.probe(str(v8))
+    s8 = Source(path=str(v8), **{k: i8[k] for k in ("fps_num", "fps_den", "frames", "width", "height", "has_audio")})
+    assert abs(i8["cutc"] - naive(2026, 10, 27, 1, 40, 1)) < 0.01
+    m8 = dive_draw.match(ds, s8, 2.0, 0.0)
+    print("UTC 맞추기:", DL.fmt_hm(m8[2]), round(m8[1]), "초")
+    assert m8 and abs(m8[1] - (9 * 60 + 2)) < 0.01 and DL.fmt_hm(m8[2]) == "09:40"     # 표시 = 카메라 현지 시각
+    du = [{**x, "utc": None} for x in ds]                                  # UTC 모름 = 현지끼리 → 없음(1시간 차이)
+    for x in du:
+        x.pop("utc")
+    assert dive_draw.match(du, s8, 2.0, 0.0) is None and dive_draw.match(du, s8, 2.0, 3600.0) is not None
+    logs["logs"][0]["state"]["dives"][0].update(utc0=naive(2026, 10, 28, 0, 15, 0), off0=9 * 3600, sec0=9 * 3600 + 15 * 60)
+    js4 = d / "logbook4.json"
+    js4.write_text(json.dumps(logs), encoding="utf-8")
+    d4 = DL.read_dives(str(js4))
+    assert d4[0].get("utc") == naive(2026, 10, 28, 0, 15, 0) and d4[0]["start"] == naive(2026, 10, 28, 9, 15, 0)
     print("DIVE OK")
 
 
