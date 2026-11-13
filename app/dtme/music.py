@@ -25,7 +25,7 @@ N_FFT = 2048
 HOP = 512
 FPS = SR / HOP                  # onset 곡선 프레임/초 ≈ 43
 PEAKS_PER_SEC = 50              # 파형 표시용
-VERSION = 3                     # v0.16.68 웅장함(음량 변화 폭·저음) 추가 → 다시 분석
+VERSION = 4                     # v0.16.73 노래(목소리) 정도 추가 → 다시 분석
 
 
 def _decode(path: str, sr: int = SR) -> np.ndarray:
@@ -237,6 +237,7 @@ def analyze(path: str) -> dict:
     out["bass"] = round(float(S[:, fq < 150].sum() / (S[:, fq < 8000].sum() + 1e-12)), 4)
     lv = db[db > db.max() - 40] if len(db) else db
     out["dyn"] = round(float(np.percentile(lv, 95) - np.percentile(lv, 20)) if len(lv) > 4 else 0.0, 2)
+    out["kind"] = guess_kind(path)
     out["perc"] = round(perc, 3)              # 타악기 정도: 높은 대역(>4kHz) 세기 증가분 ÷ 전체(드럼·하이햇 = 큼, 피아노·현악 = 작음)
     out.update(bpm=round(bpm, 2), conf=round(conf, 3), beats=np.round(bt, 3).tolist(),
                bars=np.round(bt[ph::meter], 3).tolist(), meter=int(meter), rate=round(rate, 2), bright=round(bright, 1))
@@ -256,6 +257,51 @@ def mood(info: dict) -> float:
     return round(0.35 * e_tempo * (0.5 + 0.5 * c) + 0.25 * e_perc + 0.20 * e_rate + 0.20 * c, 3)
 
 
+INST_WORDS = ("instrumental", "inst.", "(inst)", "inst)", "bgm", "background", "no copyright", "royalty free", "ambient", "cinematic",
+              "piano ver", "ost ver", "karaoke", "mr)", "(mr", "연주", "반주", "브금", "배경음")
+INST_GENRES = ("instrumental", "ambient", "classical", "new age", "soundtrack", "cinematic", "lo-fi", "lofi", "electronic", "chill")
+VOCAL_GENRES = ("k-pop", "kpop", "ballad", "발라드", "pop", "r&b", "rnb", "hip hop", "rap", "rock", "dance", "trot", "트로트", "가요")
+
+
+def guess_kind(path: str) -> str:
+    """노래(vocal) / 연주곡(inst) / 모름("") 추정(v0.16.73): 파일 이름·태그(제목·장르·가수)만 봄.
+    소리로 목소리를 가려내 보았으나(합성 연주곡도 노래로 나옴) 믿을 수 없어 안 씀 → 틀리면 음악 목록 우클릭으로 고침."""
+    import re
+    name = Path(path).stem.lower()
+    tags = {}
+    try:
+        r = subprocess.run([paths.ffprobe(), "-v", "error", "-show_entries", "format_tags", "-of", "json", str(path)],
+                           capture_output=True, **({"creationflags": 0x08000000} if os.name == "nt" else {}))
+        tags = {k.lower(): str(v).lower() for k, v in (json.loads(r.stdout or b"{}").get("format", {}).get("tags", {}) or {}).items()}
+    except Exception:  # noqa: BLE001
+        pass
+    text = " ".join([name, tags.get("title", ""), tags.get("album", "")])
+    genre = tags.get("genre", "")
+    if any(w in text for w in INST_WORDS) or any(g in genre for g in INST_GENRES):
+        return "inst"
+    if any(g in genre for g in VOCAL_GENRES):
+        return "vocal"
+    if re.search(r"\d+\s*집", text) or "feat" in text or re.search(r"^[가-힣]{2,}[^-–]{0,12}[-–]", name):   # '가수 4집 - 곡' · feat. · '가수 - 곡'
+        return "vocal"
+    if tags.get("artist") and re.search(r"[가-힣]", tags.get("artist", "")):
+        return "vocal"
+    return ""
+
+
+def song_kind(info: dict, kind: str = "") -> str:
+    """vocal | inst | "" — 음악 목록에서 직접 정한 것 먼저, 아니면 이름·태그 추정."""
+    return kind if kind in ("vocal", "inst") else (info or {}).get("kind", "")
+
+
+def is_vocal(info: dict, kind: str = "") -> bool:
+    return song_kind(info, kind) == "vocal"
+
+
+def is_bright(info: dict) -> bool:
+    """발랄한 곡 = 빠르고 신나는데 웅장하지 않음(v0.16.73, 사용자: 물 밖에서만)."""
+    return mood(info) >= 0.6 and grand(info) < 0.55
+
+
 def grand(info: dict) -> float:
     """곡 웅장함 0 ~ 1(v0.16.68) = 음량 변화 폭(조용 → 크게 터짐, 6dB 0 ~ 20dB 1) · 저음 비율(150Hz 아래 크기 합 ÷ 8kHz 아래, 0.05 0 ~ 0.30 1).
     한계: 실제 곡으로 기준 확인 전(합성음으로만 시험)."""
@@ -266,11 +312,20 @@ def grand(info: dict) -> float:
     return round(0.55 * e_dyn + 0.45 * e_bass, 3)
 
 
-def fit_score(info: dict, mood_t: float, grand_t: float | None) -> float:
-    """작을수록 맞음: 분위기 차 + (웅장함 목표가 있으면) 웅장함 차 × 0.7."""
+def fit_score(info: dict, mood_t: float, grand_t: float | None, group: str = "", kind: str = "") -> float:
+    """작을수록 맞음: 분위기 차 + (웅장함 목표가 있으면) 웅장함 차 × 0.7.
+    v0.16.73(사용자): 물속(group ≠ surface) = 연주곡 우선(노래 +0.8) · 발랄한 곡 거의 안 씀(+1.2) / 물 밖(surface) = 발랄·노래 좋음."""
     d = abs(mood(info) - mood_t)
     if grand_t is not None:
         d += 0.7 * abs(grand(info) - grand_t)
+    if group and group != "surface":
+        sk = song_kind(info, kind)
+        d += 0.8 if sk == "vocal" else -0.2 if sk == "inst" else 0.0      # 모름 = 그대로
+        if is_bright(info):
+            d += 1.2
+    elif group == "surface":
+        if is_bright(info):
+            d -= 0.2
     return d
 
 
@@ -439,7 +494,7 @@ def _bar_end(inf: dict, off: float, length: float) -> float:
 
 def plan(audios: list[dict], infos: dict, total: float, video: float, xfade: float = 2.0, max_songs: int | None = None,
          target: float | None = None, grand_t: float | None = None, avoid: str = "", bar_start: bool = False,
-         used: set | None = None, song_max: float = SONG_MAX) -> list[dict]:
+         used: set | None = None, song_max: float = SONG_MAX, group: str = "") -> list[dict]:
     """음악 자동: 영상 길이(total)를 채우는 곡 순서 → 음악 줄 항목 [{"path","t0","off","dur","len"}].
     - 곡 고르기 = 곡 분위기(·웅장함)가 목표에 가까운 순. 한 번 쓴 곡(used)은 다른 곡을 다 쓸 때까지 다시 안 씀(v0.16.69).
     - 한 곡 최대 song_max 초(90): 넘으면 마디 첫 박에서 끊고 다음 곡과 xfade 초 겹침(크로스페이드).
@@ -452,7 +507,7 @@ def plan(audios: list[dict], infos: dict, total: float, video: float, xfade: flo
         inf = infos.get(a["path"])
         if not inf or float(inf.get("dur", 0)) < 5:
             continue
-        cand.append((fit_score(inf, target, grand_t) + (0.25 if a["path"] == avoid else 0.0), a, inf))
+        cand.append((fit_score(inf, target, grand_t, group, a.get("kind", "")) + (0.25 if a["path"] == avoid else 0.0), a, inf))
     if not cand or total <= 0.5:
         return []
     cand.sort(key=lambda c: c[0])
@@ -581,14 +636,17 @@ def cut_scene(src, seg) -> dict:
     return {**out, "up": bool(up), "why": "수면 위" if up else "물속"}
 
 
-def loud_spans(segs, lens, plan_, ramp_ok=True) -> list[tuple[float, float]]:
-    """원본을 키울 컷의 결과 영상 구간 [(시작, 끝)] — 전환 겹침 반영."""
+EDGE_MUSIC = 0.7                  # v0.16.73 첫·마지막 컷이 '키움'(수면 위 등)이어도 음악은 이만큼(사용자: 시작·끝 = 음악이 주인공)
+
+
+def loud_spans(segs, lens, plan_, ramp_ok=True, with_index: bool = False) -> list:
+    """원본을 키울 컷의 결과 영상 구간 [(시작, 끝)] — 전환 겹침 반영. with_index = [(시작, 끝, 컷 번호)]."""
     out, t = [], 0.0
     for i, (g, ln) in enumerate(zip(segs, lens)):
         if i > 0 and plan_[i]:
             t -= plan_[i][1]
         if seg_up(g):
-            out.append((round(t, 4), round(t + ln, 4)))
+            out.append((round(t, 4), round(t + ln, 4), i) if with_index else (round(t, 4), round(t + ln, 4)))
         t += ln
     return out
 
@@ -603,11 +661,13 @@ def seg_up(seg) -> bool:
     return bool(getattr(seg, "loud", None))
 
 
-def ramp_expr(spans, r: float = 0.5) -> str:
-    """구간 안 = 1, 밖 = 0, 경계 앞뒤 r/2 에 걸쳐 직선으로(ffmpeg 식, t = 초)."""
+def ramp_expr(spans, r: float = 0.5, weights=None) -> str:
+    """구간 안 = 1(또는 weights 의 값), 밖 = 0, 경계 앞뒤 r/2 에 걸쳐 직선으로(ffmpeg 식, t = 초)."""
     if not spans:
         return "0"
-    parts = [f"clip(min((t-{a - r / 2:.4f})/{r},({b + r / 2:.4f}-t)/{r}),0,1)" for a, b in spans]
+    ws = weights or [1.0] * len(spans)
+    parts = [f"clip(min((t-{a - r / 2:.4f})/{r},({b + r / 2:.4f}-t)/{r}),0,1)" + ("" if abs(k - 1) < 1e-6 else f"*{k:.4f}")
+             for (a, b), k in zip(spans, ws)]
     e = parts[0]
     for p_ in parts[1:]:
         e = f"max({e},{p_})"
@@ -625,7 +685,8 @@ def plan_runs(audios: list[dict], infos: dict, runs: list, xfade: float = 2.0, v
         if mt is None:
             mt = target_mood(video)
         lead_in = xfade / 2 if k > 0 else 0.0
-        items = plan(audios, infos, (b - a) + lead_in, video, xfade, target=mt, grand_t=gt, avoid=last, bar_start=True, used=used)
+        items = plan(audios, infos, (b - a) + lead_in, video, xfade, target=mt, grand_t=gt, avoid=last, bar_start=True, used=used,
+                     group=grp)
         if not items:
             continue
         if out and lead_in:                                   # 앞 곡 끝을 늘려 겹침(곡이 모자라면 그만큼만)

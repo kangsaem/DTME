@@ -245,7 +245,7 @@ class EditTab(QWidget):
         self.mus_list.setStyleSheet("QListWidget{background:#1a1a1a; border:none; border-top:1px solid #333;}")
         self.mus_list.itemClicked.connect(self._on_mus_clicked)
         self.mus_list.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.mus_list.customContextMenuRequested.connect(lambda _pos: self.add_files())
+        self.mus_list.customContextMenuRequested.connect(self._mus_menu)
         self.mus_list.setVisible(False)
         self.music_info = {}                    # v0.16.64 음악 파일 → 분석(박자·파형·분위기)
         self._mus_jobs = set()
@@ -2412,6 +2412,34 @@ class EditTab(QWidget):
         self.timeline.set_music_info(self.music_info)
         self._refresh_audio_tips()
 
+    def _mus_menu(self, pos):
+        """음악 목록 우클릭(v0.16.73): 노래 / 연주곡 / 자동(이름·태그 추정) · 파일 추가."""
+        from PySide6.QtWidgets import QMenu
+        from . import music
+        it = self.mus_list.itemAt(pos)
+        m = QMenu(self)
+        acts = {}
+        a = next((x for x in self.state.project.audios if it is not None and x["id"] == it.data(Qt.UserRole)), None)
+        if a is not None:
+            inf = self.music_info.get(a["path"]) or music.cached(a["path"]) or {}
+            g = {"vocal": "노래", "inst": "연주곡"}.get(inf.get("kind", ""), "모름")
+            for key, txt in (("vocal", "노래"), ("inst", "연주곡"), ("", f"자동 ({g})")):
+                act = m.addAction(txt)
+                act.setCheckable(True)
+                act.setChecked((a.get("kind", "") or "") == key)
+                acts[act] = key
+            m.addSeparator()
+        a_add = m.addAction("파일 추가…")
+        act = m.exec(self.mus_list.viewport().mapToGlobal(pos))
+        if act is a_add:
+            self.add_files()
+        elif act in acts and a is not None:
+            self.state.checkpoint()
+            a = next(x for x in self.state.project.audios if x["id"] == it.data(Qt.UserRole))
+            a["kind"] = acts[act]
+            self.state.dirty = True
+            self._refresh_audio_tips()
+
     def _refresh_audio_tips(self):
         from . import music
         for i in range(self.mus_list.count()):
@@ -2424,6 +2452,9 @@ class EditTab(QWidget):
             if inf:
                 bpm = float(inf.get("bpm", 0))
                 tip += (f"\n{bpm:.0f} BPM" if float(inf.get("conf", 0)) >= 0.3 else "\n박자 흐림") + f" · {music.mood_word(music.mood(inf))}"
+                tip += f"{' · 웅장' if music.grand(inf) >= 0.6 else ''}{' · 발랄' if music.is_bright(inf) else ''}"
+            sk = music.song_kind(inf or {}, a.get("kind", ""))
+            tip += "\n" + {"vocal": "노래", "inst": "연주곡"}.get(sk, "노래/연주곡 모름") + ("(직접)" if a.get("kind") else "")
             it.setToolTip(tip)
 
     def _on_mus_clicked(self, it):
@@ -2491,12 +2522,15 @@ class EditTab(QWidget):
                 if cancel.is_set():
                     raise ff.Cancelled()
                 scene = auto.normalize_key((res.get(s.id) or {}).get("preset", "") or (s.auto or {}).get("preset", ""))
+                sf = None
                 try:
-                    sc = autoedit.scores(autoedit.features(autoedit.scan(s, cancel)), scene)
+                    fr = autoedit.scan(s, cancel)
+                    sc = autoedit.scores(autoedit.features(fr), scene)
+                    sf = [bool(music.above_water(x)[0]) for x in fr]     # v0.16.73 물 밖(배·수면 위) 칸
                 except ff.FFError as ex:
                     ff.log_error("자동 편집 화면 읽기", str(ex))
                     sc = None
-                picks.append({"src": s, "scene": scene, "score": sc})
+                picks.append({"src": s, "scene": scene, "score": sc, "surface": sf})
                 step("하이라이트")
             infos = {a["path"]: music.get(a["path"]) for a in auds}
             if auds:
@@ -2523,15 +2557,28 @@ class EditTab(QWidget):
                 s.auto = {"preset": rr["preset"], "by": "auto", "rec": rr["preset"],
                           "nkeys": len({kk["f"] for ks in rr["gkeys"].values() for kk in ks})}
                 self.state.ensure_proxy(s)
-            plan = autoedit.build(p, picks, st["minutes"], seed=len(p.segments) * 7 + len(picks), titles=st.get("title", True))
+            seed = len(p.segments) * 7 + len(picks)
+            plan = autoedit.build(p, picks, st["minutes"], seed=seed, titles=st.get("title", True))
             p.segments = plan["segs"]
+
+            def music_for(plan):
+                runs = autoedit.music_runs(cut_spans(p), plan["scenes"])
+                vm = sum((0.75 if g == "grand" else 0.25 if g == "calm" else 0.5) * (b - a) for a, b, g in runs) / max(1e-6, sum(b - a for a, b, _g in runs))
+                return music.plan_runs(auds, infos, runs, float(p.mix.get("xfade", 2.0)), video=vm, targets=autoedit.RUN_TARGET)
+            if auds:                                         # v0.16.73 컷 길이 = 그 자리 곡의 마디 단위 → 다시 나눔
+                items = music_for(plan)
+                starts = {c: t for c, t, _l in cut_spans(p)}
+                cmax = []
+                for pk in picks:
+                    t = next((starts[g.id] for g in plan["segs"] if g.src == pk["src"].id), None)
+                    x = next((x for x in items if t is not None and x["t0"] <= t < x["t0"] + x["len"]), items[0] if items else None)
+                    cmax.append(autoedit.cut_len_for(infos.get(x["path"]) if x else None))
+                plan = autoedit.build(p, picks, st["minutes"], seed=seed, titles=st.get("title", True), cut_max=cmax)
+                p.segments = plan["segs"]
             p.titles = [t for t in p.titles if not t.get("auto_edit")] + plan["titles"]
             snapped = 0
             if auds:
-                spans = cut_spans(p)
-                runs = autoedit.music_runs(spans, plan["scenes"])
-                vm = sum((0.75 if g == "grand" else 0.25 if g == "calm" else 0.5) * (b - a) for a, b, g in runs) / max(1e-6, sum(b - a for a, b, _g in runs))
-                items = music.plan_runs(auds, infos, runs, float(p.mix.get("xfade", 2.0)), video=vm, targets=autoedit.RUN_TARGET)
+                items = music_for(plan)
                 p.music = [{**new_music(x["path"], x["t0"], x["dur"]), "off": x["off"], "len": x["len"], "follow": True} for x in items]
                 self.music_info.update(infos)
                 self.timeline.set_music_info(self.music_info)
@@ -2598,7 +2645,8 @@ class EditTab(QWidget):
             p = self.state.project                     # (분석하는 사이 실행취소 등으로 바뀌었을 수 있음)
             from . import auto, autoedit
             from .project import cut_spans
-            scenes = {g.id: auto.normalize_key((p.source(g.src).auto or {}).get("preset", "")) for g in p.segments if p.source(g.src)}
+            scenes = {g.id: ("surface" if g.why == "수면 위" else auto.normalize_key((p.source(g.src).auto or {}).get("preset", "")))
+                      for g in p.segments if p.source(g.src)}               # v0.16.73 물 밖 = 컷 소리·장면 판단(수면 위)
             runs = autoedit.music_runs(cut_spans(p), scenes)
             if any(g != "mid" for _a, _b, g in runs):      # v0.16.68 장면별 곡(블루워터 = 웅장·신남, 얕은·산호 = 잔잔)
                 items = music.plan_runs(auds, infos, runs, float(p.mix.get("xfade", 2.0)), video=vm["mood"], targets=autoedit.RUN_TARGET)
@@ -3074,7 +3122,12 @@ class EditTab(QWidget):
         if self.player.audio:
             self.player.audio.setVolume(0.6 * min(1.0, vo))
         if self._music_player is not None and getattr(self, "_music_out", None) is not None:
-            self._music_out.setVolume(min(1.0, float(p.mix.get("music", 1.0)) * (float(p.mix.get("up_music", 0.3)) if up else 1.0)))
+            from .music import EDGE_MUSIC
+            um = float(p.mix.get("up_music", 0.3))
+            segs = p.segments
+            if up and segs and seg is not None and seg.id in (segs[0].id, segs[-1].id):    # v0.16.73 첫·마지막 컷 = 음악 덜 줄임
+                um = max(um, EDGE_MUSIC)
+            self._music_out.setVolume(min(1.0, float(p.mix.get("music", 1.0)) * (um if up else 1.0)))
 
 
 _ = (Path, QPixmap)

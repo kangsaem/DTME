@@ -2436,9 +2436,10 @@ def post_graph(fparts: list, cmd: list, project: Project, extras: dict, total: f
     if spans:                                     # v0.16.66 말소리·수면 위 컷 = 원본을 키움(앞뒤 0.5초 경사)
         from .music import ramp_expr
         w = ramp_expr(spans)
+        wd = ramp_expr(spans, weights=extras.get("loud_w"))
         up = max(vo, float(mix.get("up_orig", 1.0)))
         fparts.append(f"[am]volume=eval=frame:volume='{vo:.3f}+{up - vo:.3f}*({w})'[ab]")
-        duck = f"1-{1 - float(mix.get('up_music', 0.3)):.3f}*({w})"
+        duck = f"1-{1 - float(mix.get('up_music', 0.3)):.3f}*({wd})"
     else:
         fparts.append(f"[am]volume={vo:.3f}[ab]")
         duck = ""
@@ -2602,10 +2603,13 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orien
             fparts.append(f"[apad]adelay=delays={int(round(lead * 1000))}:all=1,apad=pad_dur={tail:.4f}[ao]")
         total += lead + tail
     if audio:                                     # v0.16.66 원본을 키울 컷(말소리·수면 위)의 결과 영상 구간
-        from .music import loud_spans
-        spans = [(a + lead, b + lead) for a, b in loud_spans(segs, lens, plan if any(plan) else [None] * n)]
+        from .music import EDGE_MUSIC, loud_spans
+        sp3 = loud_spans(segs, lens, plan if any(plan) else [None] * n, with_index=True)
+        spans = [(a + lead, b + lead) for a, b, _i in sp3]
         if spans:
-            extras = {**(extras or {}), "loud": spans}
+            um = float(((extras or {}).get("mix") or {}).get("up_music", 0.3))
+            edge = (1 - EDGE_MUSIC) / (1 - um) if um < EDGE_MUSIC else 1.0      # v0.16.73 첫·마지막 컷 = 음악 덜 줄임
+            extras = {**(extras or {}), "loud": spans, "loud_w": [edge if i in (0, n - 1) else 1.0 for _a, _b, i in sp3]}
     if extras and (extras.get("titles") or extras.get("music") or extras.get("loud")):
         fparts[:] = [f.replace("[vo]", "[vm]").replace("[ao]", "[am]") for f in fparts]
         post_graph(fparts, cmd, project, extras, total, orientation, audio, len(segs) + len(img_inputs))

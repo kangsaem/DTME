@@ -154,13 +154,15 @@ def shoot_order(sources) -> list:
     return list(sources)
 
 
-def allot(durs: list[float], total: float) -> list[list[float]]:
-    """소스마다 컷 길이 목록. 전체(전환 겹침 포함)가 total 이 되게, 긴 소스에 더(√길이). 원본이 모자라면 원본 길이까지."""
+def allot(durs: list[float], total: float, cut_max: list | None = None) -> list[list[float]]:
+    """소스마다 컷 길이 목록. 전체(전환 겹침 포함)가 total 이 되게, 긴 소스에 더(√길이). 원본이 모자라면 원본 길이까지.
+    cut_max(v0.16.73) = 소스마다 컷 최대 길이(곡 마디 단위) — 넘으면 컷을 여러 개로."""
+    cm = [min(CUT_MAX, max(CUT_MIN, float(x))) for x in (cut_max or [CUT_MAX] * len(durs))]
     usable = [max(0.0, d - 0.2) for d in durs]
     if sum(usable) <= total:
         out = []
-        for u in usable:
-            k = max(1, math.ceil(u / CUT_MAX))
+        for i, u in enumerate(usable):
+            k = max(1, math.ceil(u / cm[i]))
             out.append([u / k] * k if u >= 1.0 else [])
         return out
     w = np.sqrt(np.maximum(usable, 0.01))
@@ -186,7 +188,7 @@ def allot(durs: list[float], total: float) -> list[list[float]]:
         if a < 1.0:
             out.append([])
             continue
-        k = max(1, math.ceil(a / CUT_MAX))
+        k = max(1, math.ceil(a / cm[i] - 0.15))           # 마디 단위 길이를 조금 넘는 것은 1개로
         out.append([max(min(a / k, usable[i]), min(CUT_MIN, usable[i]))] * k)
     return out
 
@@ -200,12 +202,12 @@ def fit_total(cuts: list[list[float]], total: float, n_trans: int) -> list[list[
     return [[float(np.clip(x * k, CUT_MIN, CUT_MAX)) if x >= CUT_MIN else x for x in c] for c in cuts]
 
 
-def build(project, picks: list[dict], minutes: int, seed: int = 0, titles: bool = True) -> dict:
-    """picks = [{"src": Source, "scene": str, "score": ndarray}] (촬영순).
-    → {"segs": [Segment], "titles": [dict], "scenes": {컷 id: scene}}"""
+def build(project, picks: list[dict], minutes: int, seed: int = 0, titles: bool = True, cut_max: list | None = None) -> dict:
+    """picks = [{"src": Source, "scene": str, "score": ndarray, "surface": bool 배열(칸마다 물 밖)}] (촬영순).
+    → {"segs": [Segment], "titles": [dict], "scenes": {컷 id: scene | 'surface'}}"""
     total = float(minutes) * 60.0
     durs = [p["src"].frames / float(p["src"].fps) for p in picks]
-    cuts = allot(durs, total)
+    cuts = allot(durs, total, cut_max)
     n = sum(len(c) for c in cuts)
     cuts = fit_total(cuts, total, max(0, n - 1))
     rnd = random.Random(seed)
@@ -229,7 +231,10 @@ def build(project, picks: list[dict], minutes: int, seed: int = 0, titles: bool 
                 g.trans = {"type": rnd.choice(kinds), "dur": TRANS_SEC}
             if j == 0:
                 firsts.append((g.id, s))
-            scene_of[g.id] = p.get("scene", "")
+            sf = p.get("surface")
+            a_, b_ = int(st / STEP), max(int(st / STEP) + 1, int((st + ln) / STEP))
+            on = (sf is not None and len(sf) and float(np.mean(sf[a_:b_] if b_ <= len(sf) else sf[a_:] if a_ < len(sf) else [0])) > 0.5)
+            scene_of[g.id] = "surface" if on else p.get("scene", "")        # v0.16.73 물 밖(배·수면 위) = 발랄한 곡 자리
             segs.append(g)
     tts = []
     if titles:
@@ -292,7 +297,7 @@ def title_pair(text: str, t0: float, out_wh: tuple[int, int] = (1920, 1080)) -> 
 def music_runs(spans, scenes: dict, min_len: float = 20.0) -> list[tuple[float, float, str]]:
     """컷 장면 → 음악 구간 [(시작, 끝, 'grand'|'calm'|'mid')]. 짧은 구간(20초 미만)은 앞 구간에 붙임."""
     def grp(sc):
-        return "grand" if sc in GRAND else "calm" if sc in CALM else "mid"
+        return "surface" if sc == "surface" else "grand" if sc in GRAND else "calm" if sc in CALM else "mid"
     runs = []
     for cid, t, ln in spans:
         gname = grp(scenes.get(cid, ""))
@@ -304,7 +309,9 @@ def music_runs(spans, scenes: dict, min_len: float = 20.0) -> list[tuple[float, 
             runs.append([t, t + ln, gname])
     merged = []                                   # [시작, 끝, {묶음: 길이}] — 짧은 구간은 앞(없으면 뒤)에 붙이고 더 긴 묶음 성격으로
     for a, b, gname in runs:
-        if merged and (b - a < min_len or merged[-1][1] - merged[-1][0] < min_len):
+        prev_g = max(merged[-1][2].items(), key=lambda kv: kv[1])[0] if merged else ""
+        keep = (gname == "surface" and b - a >= SURFACE_MIN) or (prev_g == "surface" and merged[-1][1] - merged[-1][0] >= SURFACE_MIN)
+        if merged and not keep and (b - a < min_len or merged[-1][1] - merged[-1][0] < min_len):
             m = merged[-1]
             m[1] = b
             m[2][gname] = m[2].get(gname, 0.0) + (b - a)
@@ -314,7 +321,29 @@ def music_runs(spans, scenes: dict, min_len: float = 20.0) -> list[tuple[float, 
     return [tuple(r) for r in merged]
 
 
-RUN_TARGET = {"grand": (0.75, 0.8), "calm": (0.25, 0.25), "mid": (0.5, None)}
+SURFACE_MIN = 4.0                 # 물 밖 구간은 4초만 넘어도 따로 곡(입수 전 맨 앞 = 발랄한 곡, 사용자)
+# v0.16.73 (분위기, 웅장함) 목표: 물 밖 = 발랄 / 블루워터 = 웅장 / 얕은·산호 = 잔잔 / 그 밖 물속 = 잔잔~보통. 물속 = 연주곡 우선(music.fit_score)
+RUN_TARGET = {"surface": (0.8, None), "grand": (0.6, 0.85), "calm": (0.25, 0.25), "mid": (0.4, None)}
+
+
+def bar_len(info: dict) -> float:
+    """곡 한 마디(초) — 리듬이 흐리면 0."""
+    if not info or float(info.get("conf", 0)) < 0.3 or float(info.get("bpm", 0)) <= 0:
+        return 0.0
+    return 60.0 / float(info["bpm"]) * int(info.get("meter", 4))
+
+
+def cut_len_for(info: dict) -> float:
+    """v0.16.73 컷 길이 = 곡 마디 단위(사용자): 4마디(6~16초 안이 되게 2·8마디로)."""
+    b = bar_len(info)
+    if b <= 0:
+        return CUT_MAX
+    n = 4
+    while n * b > 16 and n > 1:
+        n //= 2
+    while n * b < 6:
+        n *= 2
+    return n * b
 
 
 def snap_to_bars(project, music_info: dict, tol_bar: float = 0.5) -> int:
