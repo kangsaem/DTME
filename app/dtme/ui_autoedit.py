@@ -1,5 +1,4 @@
-"""자동 편집 창(v0.16.67 화면 시안): 고른 소스에서 하이라이트를 골라 정한 길이로 타임라인을 채움.
-지금은 화면만(사용자와 구조 상의 중) — [자동 편집] 은 아직 동작 안 함."""
+"""자동 편집 창(v0.16.68): 고른 소스에서 하이라이트를 골라 정한 길이로 타임라인을 채움(작업 = ui_edit.run_autoedit · autoedit.py)."""
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
@@ -118,7 +117,8 @@ class AutoEditDialog(DragMove, QDialog):
         self.state_lab = QLabel("")
         self.state_lab.setStyleSheet(f"color:{SUB};")
         self.b_cancel = main_button("취소")
-        self.b_cancel.clicked.connect(self.reject)
+        self.b_cancel.clicked.connect(self._cancel)
+        self._job = None
         self.b_start = main_button("자동 편집", RED_BTN, 100)
         self.b_start.clicked.connect(lambda: self.startRequested.emit(self.settings()))
         bot = QHBoxLayout()
@@ -159,3 +159,22 @@ class AutoEditDialog(DragMove, QDialog):
     def settings(self) -> dict:
         return {"sids": self.chosen(), "minutes": int(self.length.value()), "title": self.title_on.isChecked(),
                 "music": self.music_on.isChecked(), "grade": self.grade_on.isChecked()}
+
+    def set_running(self, on: bool):
+        self.b_start.setEnabled(not on)
+        self.list.setEnabled(not on)
+        for w in (self.length, self.title_on, self.music_on, self.grade_on):
+            w.setEnabled(not on and (w is not self.music_on or bool(self.state.project.audios)))
+        if on:
+            self.set_progress(0.0, "")
+        else:
+            self._job = None
+
+    def set_progress(self, v: float, text: str = ""):
+        self.bar.setValue(int(v * 100))
+        self.state_lab.setText(text)
+
+    def _cancel(self):
+        if self._job is not None:
+            self._job.cancel.set()
+        self.reject()

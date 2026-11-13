@@ -2320,10 +2320,129 @@ class EditTab(QWidget):
 
     def open_autoedit(self):
         from .ui_autoedit import AutoEditDialog
+        if not self.state.project.sources:
+            return
+        self.player.pause()
         sids = self._selected_sids() or [s.id for s in self.state.project.sources]
         dlg = AutoEditDialog(self.state, set(sids), self)
+        dlg.startRequested.connect(lambda st, dlg=dlg: self.run_autoedit(dlg, st))
         self._autoedit_dlg = dlg
         dlg.exec()
+
+    def run_autoedit(self, dlg, st: dict):
+        """[자동 편집](v0.16.68): (보정 안 된 소스 AUTO) → 화면 읽기·하이라이트 → 컷·전환·글자 → (음악 + 컷 경계를 마디에)
+        → 타임라인에 넣기(실행취소 1번). 작업은 뒤에서, 넣기는 화면 스레드에서."""
+        from . import auto, autoedit, music
+        from .project import cut_spans, is_plain, new_music
+        p = self.state.project
+        srcs = autoedit.shoot_order([s for s in p.sources if s.id in set(st["sids"]) and s.frames])
+        if not srcs:
+            return
+        if p.segments and ui_style.confirm(dlg, "타임라인을 바꿀까요?", [("cancel", "취소", 72, None), ("ok", "바꾸기", 80, "red")]) != "ok":
+            return
+        auds = [a for a in p.audios if Path(a["path"]).exists()] if st.get("music") else []
+        need_auto = [s for s in srcs if st.get("grade") and not (s.auto or {}).get("preset") and is_plain(s)]
+        bases = {}
+        for s in need_auto:
+            b = dict(p.grade)
+            b.update({k: v for k, v in s.grade.items() if k in ("sharpen", "lens")})
+            b["lut"] = p.grade_for_source(s.id, off=False).get("lut", "")
+            bases[s.id] = b
+        dlg.set_running(True)
+        n_steps = len(need_auto) + len(srcs) + (1 if auds else 0)
+
+        def work(prog, cancel):
+            k = [0]
+
+            def step(txt):
+                k[0] += 1
+                prog(min(0.99, k[0] / max(1, n_steps)))
+                dlg_text[0] = txt
+            res = {}
+            for s in need_auto:
+                if cancel.is_set():
+                    raise ff.Cancelled()
+                res[s.id] = auto.analyze_source(s, bases[s.id], cancel=cancel)
+                step("AUTO")
+            picks = []
+            for s in srcs:
+                if cancel.is_set():
+                    raise ff.Cancelled()
+                scene = auto.normalize_key((res.get(s.id) or {}).get("preset", "") or (s.auto or {}).get("preset", ""))
+                try:
+                    sc = autoedit.scores(autoedit.features(autoedit.scan(s, cancel)), scene)
+                except ff.FFError as ex:
+                    ff.log_error("자동 편집 화면 읽기", str(ex))
+                    sc = None
+                picks.append({"src": s, "scene": scene, "score": sc})
+                step("하이라이트")
+            infos = {a["path"]: music.get(a["path"]) for a in auds}
+            if auds:
+                step("음악")
+            return res, picks, infos
+        dlg_text = [""]
+        job = jobs.Job(work, with_progress=True)
+        dlg._job = job
+        job.signals.progress.connect(lambda v: dlg.set_progress(v, dlg_text[0]))
+
+        def done(r):
+            res, picks, infos = r
+            if not dlg.isVisible():
+                return
+            p = self.state.project
+            self.state.checkpoint()
+            for sid, rr in res.items():                     # AUTO 넣기(AUTO 창 [보정+편집]과 같은 값)
+                s = p.source(sid)
+                if s is None:
+                    continue
+                s.grade = {kk: v for kk, v in rr["grade"].items() if p.grade.get(kk) != v}
+                s.off = []
+                s.gkeys = copy.deepcopy(rr["gkeys"])
+                s.auto = {"preset": rr["preset"], "by": "auto", "rec": rr["preset"],
+                          "nkeys": len({kk["f"] for ks in rr["gkeys"].values() for kk in ks})}
+                self.state.ensure_proxy(s)
+            plan = autoedit.build(p, picks, st["minutes"], seed=len(p.segments) * 7 + len(picks), titles=st.get("title", True))
+            p.segments = plan["segs"]
+            p.titles = [t for t in p.titles if not t.get("auto_edit")] + plan["titles"]
+            snapped = 0
+            if auds:
+                spans = cut_spans(p)
+                runs = autoedit.music_runs(spans, plan["scenes"])
+                vm = sum((0.75 if g == "grand" else 0.25 if g == "calm" else 0.5) * (b - a) for a, b, g in runs) / max(1e-6, sum(b - a for a, b, _g in runs))
+                items = music.plan_runs(auds, infos, runs, float(p.mix.get("xfade", 2.0)), video=vm, targets=autoedit.RUN_TARGET)
+                p.music = [{**new_music(x["path"], x["t0"], x["dur"]), "off": x["off"], "len": x["len"], "follow": True} for x in items]
+                self.music_info.update(infos)
+                self.timeline.set_music_info(self.music_info)
+                snapped = autoedit.snap_to_bars(p, infos)
+                tot = max((t + ln for _c, t, ln in cut_spans(p)), default=0.0)
+                if p.music:                                  # 마지막 곡 = 영상 끝에서 자름
+                    last = max(p.music, key=lambda m: float(m["t0"]))
+                    last["len"] = round(max(0.2, min(float(last["dur"]) - float(last["off"]), tot - float(last["t0"]))), 3)
+            self.sel_cut = ""
+            self.state.touch("segments")
+            self.state.touch("titles")
+            self.state.changed.emit("grade")
+            self.grade._load_controls()
+            self._refresh_tips()
+            tot = p.out_seconds()
+            self._say(f"자동 편집: 컷 {len(p.segments)}개 · {int(tot // 60)}분 {int(tot % 60):02d}초"
+                      + (f" · 음악 {len(p.music)}곡(마디 맞춤 {snapped})" if auds else ""), C_OK)
+            ff.log_info(f"자동 편집: {st} → 컷 {[(Path(p.source(g.src).path).name, g.fin, g.fout) for g in p.segments]} · "
+                        f"장면 {[x['scene'] for x in picks]} · 음악 {[(Path(m['path']).name, m['t0'], m['len']) for m in p.music] if auds else '-'}")
+            if p.segments:
+                self.set_mode("timeline")
+                self.show_timeline(0.0)
+            dlg.accept()
+
+        def err(msg):
+            dlg.set_running(False)
+            if "Cancelled" in msg or not dlg.isVisible():
+                return
+            ff.log_error("자동 편집", msg)
+            dlg.set_progress(0.0, f"실패: {msg[-80:]}")
+        job.signals.done.connect(done)
+        job.signals.error.connect(err)
+        jobs.submit(jobs.AUTO_POOL, job)
 
     def auto_music(self):
         """[음악 자동](v0.16.64): 타임라인 영상의 분위기(움직임·컷 빠르기·배속)를 재고, 넣은 음악 중 분위기가 가까운 곡으로
@@ -2355,14 +2474,22 @@ class EditTab(QWidget):
             self.b_mauto.setEnabled(True)
             self.b_mauto.setText("음악 자동")
             p = self.state.project                     # (분석하는 사이 실행취소 등으로 바뀌었을 수 있음)
-            items = music.plan(auds, infos, total, vm["mood"], float(p.mix.get("xfade", 2.0)))
+            from . import auto, autoedit
+            from .project import cut_spans
+            scenes = {g.id: auto.normalize_key((p.source(g.src).auto or {}).get("preset", "")) for g in p.segments if p.source(g.src)}
+            runs = autoedit.music_runs(cut_spans(p), scenes)
+            if any(g != "mid" for _a, _b, g in runs):      # v0.16.68 장면별 곡(블루워터 = 웅장·신남, 얕은·산호 = 잔잔)
+                items = music.plan_runs(auds, infos, runs, float(p.mix.get("xfade", 2.0)), video=vm["mood"], targets=autoedit.RUN_TARGET)
+            else:
+                items = music.plan(auds, infos, total, vm["mood"], float(p.mix.get("xfade", 2.0)))
             if not items:
                 self._say("쓸 수 있는 음악이 없음", C_WARN)
                 return
             self.state.checkpoint()
             p.music = [{**new_music(x["path"], x["t0"], x["dur"]), "off": x["off"], "len": x["len"]} for x in items]
             self.state.touch("titles")
-            names = " → ".join(f"{Path(x['path']).stem}({music.mood_word(music.mood(infos[x['path']]))})" for x in items)
+            names = " → ".join(f"{Path(x['path']).stem}({music.mood_word(music.mood(infos[x['path']]))}"
+                               f"{' · 웅장' if music.grand(infos[x['path']]) >= 0.6 else ''})" for x in items)
             self._say(f"음악 자동: 영상 {music.mood_word(vm['mood'])} · {names}", C_INFO)
             ff.log_info(f"음악 자동: 영상 {vm} → {[(Path(x['path']).name, round(music.mood(infos[x['path']]), 2), x['len']) for x in items]}")
 

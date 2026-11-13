@@ -25,7 +25,7 @@ N_FFT = 2048
 HOP = 512
 FPS = SR / HOP                  # onset 곡선 프레임/초 ≈ 43
 PEAKS_PER_SEC = 50              # 파형 표시용
-VERSION = 2
+VERSION = 3                     # v0.16.68 웅장함(음량 변화 폭·저음) 추가 → 다시 분석
 
 
 def _decode(path: str, sr: int = SR) -> np.ndarray:
@@ -232,6 +232,11 @@ def analyze(path: str) -> dict:
     cent = (S @ np.fft.rfftfreq(N_FFT, 1 / SR)) / (S.sum(axis=1) + 1e-9)
     w8 = S.sum(axis=1)
     bright = float((cent * w8).sum() / (w8.sum() + 1e-9))
+    # 웅장함 재료(v0.16.68): 저음(150Hz 아래) 에너지 비율 · 음량 변화 폭(0.5초 세기의 큰 쪽 − 작은 쪽, 소리 나는 곳만)
+    fq = np.fft.rfftfreq(N_FFT, 1 / SR)                 # 크기(제곱 아님) 합 비율 — 제곱이면 킥·베이스가 거의 다 차지해 곡끼리 차이가 안 남
+    out["bass"] = round(float(S[:, fq < 150].sum() / (S[:, fq < 8000].sum() + 1e-12)), 4)
+    lv = db[db > db.max() - 40] if len(db) else db
+    out["dyn"] = round(float(np.percentile(lv, 95) - np.percentile(lv, 20)) if len(lv) > 4 else 0.0, 2)
     out["perc"] = round(perc, 3)              # 타악기 정도: 높은 대역(>4kHz) 세기 증가분 ÷ 전체(드럼·하이햇 = 큼, 피아노·현악 = 작음)
     out.update(bpm=round(bpm, 2), conf=round(conf, 3), beats=np.round(bt, 3).tolist(),
                bars=np.round(bt[ph::meter], 3).tolist(), meter=int(meter), rate=round(rate, 2), bright=round(bright, 1))
@@ -249,6 +254,24 @@ def mood(info: dict) -> float:
     e_perc = float(np.clip(float(info.get("perc", 0.5)) / 1.2, 0, 1))
     e_rate = float(np.clip(float(info.get("rate", 0)) / 5.0, 0, 1))
     return round(0.35 * e_tempo * (0.5 + 0.5 * c) + 0.25 * e_perc + 0.20 * e_rate + 0.20 * c, 3)
+
+
+def grand(info: dict) -> float:
+    """곡 웅장함 0 ~ 1(v0.16.68) = 음량 변화 폭(조용 → 크게 터짐, 6dB 0 ~ 20dB 1) · 저음 비율(150Hz 아래 크기 합 ÷ 8kHz 아래, 0.05 0 ~ 0.30 1).
+    한계: 실제 곡으로 기준 확인 전(합성음으로만 시험)."""
+    if not info or "dyn" not in info:
+        return 0.5
+    e_dyn = float(np.clip((float(info.get("dyn", 0)) - 6) / 14, 0, 1))
+    e_bass = float(np.clip((float(info.get("bass", 0)) - 0.05) / 0.25, 0, 1))
+    return round(0.55 * e_dyn + 0.45 * e_bass, 3)
+
+
+def fit_score(info: dict, mood_t: float, grand_t: float | None) -> float:
+    """작을수록 맞음: 분위기 차 + (웅장함 목표가 있으면) 웅장함 차 × 0.7."""
+    d = abs(mood(info) - mood_t)
+    if grand_t is not None:
+        d += 0.7 * abs(grand(info) - grand_t)
+    return d
 
 
 # ------------------------------------------------------------------ 캐시
@@ -366,18 +389,28 @@ def target_mood(video: float) -> float:
     return 0.15 + 0.75 * float(np.clip(video, 0, 1))
 
 
-def plan(audios: list[dict], infos: dict, total: float, video: float, xfade: float = 2.0, max_songs: int = 3) -> list[dict]:
+def first_bar(inf: dict, lead: float) -> float:
+    """곡 시작 = 앞 조용한 곳 뒤 첫 마디 첫 박(리듬 뚜렷할 때), 아니면 조용한 곳 뒤."""
+    if float(inf.get("conf", 0)) >= 0.3:
+        b = [x for x in (inf.get("bars") or []) if x >= lead - 0.05]
+        if b and b[0] - lead < 4.0:
+            return float(b[0])
+    return lead
+
+
+def plan(audios: list[dict], infos: dict, total: float, video: float, xfade: float = 2.0, max_songs: int = 3,
+         target: float | None = None, grand_t: float | None = None, avoid: str = "", bar_start: bool = False) -> list[dict]:
     """음악 자동: 영상 길이(total)를 채우는 곡 순서 → 음악 줄 항목 [{"path","t0","off","dur","len"}].
     - 곡 고르기 = 곡 분위기가 영상 분위기에 가까운 순. 1곡으로 채울 수 있는 곡이 분위기 차이 0.1 안에 있으면 그 곡 1개.
     - 곡 시작 = 앞 조용한 곳 다음. 이어 붙일 곡은 마지막 마디 첫 박에서 끝내고 다음 곡과 xfade 초 겹침(크로스페이드).
     - 마지막 곡 = 영상 끝에서 자름(페이드아웃은 음악 설정 값)."""
-    target = target_mood(video)
+    target = target_mood(video) if target is None else target
     cand = []
     for a in audios:
         inf = infos.get(a["path"])
         if not inf or float(inf.get("dur", 0)) < 5:
             continue
-        cand.append((abs(mood(inf) - target), a, inf))
+        cand.append((fit_score(inf, target, grand_t) + (0.25 if a["path"] == avoid else 0.0), a, inf))
     if not cand or total <= 0.5:
         return []
     cand.sort(key=lambda c: c[0])
@@ -386,7 +419,7 @@ def plan(audios: list[dict], infos: dict, total: float, video: float, xfade: flo
     order = [one[0]] + [c for c in cand if c is not one[0]] if one else cand
     out, t = [], 0.0
     for _d, a, inf in order[:max_songs]:
-        off = float(inf.get("lead", 0))
+        off = first_bar(inf, float(inf.get("lead", 0))) if bar_start else float(inf.get("lead", 0))
         dur = float(inf["dur"])
         avail = dur - off
         if t + avail >= total - 0.05:
@@ -531,3 +564,33 @@ def ramp_expr(spans, r: float = 0.5) -> str:
     for p_ in parts[1:]:
         e = f"max({e},{p_})"
     return e
+
+
+def plan_runs(audios: list[dict], infos: dict, runs: list, xfade: float = 2.0, video: float = 0.5,
+              targets: dict | None = None) -> list[dict]:
+    """장면별 곡(v0.16.68): runs = [(시작, 끝, 묶음)] → 묶음마다 맞는 곡(블루워터 = 웅장·신남, 얕은·산호 = 잔잔).
+    구간 사이 = xfade 초 겹침(앞 곡 끝을 늘림), 다음 곡의 마디 첫 박이 구간 경계에 오게 둠. 바로 앞 곡은 되도록 안 겹침."""
+    targets = targets or {}
+    out, last = [], ""
+    for k, (a, b, grp) in enumerate(runs):
+        mt, gt = targets.get(grp, (None, None))
+        if mt is None:
+            mt = target_mood(video)
+        lead_in = xfade / 2 if k > 0 else 0.0
+        items = plan(audios, infos, (b - a) + lead_in, video, xfade, target=mt, grand_t=gt, avoid=last, bar_start=True)
+        if not items:
+            continue
+        if out and lead_in:                                   # 앞 곡 끝을 늘려 겹침(곡이 모자라면 그만큼만)
+            pv = out[-1]
+            room = float(pv["dur"]) - float(pv["off"]) - float(pv["len"])
+            pv["len"] = round(float(pv["len"]) + max(0.0, min(lead_in, room)), 3)
+        for x in items:
+            x["t0"] = round(float(x["t0"]) + a - lead_in, 3)
+            if x is items[0] and lead_in:                     # 곡 첫 마디 첫 박이 경계(a)에: 곡 안 시작을 앞당겨 겹침 구간을 채움
+                ob = float(x["off"])
+                nb = max(0.0, ob - lead_in)
+                x["off"], x["t0"] = round(nb, 3), round(a - (ob - nb), 3)
+                x["len"] = round(float(x["len"]) - (lead_in - (ob - nb)), 3)
+            out.append(x)
+        last = items[-1]["path"]
+    return out

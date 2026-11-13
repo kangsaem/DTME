@@ -699,6 +699,8 @@ class SeqTimeline(QWidget):
                 p.setFont(fl)
                 txt = f"{it[5][1]:.1f}초"
                 tw = p.fontMetrics().horizontalAdvance(txt) + 6
+                if tw + 4 > r.width():                  # v0.16.67 좁으면 길이 글자 안 씀(나비 노랑을 가림 — 말풍선에 있음)
+                    continue
                 box = QRectF(r.center().x() - tw / 2, r.top() + 2, tw, 14)
                 p.setPen(Qt.NoPen)
                 p.setBrush(QColor(20, 30, 45, 210))
