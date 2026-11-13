@@ -393,7 +393,11 @@ class EditTab(QWidget):
         self.tl_len = QLabel("")
         self.tl_len.setStyleSheet("color:#aaa;")
         b_trans = _btn("컷편집", "선택한 컷 앞 경계의 화면 전환", self.edit_transition)
+        from .ui_auto import main_button as _mb2
+        self.b_autoedit = _mb2("자동 편집", "red", 100)      # v0.16.67 시안: 고른 소스 → 하이라이트로 타임라인 채움
+        self.b_autoedit.clicked.connect(self.open_autoedit)
         lbox = QHBoxLayout()
+        lbox.addWidget(self.b_autoedit)
         lbox.addWidget(b_trans)
         lbox.addWidget(self.tl_len)
         b_down = _btn("▼", "↓", lambda: self._key("down"), main=True)
@@ -2240,6 +2244,13 @@ class EditTab(QWidget):
         self.state.checkpoint()
         p.music.append(new_music(a["path"], t0, a["dur"]))
         self.state.touch("titles")
+
+    def open_autoedit(self):
+        from .ui_autoedit import AutoEditDialog
+        sids = self._selected_sids() or [s.id for s in self.state.project.sources]
+        dlg = AutoEditDialog(self.state, set(sids), self)
+        self._autoedit_dlg = dlg
+        dlg.exec()
 
     def auto_music(self):
         """[음악 자동](v0.16.64): 타임라인 영상의 분위기(움직임·컷 빠르기·배속)를 재고, 넣은 음악 중 분위기가 가까운 곡으로

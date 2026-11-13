@@ -18,7 +18,7 @@ RECT_SWATCHES = ["#000000", "#ffffff", "#1f3a5f", "#7a1f1f"]
 ANIM_BTNS = (("fade", "페이드"), ("right", "→"), ("left", "←"), ("up", "↑"), ("down", "↓"))
 
 
-def anim_rows(dlg, grid, row: int, data: dict):
+def anim_rows(dlg, grid, row: int, data: dict, all_label: str = ""):
     """들어올 때(인)·나갈 때(아웃): [페이드 | → | ← | ↑ | ↓] 두 줄(v0.16.57). 화살표 = 움직이는 방향. dlg.anim = {'ain': 그룹, 'aout': 그룹}."""
     dlg.anim = {}
     for i, (key, name) in enumerate((("ain", "인"), ("aout", "아웃"))):
@@ -38,6 +38,15 @@ def anim_rows(dlg, grid, row: int, data: dict):
         grp.buttonClicked.connect(lambda b, key=key: dlg._set(key, b.property("key")))
         grid.addLayout(h, row + i, 1, 1, 2)
         dlg.anim[key] = grp
+    if all_label:                                   # v0.16.67 시안: 인·아웃·길이를 같은 종류 모두에(체크 = 기본 켬)
+        from PySide6.QtWidgets import QCheckBox
+        dlg.apply_all = QCheckBox(all_label)
+        dlg.apply_all.setChecked(True)
+        dlg.apply_all.setToolTip("확인을 누르면 이 창의 인 · 아웃 · 길이를 같은 종류(글자 또는 사각형) 모두에 넣음")
+        hb = QHBoxLayout()
+        hb.addStretch(1)
+        hb.addWidget(dlg.apply_all)
+        grid.addLayout(hb, row + 2, 1, 1, 2)
 
 
 def _slider(lo, hi, v):
@@ -142,13 +151,13 @@ class TextDialog(_Undoable):
             brow.addWidget(b, 1)
         self.bg.buttonClicked.connect(lambda b: self._set("bg", b.property("key")))
         g.addLayout(brow, 2, 1, 1, 2)
-        anim_rows(self, g, 3, title)
-        g.addWidget(QLabel("길이"), 5, 0)            # 페이드·밀기 길이(예전 이름 '페이드')
+        anim_rows(self, g, 3, title, "모든 글자에 적용")
+        g.addWidget(QLabel("길이"), 6, 0)            # 페이드·밀기 길이(예전 이름 '페이드')
         self.fade = _slider(0, 20, int(round(float(title.get("fade", 0.5)) * 10)))
         self.fade_v = QLabel(f"{self.fade.value() / 10:.1f}초")
         self.fade.valueChanged.connect(lambda v: (self.fade_v.setText(f"{v / 10:.1f}초"), self._set("fade", v / 10)))
-        g.addWidget(self.fade, 5, 1)
-        g.addWidget(self.fade_v, 5, 2)
+        g.addWidget(self.fade, 6, 1)
+        g.addWidget(self.fade_v, 6, 2)
         g.setColumnStretch(1, 1)
         lay.addLayout(g)
         self._paint_swatches()
@@ -246,7 +255,7 @@ class RectDialog(_Undoable):
         brow.addWidget(bmore)
         brow.addStretch(1)
         g.addLayout(brow, n, 1, 1, 2)
-        anim_rows(self, g, n + 1, rect)
+        anim_rows(self, g, n + 1, rect, "모든 사각형에 적용")
         g.setColumnStretch(1, 1)
         self.body.addLayout(g)
         self._paint_swatches()
