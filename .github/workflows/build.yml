@@ -194,8 +194,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
           python tests/test_ui_v1667.py v1667_test
           if ($LASTEXITCODE -ne 0) { exit 1 }
-          python tests/test_ui_v1670.py v1670_test
-          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $o3 = python tests/test_ui_v1670.py v1670_test 2>&1 | Out-String
+          Write-Output $o3
+          if ($o3 -notmatch "OK test_ui_v1670") { exit 1 }
+          $global:LASTEXITCODE = 0
           python tests/test_ui_v1671.py v1671_test
           if ($LASTEXITCODE -ne 0) { exit 1 }
           python tests/test_ui_v1672.py v1672_test

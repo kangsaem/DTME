@@ -1,6 +1,7 @@
 """v0.16.70: AUTO 창 크기 칸 = 세로로 찍은 소스는 고른 크기를 90도 돌린 세로(1080×1920 · 1440×2560 · 2160×3840) · `세로` → `인스타`.
 사용: python tests/test_ui_v1670.py <작업폴더>"""
-import os, subprocess, sys, time  # noqa: E401
+import faulthandler, os, subprocess, sys, time  # noqa: E401
+faulthandler.enable()
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "app"))
 os.environ["QT_QPA_PLATFORM"] = "offscreen"; os.environ["DTME_NO_AUDIO"] = "1"
 from PySide6.QtWidgets import QApplication
@@ -32,6 +33,7 @@ def wait(sec, cond=None):
 st, e, gp = w.state, w.edit, w.edit.grade
 e.import_files([land, vert])
 assert wait(180, lambda: len(st.project.sources) == 2 and all(st.status.get(s.id) == "준비" for s in st.project.sources))
+print("단계: 가져옴", flush=True)
 p = st.project
 sl, sv = (next(s for s in p.sources if s.path == f) for f in (land, vert))
 assert (sv.width, sv.height) == (2160, 3840), (sv.width, sv.height)
@@ -40,6 +42,7 @@ assert p.out_of(sl) == "horizontal" and p.out_of(sv) == "vertical"
 assert out_label("vertical", sl) == "인스타 1080×1920" and out_label("vertical", sv) == "1080×1920"
 assert out_label("vertical", sl, short=True) == "인스타" and out_label("vertical2160", sv, short=True) == "세로 4K"
 # AUTO 창: 4K → 가로 3840×2160 / 세로 촬영 2160×3840
+print("단계: AUTO 창", flush=True)
 dlg = e.make_auto_dialog(); dlg.show(); wait(0.3)
 assert dlg.out.btns["vertical"].text() == "인스타" and "릴스" in dlg.out.btns["vertical"].toolTip()
 dlg.list.clearSelection()
@@ -61,6 +64,7 @@ dlg.grab().save(os.path.join(WORK, "auto_out.png"))
 # [보정+편집] 적용과 같은 경로: 줄 출력 → 소스 출력(개별)
 for r in dlg.rows:
     p.source(r.sid).out = r.out
+print("단계: 보정 패널", flush=True)
 dlg.reject(); wait(0.2)
 e._select_source(sv.id); wait(0.5)
 assert gp.out.currentData() == "vertical2160" and gp.out.itemText(gp.out.currentIndex()) == "2160×3840"
@@ -74,10 +78,11 @@ for i in range(e.src_list.count()):
 e.sources_to_render(); wait(0.3)
 assert {it.segs[0].src: it.orientation for it in p.render_items} == {sl.id: "vertical", sv.id: "vertical2160"}
 # 세로 4K 실제 렌더 크기
+print("단계: 렌더", flush=True)
 it = next(x for x in p.render_items if x.segs[0].src == sv.id)
 out = os.path.join(WORK, "v4k.mp4")
 p.output.encoder = "x264"
 ff.render_video(p, it.segs, out, orientation="vertical2160")
 pr = ff.probe(out)
 assert (pr["width"], pr["height"]) == (2160, 3840), pr
-print("OK test_ui_v1670"); os._exit(0)
+print("OK test_ui_v1670", flush=True); os._exit(0)
