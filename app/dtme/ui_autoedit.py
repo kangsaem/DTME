@@ -46,7 +46,7 @@ class StageBar(QWidget):
         from . import stage as SG
         self.steps = SG.FULL_STEPS
         self.k, self.v, self.text = 0, 0.0, ""
-        self.setFixedHeight(40)
+        self.setFixedHeight(34)
 
     def set(self, kind: str, v: float, text: str = ""):
         k = next((i for i, (x, _n) in enumerate(self.steps) if x == kind), self.k)
@@ -73,11 +73,18 @@ class StageBar(QWidget):
         p.setFont(f)
         p.setPen(QColor(SG.STAGE[kind][1]))
         p.drawText(0, 0, self.width(), 20, Qt.AlignRight | Qt.AlignVCenter, lab)
-        y, h, w = 28, 8, self.width()
-        p.fillRect(0, y, w, h, QColor("#2a2a2a"))
+        y, h, w = 28, 6, self.width()               # v0.16.83 다른 진행 막대와 같은 6px · 둥근 끝 3
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(Qt.NoPen)
+
+        def bar(width, col):
+            if width > 0:
+                p.setBrush(QColor(col))
+                p.drawRoundedRect(0, y, width, h, 3, 3)
+        bar(w, "#2a2a2a")
         if self.k > 0:
-            p.fillRect(0, y, w, h, QColor(SG.STAGE[self.steps[self.k - 1][0]][1]))
-        p.fillRect(0, y, int(w * self.v), h, QColor(SG.STAGE[kind][1]))
+            bar(w, SG.STAGE[self.steps[self.k - 1][0]][1])
+        bar(int(w * self.v), SG.STAGE[kind][1])
         p.end()
 
 

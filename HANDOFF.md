@@ -45,7 +45,7 @@
 ### 사용자 PC 확인 대기 (그대로)
 - v0.16.61+ 확인 창이 보이는지 · 실제 곡 BPM·마디 · 배 위 말소리 클립 · DJI 다시 AUTO · 사각형 그림자 기본값.
 
-## 1. 현재 상태 — v0.16.82 (2026-11-13)
+## 1. 현재 상태 — v0.16.83 (2026-11-13)
 
 - 저장소: `kangsaem/DTME` (main). push 하면 GitHub Actions 가 Windows 빌드 → Actions → 최신 "Windows build" → Artifacts `DTME-<버전>-windows`(예 DTME-0.16.8-windows, 약 200MB, 30일)
 - Linux 작업 환경에서 엔진·화면(오프스크린) 검증, Actions(Windows)에서 빌드·엔진·exe 실행 점검 통과
@@ -1000,6 +1000,7 @@ DTME_SELFTEST=1 DTME_NO_AUDIO=1 QT_QPA_PLATFORM=offscreen python app/main.py   #
 - (사용자) AUTO 창 [보정+렌더] 후 AUTO 창 유지 = 안 함(지금 방식 유지)
 - v0.16.51: Insta360 Ace Pro 2 I-Log LUT 포함
 - v0.16.52: 시작 창 = MOSCO 틀(테두리 없는 400×560 · 그림 · ✕ · 세로 글자) + 앱 아이콘(assets/start.png · dtme.ico)
+- v0.16.83: 단계 막대 = 다른 막대와 같은 6px · 둥근 끝
 - v0.16.82: 전부 자동 작업 창 하나 + 단계 막대 · 단계 색 통일 · 음악 목록 진단 기록
 - v0.16.81: AUTO 창 [전부 자동](보정 → 편집 → 음악 → 렌더 + 프로젝트 저장)
 - v0.16.80: 전체 삭제 = 음악까지 · 빈 타임라인 검은 화면 · ▼ 곡 이어 붙이기 · 렌더 용량 [고화질|보통|작게]
