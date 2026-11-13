@@ -85,13 +85,10 @@ a, b = p.sources
 a.out = "vertical"
 p.segments = [Segment(a.id, 0, 120), Segment(b.id, 0, 120)]
 st.touch("segments"); wait(0.3)
-assert e.tl_out.isVisible() and e.tl_out.itemData(0) == "" and "인스타" in e.tl_out.itemText(0)
+assert not e.tl_out.isVisible()                                   # v0.16.88 타임라인 출력 칸 뺌
 e.timeline_to_render(); wait(0.1)
-assert p.render_items[-1].orientation == "vertical"              # 자동 = 첫 컷
-e.tl_out.setCurrentIndex(e.tl_out.findData("horizontal")); e._tl_out_chosen(); wait(0.1)
-assert p.tl_out == "horizontal"
+assert p.render_items[-1].orientation == "vertical"              # 타임라인 = 첫 컷 소스 출력
+p.tl_out = "horizontal"                                          # 예전 프로젝트 값 = 안 씀
 e.timeline_to_render(); wait(0.1)
-assert p.render_items[-1].orientation == "horizontal"            # 정한 값
-from dtme.project import Project
-f = os.path.join(WORK, "p.json"); p.save(f); assert Project.load(f).tl_out == "horizontal"
+assert p.render_items[-1].orientation == "vertical"
 print("OK test_ui_v1672", flush=True); os._exit(0)

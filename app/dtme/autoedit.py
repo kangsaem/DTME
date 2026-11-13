@@ -203,7 +203,7 @@ def fit_total(cuts: list[list[float]], total: float, n_trans: int) -> list[list[
 
 
 ROT_MAX = 2                         # v0.16.84 회전 줌 전환 최대 횟수(한 영상)
-DIVE_MIN = 10.0                     # v0.16.84 수심 그래프 컷 최소 길이(전환 겹침 포함, 사용자) = dive_draw.MIN_CUT
+DIVE_MIN = 15.0                     # v0.16.88 LOG 켠 자동 편집 컷 최소 길이(전환 겹침 포함, 사용자) = dive_draw.MIN_CUT
 
 
 def dive_src(project, src) -> bool:
@@ -217,7 +217,7 @@ def dive_src(project, src) -> bool:
 
 
 def dive_lens(lens: list, dur: float) -> list:
-    """수심 그래프 컷: 같은 시간을 10초 넘는 컷으로 다시 나눔(개수 줄임). 원본이 10초보다 짧으면 통째로."""
+    """수심 그래프 컷: 같은 시간을 15초 넘는 컷으로 다시 나눔(개수 줄임). 원본이 15초보다 짧으면 통째로."""
     if not lens:
         return lens
     tot = sum(lens)
@@ -286,7 +286,7 @@ def build(project, picks: list[dict], minutes: int, seed: int = 0, titles: bool 
         for cid, s in firsts:
             if dives:                                  # v0.16.84 수심 그래프가 들어가는 컷 = 날짜·시간 사각형 안 넣음(좌상단에 날짜·시각)
                 from . import dive_draw
-                if dive_draw.match(dives, s, seg_of[cid].fin / float(s.fps), getattr(project, "dive_off", 0.0)):
+                if dive_draw.cut_dive(dives, s, seg_of[cid], getattr(project, "dive_off", 0.0)):
                     continue
             t0 = start.get(cid, 0.0) + tdur.get(cid, 0.0) + TITLE_DELAY     # v0.16.72 디졸브 끝나고 1초 뒤(사용자)
             tts += title_pair(display_name(s.path), t0, wh)
@@ -421,7 +421,7 @@ def snap_to_bars(project, music_info: dict, tol_bar: float = 0.5) -> int:
         fps = float(s.fps)
         cur = (g.fout - g.fin) / fps
         want = float(np.clip(cur + best, CUT_MIN, CUT_MAX))
-        if want < DIVE_MIN <= cur and dive_src(p, s):     # v0.16.84 수심 그래프 컷 = 10초 아래로 줄이지 않음
+        if want < DIVE_MIN <= cur and dive_src(p, s):     # v0.16.84 수심 그래프 컷 = 15초 아래로 줄이지 않음
             continue
         fout = min(s.frames, g.fin + int(round(want * fps)))
         if fout == g.fout:

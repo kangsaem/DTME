@@ -417,14 +417,14 @@ class EditTab(QWidget):
         lbox.addWidget(self.tl_out)
         # v0.16.84 수심 그래프: [수심] 켜기/끄기 · 시각 맞춤 ±초 (다이빙 기록이 있을 때만 보임)
         from PySide6.QtWidgets import QSpinBox
-        self.b_dive = _btn("수심", "수심 그래프 넣기(다이빙 기록 FIT·DTMD)", self._toggle_dive)
+        self.b_dive = _btn("LOG", "다이빙 로그(수심 그래프) 넣기 — FIT·DTMD 기록", self._toggle_dive)
         self.dive_off = QSpinBox()
         self.dive_off.setRange(-7200, 7200)
         self.dive_off.setSuffix("초")
-        self.dive_off.setPrefix("시각 ")
+        self.dive_off.setPrefix("LOG 시각 ")
         self.dive_off.setToolTip("시각 맞춤: 카메라 시계가 다이빙 컴퓨터보다 늦으면 +, 빠르면 −")
         self.dive_off.setFocusPolicy(Qt.ClickFocus)
-        self.dive_off.setFixedWidth(104)
+        self.dive_off.setFixedWidth(124)
         self.dive_off.valueChanged.connect(self._dive_off_changed)
         lbox.addWidget(self.b_dive)
         lbox.addWidget(self.dive_off)
@@ -1368,8 +1368,7 @@ class EditTab(QWidget):
         vw = min([source_vw(x) for x in srcs] or [0])              # 세로 1440·4K = 모든 컷이 그만한 세로 원본일 때만
         first = srcs[0] if srcs else None             # v0.16.55 출력 = 첫 컷 소스의 출력(여러 소스를 이은 타임라인도 영상 1개 = 출력 1개)
         want = p.out_of(first) if first is not None else o.orientation   # v0.16.70 세로 촬영 = 돌린 크기
-        if tl and p.tl_out:                                              # v0.16.72 타임라인 출력을 정했으면 그것
-            want = p.tl_out
+        # v0.16.88 타임라인 출력 칸 뺌(사용자: 산만함) → 타임라인 = 첫 컷 소스의 출력(예전 프로젝트의 tl_out 도 안 씀)
         return RenderItem(name=item_base(p, segs), segs=segs, orientation=clamp_out(want, h, vw), audio=o.audio)
 
     def send_to_render(self):
@@ -1742,7 +1741,7 @@ class EditTab(QWidget):
         from .project import outputs_for, out_label, source_out_h, source_vw
         p = self.state.project
         srcs = [p.source(g.src) for g in p.segments if p.source(g.src)]
-        self.tl_out.setVisible(bool(srcs))
+        self.tl_out.setVisible(False)                      # v0.16.88 뺌(사용자 11/13: 산만함)
         if not srcs:
             return
         hs = [source_out_h(x) for x in srcs]
@@ -1871,7 +1870,7 @@ class EditTab(QWidget):
             from . import divelog as DL
             lines = [f"{DL.fmt_date(d['start'])} {DL.fmt_hm(d['start'])} · {d['max']}m · {int(DL.dur(d) // 60)}분 · "
                      f"{'FIT' if d['src'] == 'fit' else 'DTMD'}" for d in p.dives[-12:]]
-            self.b_dive.setToolTip("수심 그래프 넣기 · 다이빙 기록\n" + "\n".join(lines))
+            self.b_dive.setToolTip("다이빙 로그(수심 그래프) 넣기 · 다이빙 기록\n" + "\n".join(lines))
 
     def _toggle_dive(self):
         p = self.state.project
@@ -2296,10 +2295,17 @@ class EditTab(QWidget):
         if loc is None:
             return None
         seg, st, _f = loc
+        i0 = next((j for j, c in enumerate(self._tl_cuts) if c[0] is seg), -1)
+        if i0 > 0:                                      # 전환 겹침 = 나가는 컷(렌더와 같게: 로그가 전환과 같이 사라짐)
+            pg, pst, pln = self._tl_cuts[i0 - 1]
+            if t < pst + pln:
+                seg, st = pg, pst
         src = p.source(seg.src)
         if src is None:
             return None
         from . import dive_draw
+        if dive_draw.cut_dive(p.dives, src, seg, p.dive_off) is None:      # 입수·출수 클립(컷 중간에 시작·끝) = 안 보임
+            return None
         s = dive_draw.match(p.dives, src, seg.fin / float(src.fps) + (t - st) * float(seg.speed or 1.0), p.dive_off)
         if not s:
             return None

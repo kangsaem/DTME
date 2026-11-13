@@ -39,6 +39,7 @@ assert wait(60, lambda: len(st.project.sources) == 2 and all(st.status.get(s.id)
 p = st.project
 print("다이빙", len(p.dives), "상태줄", e.status.text())
 assert len(p.dives) == 1 and e.b_dive.isVisible() and e.dive_off.isVisible() and "다이빙 기록 1개" in e.status.text()
+assert e.b_dive.text() == "LOG" and not e.tl_out.isVisible()
 s1, s2 = sorted(p.sources, key=lambda s: s.path)
 assert autoedit.dive_src(p, s1) and not autoedit.dive_src(p, s2)
 # 미리보기: 타임라인에 다이빙 컷 → 모니터에 그래프(멈춤 = 다 보임)
@@ -66,17 +67,17 @@ assert p.dive_on
 from dtme.ui_autoedit import AutoEditDialog  # noqa: E402
 d = AutoEditDialog(st, {s1.id, s2.id}, w)
 print("체크:", d.dive_on.text(), d.dive_on.isChecked())
-assert d.dive_on.isEnabled() and d.dive_on.isChecked() and "다이빙 1개" in d.dive_on.text() and d.settings()["dive"]
+assert d.dive_on.isEnabled() and d.dive_on.isChecked() and "다이빙 1개" in d.dive_on.text() and "15초" in d.dive_on.text() and d.settings()["dive"]
 # 컷 최소 10초(다이빙 소스) · 다이빙 밖은 그대로
-assert autoedit.dive_lens([6.0, 7.0, 8.0], 40.0) == [10.5, 10.5]
-assert autoedit.dive_lens([12.0], 40.0) == [12.0] and autoedit.dive_lens([6.0], 8.0) == [8.0]
+assert autoedit.dive_lens([6.0, 7.0, 8.0, 10.0], 40.0) == [15.5, 15.5]          # v0.16.88 최소 15초
+assert autoedit.dive_lens([16.0], 40.0) == [16.0] and autoedit.dive_lens([6.0], 12.0) == [12.0]
 import numpy as np  # noqa: E402
 picks = [{"src": s1, "scene": "", "score": np.ones(80), "surface": None},
          {"src": s2, "scene": "", "score": np.ones(80), "surface": None}]
 plan = autoedit.build(p, picks, 1, seed=3, titles=True, cut_max=[6.0, 6.0])
 lens = [((g.fout - g.fin) / 30.0, g.src) for g in plan["segs"]]
 print("컷:", [(round(a, 1), "다이빙" if s == s1.id else "밖") for a, s in lens])
-assert all(a >= 9.99 for a, s in lens if s == s1.id) and any(a < 9.99 for a, s in lens if s == s2.id)
+assert all(a >= 14.99 for a, s in lens if s == s1.id) and any(a < 9.99 for a, s in lens if s == s2.id)
 assert all(t.get("text") != "2026 1027 1040" for t in plan["titles"])     # 다이빙 컷 = 날짜 사각형 안 넣음
 # 회전 줌: 최대 2번 · 연달아 안 씀
 for seed in range(30):

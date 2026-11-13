@@ -104,15 +104,24 @@ def main(work):
     TXT = (40, 90, 260, 160)              # 수심·시각 글자 자리
     GR = (0, 760, 1920, 300)              # 그래프 자리
     res = {}
-    for t in (0.5, 1.25, 3.0, 5.0, 8.0, 10.5):
+    for t in (0.5, 1.25, 3.0, 5.0, 8.0, 11.3, 12.3):
         a, b = grab(out, t, TXT), grab(plain, t, TXT)
         ga, gb = grab(out, t, GR), grab(plain, t, GR)
         res[t] = (round(float((a - b).max()), 1), round(float((ga - gb).max()), 1))
     print("차이(글자, 그래프):", res)
     assert res[0.5][0] < 16 and res[0.5][1] < 16                         # 처음 = 없음
     assert res[3.0][0] > 60 and res[5.0][0] > 60 and res[5.0][1] > 60    # 글자 · 그래프 보임
-    assert res[8.0][0] < 16 and res[8.0][1] > 60                          # 7초 뒤 글자 사라짐, 그래프는 9초까지
-    assert res[10.5][0] < 16 and res[10.5][1] < 16                        # 9.5초 뒤 다 사라짐
+    assert res[8.0][0] > 60 and res[8.0][1] > 60                          # v0.16.88 표시 = 컷 길이 − 5초(최소 10초): 12초 컷 = 10초
+    assert res[11.3][0] < 16 and res[11.3][1] > 60                        # 글자 = 11초에 사라짐, 그래프 = 컷 끝 전환과 같이
+    assert res[12.3][0] < 16 and res[12.3][1] < 16                        # 앞 컷 끝(전환과 같이 사라짐) 뒤 = 없음
+    # 입수·출수 클립(컷 중간에 다이빙 시작) = 표시 안 함
+    vin = d / "DJI_20261027103050_0003_D.MP4"                            # 10:30:50 → 10:31:00 하강 시작(10초 뒤)
+    subprocess.run([paths.ffmpeg(), "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=0x1c5a8a:s=640x360:r=30:d=20",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", str(vin)], check=True)
+    iin = ff.probe(str(vin))
+    sin = Source(path=str(vin), **{k: iin[k] for k in ("fps_num", "fps_den", "frames", "width", "height", "has_audio")})
+    assert dive_draw.cut_dive(ds, sin, Segment(sin.id, 0, 600)) is None                 # 0~20초 = 입수를 걸침
+    assert dive_draw.cut_dive(ds, sin, Segment(sin.id, 330, 600)) is not None           # 11~20초 = 다 물속
     # 6) v0.16.86 UTC 로 맞추기: 카메라 = 필리핀(UTC+8) · 다이빙 컴퓨터 = 한국(UTC+9). 현지끼리면 1시간 어긋남
     v8 = d / "DJI_20261027094000_0002_D.MP4"                              # 09:40 PH = 01:40 UTC = 입수(01:31 UTC) 9분 뒤
     subprocess.run([paths.ffmpeg(), "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=0x1c5a8a:s=640x360:r=30:d=4",

@@ -235,8 +235,8 @@ class AutoEditDialog(DragMove, QDialog):
 
     def _dive_label(self):
         n = len(self.state.project.dives)
-        self.dive_on.setText(f"수심 그래프 (다이빙 {n}개 · 컷 최소 10초)" if n else
-                             "수심 그래프 (다이빙 기록 없음 — FIT·DTMD 파일을 이 창에 끌어다 놓기)")
+        self.dive_on.setText(f"LOG 수심 그래프 (다이빙 {n}개 · 컷 최소 15초)" if n else
+                             "LOG 수심 그래프 (다이빙 기록 없음 — FIT·DTMD 파일을 이 창에 끌어다 놓기)")
         self.dive_on.setEnabled(bool(n))
 
     def dragEnterEvent(self, e):

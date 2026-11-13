@@ -15,9 +15,10 @@ from . import divelog as DL
 
 # 컷마다 애니메이션(사용자 11/13) — 기준 = 컷 시작(전환 겹침 시작). 디졸브 0.5초.
 FADE = 0.5
-TXT_IN, TXT_HOLD = 1.0, 5.0            # 글자: 1초 뒤 디졸브 인 → 다 나타나고 5초 뒤 디졸브 아웃(6.5초~7초)
-G_IN, G_WIPE, G_HOLD = 2.0, 2.0, 5.0   # 그래프: 2초 뒤 왼쪽부터 2초간 긁어 나타남(페더) → 다 나타나고 5초 뒤 디졸브 아웃(9초~9.5초)
-MIN_CUT = 10.0                         # 수심 그래프 컷 최소 길이(전환 겹침 포함) = 그래프가 다음 전환 전에 다 사라짐
+TXT_IN = 1.0                           # 글자: 1초 뒤 디졸브 인
+G_IN, G_WIPE = 2.0, 2.0                # 그래프: 2초 뒤 왼쪽부터 2초간 긁어 나타남(페더)
+SHOW_MIN, SHOW_LESS = 10.0, 5.0        # v0.16.88 로그 표시 길이 = 컷 길이 − 5초(최소 10초): 15초 컷 = 10초, 20초 컷 = 15초
+MIN_CUT = 15.0                         # LOG 켠 자동 편집 컷 최소 길이(전환 겹침 포함) = 그래프가 다음 전환 전에 다 사라짐
 FEATHER = 0.18                         # 긁는 경계 부드러움(화면 폭 비율)
 ANIM_FPS = 15                          # 애니메이션 중 렌더 그림 바꾸는 횟수(초당)
 
@@ -28,8 +29,10 @@ def _sm(x: float) -> float:
 
 
 def _wins(L: float, tail: float):
-    to = TXT_IN + FADE + TXT_HOLD
-    go = G_IN + G_WIPE + G_HOLD
+    """(애니메이션 구간들, 글자 아웃 시작, 그래프 아웃 시작). 글자 = 1초~(1+표시) · 그래프 = 2초~(2+표시)에 다 사라짐."""
+    show = max(SHOW_MIN, L - SHOW_LESS)
+    to = TXT_IN + show - FADE
+    go = G_IN + show - FADE
     w = [(TXT_IN, TXT_IN + FADE), (to, to + FADE), (G_IN, G_IN + G_WIPE), (go, go + FADE)]
     if tail > 0:
         w.append((L - tail, L))
@@ -380,6 +383,15 @@ def match(dives: list, src, src_sec: float, off: float = 0.0):
     return (d, w - d["start"], w) if d else None
 
 
+def cut_dive(dives: list, src, seg, off: float = 0.0):
+    """v0.16.88 컷 전체(처음·끝)가 같은 다이빙 안일 때만 그 다이빙(입수·출수 클립 = 표시 안 함, 사용자 11/13)."""
+    if not dives or not src.fps:
+        return None
+    a = match(dives, src, seg.fin / float(src.fps), off)
+    b = match(dives, src, max(seg.fin, seg.fout - 1) / float(src.fps), off)
+    return a[0] if a and b and a[0] is b[0] else None
+
+
 def when_at(src, seg, t_in_cut: float, off: float = 0.0) -> float | None:
     """컷 안 재생 위치(출력 초) → 실제 시각 = 촬영 시작 + 원본 위치 + 시각 맞춤."""
     t0 = shot_time(src)
@@ -426,16 +438,23 @@ def render_layers(project, dives: list, off: float, spans: list, total: float, W
     fs = 2 if W * H > 2600 * 1500 else 1               # 색 띠 = 부드러운 그라데이션 → 4K 는 절반 크기로 만들어 늘림(빠르게)
     fw, fh = W // fs, max(2, bh // fs)
 
+    inside: dict = {}
+
     def at(T):
         cur = None
-        for sp in spans:
+        for sp in spans:                                  # 전환 겹침 = 나가는 컷(그 컷의 로그가 전환과 같이 사라짐)
             if sp[0] - 1e-6 <= T < sp[1]:
                 cur = sp
+                break
         if cur is None:
             return None
         a, b, seg, tail = cur
         src = project.source(seg.src)
         if src is None or not src.fps:
+            return None
+        if seg.id not in inside:
+            inside[seg.id] = cut_dive(dives, src, seg, off) is not None
+        if not inside[seg.id]:
             return None
         m_ = match(dives, src, seg.fin / float(src.fps) + (T - a) * float(seg.speed or 1.0), off)
         if not m_:
