@@ -14,7 +14,8 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog,
 from . import ff, jobs
 from .project import short_name, spaced
 
-ORIENT_TXT = {"horizontal": "가로", "horizontal1440": "가로 1440", "horizontal2160": "가로 4K", "vertical": "세로"}
+ORIENT_TXT = {"horizontal": "가로", "horizontal1440": "가로 1440", "horizontal2160": "가로 4K", "vertical": "세로",
+              "vertical1440": "세로 1440", "vertical2160": "세로 4K"}
 
 
 from . import ui_style  # noqa: E402  버튼 모양은 ui_style 한 곳에서

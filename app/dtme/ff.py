@@ -971,12 +971,13 @@ def gkey_cmds(g: dict, seg: Segment, src: Source, n_out: int, frames_per_sec: fl
 
 
 def out_size(orientation: str) -> tuple[int, int]:
-    return {"vertical": (1080, 1920), "horizontal1440": (2560, 1440), "horizontal2160": (3840, 2160),
+    return {"vertical": (1080, 1920), "vertical1440": (1440, 2560), "vertical2160": (2160, 3840),
+            "horizontal1440": (2560, 1440), "horizontal2160": (3840, 2160),
             "preview": (960, 540), "preview_v": (540, 960)}.get(orientation, (1920, 1080))
 
 
 def is_vertical(orientation: str) -> bool:
-    return orientation in ("vertical", "preview_v")
+    return orientation in ("vertical", "vertical1440", "vertical2160", "preview_v")
 
 
 def crop_filter(orientation: str) -> str:
@@ -2609,7 +2610,7 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orien
     cmd += [*filter_complex_args(";".join(fparts)), "-map", "[vo]"]
     if audio:
         cmd += ["-map", "[ao]", "-c:a", "aac", "-b:a", "192k"]
-    br = int(o.bitrate_mbps * {"horizontal1440": 1.5, "horizontal2160": 2.5}.get(orientation, 1.0))   # 설정값 = 1080p 기준
+    br = int(o.bitrate_mbps * {"horizontal1440": 1.5, "horizontal2160": 2.5, "vertical1440": 1.5, "vertical2160": 2.5}.get(orientation, 1.0))   # 설정값 = 1080p 기준
     rate = ["-maxrate", f"{int(br * 1.5)}M", "-bufsize", f"{br * 2}M"]
     pix = "yuv420p"
     if TEST_LOSSLESS:                # 시험 전용: 무손실(조각 ↔ 통째 화면 비교)
@@ -2636,6 +2637,7 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orien
             "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709", "-color_range", "tv",
             "-map_metadata", "-1", "-write_tmcd", "0", "-movflags", "+faststart", _abs(out_file)]
     # 모든 LUT 는 같은 캐시 폴더에 있으므로 cwd 하나로 충분
+    _ctx.last_cmd = cmd
     return cmd, total, cwd
 
 
@@ -2988,6 +2990,25 @@ def _render_chunked(project: Project, segs: list, plan: list, out_file: str, on_
 def render_video(project: Project, segs: list[Segment], out_file: str, on_progress=None, cancel=None,
                  orientation: str | None = None, audio: bool | None = None, fast: bool = False,
                  extras: dict | None = None) -> None:
+    """렌더 + 결과 크기 확인(v0.16.70 진단: 사용자 PC 에서 세로 타임라인이 가로로 나온 일 — 다르면 명령을 기록)."""
+    _render_video(project, segs, out_file, on_progress, cancel, orientation, audio, fast, extras)
+    want = out_size(orientation or project.output.orientation)
+    try:
+        pr = probe(str(out_file))
+        got = (int(pr.get("width", 0)), int(pr.get("height", 0)))
+    except Exception as e:  # noqa: BLE001
+        log_error("렌더 크기 확인", str(e)[-200:])
+        return
+    if got != want:
+        log_error("렌더 크기 다름", f"{Path(out_file).name}: 요청 {orientation} {want} → 결과 {got} · 명령 "
+                  + " ".join(map(str, getattr(_ctx, "last_cmd", []) or []))[-4000:])
+    else:
+        log_info(f"렌더 크기 {Path(out_file).name}: {got[0]}×{got[1]} ({orientation})")
+
+
+def _render_video(project: Project, segs: list[Segment], out_file: str, on_progress=None, cancel=None,
+                  orientation: str | None = None, audio: bool | None = None, fast: bool = False,
+                  extras: dict | None = None) -> None:
     orient = orientation or project.output.orientation
     plan = chunk_plan(project, segs, orient, extras, fast)
     if plan:

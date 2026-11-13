@@ -675,19 +675,20 @@ class GradePanel(QWidget):
     # ------------------------------------------------------------ 출력
     def _load_output(self):
         """v0.16.32: 불러온 원본 중 가장 큰 것에 맞는 출력만(업스케일 없음, 세로는 늘). 기본값이 넘으면 낮춤."""
-        from .project import OUTPUTS, clamp_out, outputs_for, source_out_h
+        from .project import clamp_out, out_label, outputs_for, source_out_h, source_vw
         p = self.state.project
         o = p.output
         cur = p.source(self.cur_sid) if self.cur_sid else None
         hs = [source_out_h(cur)] if cur is not None else [source_out_h(x) for x in p.sources]   # v0.16.55 출력 = 소스별
         h = 0 if (not hs or 0 in hs) else max(hs)
-        ok = outputs_for(h)
+        vw = source_vw(cur) if cur is not None else max([source_vw(x) for x in p.sources] + [0])
+        ok = outputs_for(h, vw)
+        labels = [(k, out_label(k, cur)) for k in ok]                # v0.16.70 가로 촬영의 세로 = 인스타 1080×1920
         self.out.blockSignals(True)
-        if [self.out.itemData(i) for i in range(self.out.count())] != ok:
+        if [(self.out.itemData(i), self.out.itemText(i)) for i in range(self.out.count())] != labels:
             self.out.clear()
-            for k, label in OUTPUTS:
-                if k in ok:
-                    self.out.addItem(label, k)
+            for k, label in labels:
+                self.out.addItem(label, k)
         ha = [source_out_h(x) for x in p.sources]                     # 프로젝트 기본 출력 = 예전대로 가장 큰 원본까지만
         o.orientation = clamp_out(o.orientation, 0 if (not ha or 0 in ha) else max(ha))
         self.out.blockSignals(False)
@@ -702,13 +703,13 @@ class GradePanel(QWidget):
 
     def _on_output(self, *_):
         """출력 크기 = 지금 클립(Ctrl·Shift 로 고른 여러 클립)마다(v0.16.55, 예전 = 프로젝트 전체 1개). 소리는 전체 1개 그대로."""
-        from .project import clamp_out, source_out_h
+        from .project import clamp_src
         p = self.state.project
         o = p.output
         key, aud = self.out.currentData() or "horizontal", self.audio.isChecked()
         srcs = [p.source(x) for x in self._sids() if p.source(x)]
         if srcs:
-            want = {s.id: clamp_out(key, source_out_h(s)) for s in srcs}
+            want = {s.id: clamp_src(key, s) for s in srcs}
             if aud == o.audio and all(p.out_of(s) == want[s.id] for s in srcs):
                 return
             self.state.checkpoint()
@@ -1228,7 +1229,7 @@ class GradePanel(QWidget):
         if not s or not s.frames or not self.smp_win.isVisible():      # 창이 닫혀 있음 = 안 만듦(값 바꿀 때마다 6장 만들던 것)
             return
         marks = [m for m in p.samples if m.src == s.id]
-        asp = 9 / 16 if p.out_of(s) == "vertical" else 16 / 9      # v0.16.55 샘플 = 이 소스의 출력 화면대로 가운데 자름(세로 촬영 = 기본 가로)
+        asp = 9 / 16 if p.out_of(s) in ("vertical", "vertical1440", "vertical2160") else 16 / 9      # v0.16.55 샘플 = 이 소스의 출력 화면대로 가운데 자름(세로 촬영 = 기본 가로)
         for m in marks:
             full = p.grade_for_source(s.id, m.frame)
             grade = None if raw else full

@@ -30,9 +30,39 @@ GRADE_KEYS = ["lut", "r_gain", "b_gain", "hue", "sat", "water", "gy", "curve", "
 
 # 출력: orientation 값 하나로 방향·크기를 함께 나타냄
 OUTPUTS = [("horizontal", "1920×1080"), ("horizontal1440", "2560×1440"), ("horizontal2160", "3840×2160"),
-           ("vertical", "1080×1920")]
+           ("vertical", "1080×1920"), ("vertical1440", "1440×2560"), ("vertical2160", "2160×3840")]
 
 OUT_H = {"horizontal": 1080, "horizontal1440": 1440, "horizontal2160": 2160}   # 가로 출력 높이(세로 = 늘 허용)
+OUT_VW = {"vertical1440": 1440, "vertical2160": 2160}       # v0.16.70 세로 1440·4K = 세로로 찍은 원본(폭이 그 이상)에만
+ROT = {"horizontal": "vertical", "horizontal1440": "vertical1440", "horizontal2160": "vertical2160"}   # 세로 촬영 = 90도 돌린 크기
+ROT_BACK = {v: k for k, v in ROT.items()}
+
+
+def is_portrait(src) -> bool:
+    """세로로 찍은 원본(높이 > 폭, 회전 정보 반영)."""
+    return src is not None and bool(getattr(src, "width", 0)) and getattr(src, "height", 0) > getattr(src, "width", 0)
+
+
+def source_vw(src) -> int:
+    """세로로 찍은 원본에서 9:16 로 낼 수 있는 폭(가로 촬영 = 0)."""
+    if not is_portrait(src):
+        return 0
+    return int(min(src.width, src.height * 9 / 16))
+
+
+def rotate_for(key: str, src) -> str:
+    """v0.16.70 고른 크기 → 이 소스의 출력: 세로로 찍은 소스면 가로 크기를 90도 돌린 세로."""
+    return ROT.get(key, key) if is_portrait(src) else key
+
+
+def out_label(key: str, src=None, short: bool = False) -> str:
+    """출력 이름: 가로 = 1080·1440·4K / 세로 촬영 = 세로 1080·1440·4K / 가로 촬영을 세로로 자름 = 인스타."""
+    if key == "vertical" and not is_portrait(src):
+        return "인스타" if short else "인스타 1080×1920"
+    if short:
+        return {"horizontal": "1080", "horizontal1440": "1440", "horizontal2160": "4K", "vertical": "세로 1080",
+                "vertical1440": "세로 1440", "vertical2160": "세로 4K"}.get(key, "1080")
+    return dict(OUTPUTS).get(key, key)
 
 
 def src_out_h(width: int, height: int) -> int:
@@ -42,17 +72,25 @@ def src_out_h(width: int, height: int) -> int:
     return int(min(height, width * 9 / 16))
 
 
-def outputs_for(h: int) -> list[str]:
-    """v0.16.32: 원본(16:9 높이 h)에 맞는 출력 — 가로 1080·세로는 늘, 1440·4K 는 원본이 그 이상일 때만. h=0(모름) = 전부."""
-    return [k for k, _ in OUTPUTS if k == "vertical" or not h or OUT_H[k] <= max(h, 1080)]
+def outputs_for(h: int, vw: int = 0) -> list[str]:
+    """v0.16.32: 원본(16:9 높이 h)에 맞는 출력 — 가로 1080·세로 1080 는 늘, 1440·4K 는 원본이 그 이상일 때만. h=0(모름) = 가로 전부.
+    v0.16.70 세로 1440·4K = 세로로 찍은 원본의 9:16 폭(vw)이 그 이상일 때만."""
+    return [k for k, _ in OUTPUTS if k == "vertical" or (k in OUT_H and (not h or OUT_H[k] <= max(h, 1080)))
+            or (k in OUT_VW and vw >= OUT_VW[k])]
 
 
-def clamp_out(key: str, h: int) -> str:
-    """원본보다 큰 가로 출력이면 원본이 낼 수 있는 가장 큰 가로로."""
-    ok = outputs_for(h)
+def clamp_out(key: str, h: int, vw: int = 0) -> str:
+    """원본보다 큰 출력이면 원본이 낼 수 있는 가장 큰 같은 방향으로."""
+    ok = outputs_for(h, vw)
     if key in ok:
         return key
+    if key in OUT_VW:
+        return max((k for k in ok if k in OUT_VW), key=lambda k: OUT_VW[k], default="vertical")
     return max((k for k in ok if k in OUT_H), key=lambda k: OUT_H[k], default="horizontal")
+
+
+def clamp_src(key: str, src) -> str:
+    return clamp_out(key, source_out_h(src), source_vw(src))
 
 
 def source_out_h(src) -> int:
@@ -700,7 +738,8 @@ class Project:
     # ---- 조회 ----
     def out_of(self, src) -> str:
         """소스의 출력(v0.16.55 소스별): 소스 값 → 없으면 프로젝트 출력. 원본보다 큰 가로는 낮춤."""
-        return clamp_out((getattr(src, "out", "") if src is not None else "") or self.output.orientation, source_out_h(src))
+        key = (getattr(src, "out", "") if src is not None else "") or rotate_for(self.output.orientation, src)   # v0.16.70 세로 촬영 = 돌린 크기
+        return clamp_src(key, src)
 
     def source(self, sid: str) -> Source | None:
         return next((s for s in self.sources if s.id == sid), None)

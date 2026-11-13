@@ -55,18 +55,22 @@ e._select_source(sl.id); wait(0.5)
 assert gp.out.currentData() == "horizontal"
 gp.set_output("vertical"); wait(0.3)
 assert sl.out == "vertical" and sv.out == "" and p.output.orientation == "horizontal", (sl.out, sv.out)
+assert gp.out.itemText(gp.out.currentIndex()) == "인스타 1080×1920"    # v0.16.70 가로 촬영의 세로 = 인스타
 assert e.player.mon.out_aspect < 1
 e._select_source(sv.id); wait(0.5)
-assert gp.out.currentData() == "horizontal" and e.player.mon.out_aspect > 1, "다른 소스 = 그 소스의 출력"
+assert gp.out.currentData() == "vertical" and e.player.mon.out_aspect < 1, "다른 소스 = 그 소스의 출력(v0.16.70 세로 촬영 = 돌린 크기)"
+assert gp.out.itemText(gp.out.currentIndex()) == "1080×1920"            # 세로 촬영의 세로 = 인스타 이름 아님
 e._select_source(sl.id); wait(0.5)
 assert gp.out.currentData() == "vertical" and e.player.mon.out_aspect < 1
 for i in range(e.src_list.count()):
     e.src_list.item(i).setSelected(e.src_list.item(i).data(Qt.UserRole) in (sl.id, sv.id))
 e.sources_to_render(); wait(0.3)
 got = {it.segs[0].src: it.orientation for it in p.render_items}
-assert got == {sl.id: "vertical", sv.id: "horizontal"}, got
+assert got == {sl.id: "vertical", sv.id: "vertical"}, got
 st.undo(); wait(0.2)
-# 4) 샘플: 세로 촬영 = 기본 가로로 잘라서 · 창 = 제목줄 없음 · [저장]
+# 4) 샘플: 세로 촬영 = 기본 세로(v0.16.70, 예전 = 가로로 잘라서) — 가로로 바꾸면 가로로 잘림 · 창 = 제목줄 없음 · [저장]
+e._select_source(sv.id); wait(0.5)
+gp.set_output("horizontal"); wait(0.3)
 e._select_source(sv.id); wait(0.5)
 assert gp.make_samples()
 assert wait(60, lambda: gp.samples.count() == 6 and all(gp.samples.item(i).data(Qt.UserRole + 1) for i in range(6)))

@@ -714,7 +714,7 @@ class EditTab(QWidget):
 
     def _vert(self, s=None) -> bool:
         """지금(또는 준) 소스의 출력이 세로(v0.16.55 출력 = 소스별)."""
-        return self.state.project.out_of(s if s is not None else self._cur()) == "vertical"
+        return ff.is_vertical(self.state.project.out_of(s if s is not None else self._cur()))
 
     def _apply_aspect(self):
         self.player.set_aspect(9 / 16 if self._vert() else 16 / 9)
@@ -1306,14 +1306,16 @@ class EditTab(QWidget):
 
     def _new_item(self, segs):
         """➜ · 타임라인 → 렌더 리스트. v0.16.32: 출력이 원본(들 중 가장 큰 것)보다 크면 낮춤."""
-        from .project import clamp_out, source_out_h
+        from .project import clamp_out, source_out_h, source_vw
         p = self.state.project
         o = p.output
-        hs = [source_out_h(p.source(g.src)) for g in segs]
+        srcs = [p.source(g.src) for g in segs]
+        hs = [source_out_h(x) for x in srcs]
         h = 0 if (not hs or 0 in hs) else max(hs)
-        first = p.source(segs[0].src) if segs else None             # v0.16.55 출력 = 첫 컷 소스의 출력(여러 소스를 이은 타임라인도 영상 1개 = 출력 1개)
-        want = (first.out if first is not None else "") or o.orientation
-        return RenderItem(name=item_base(p, segs), segs=segs, orientation=clamp_out(want, h), audio=o.audio)
+        vw = min([source_vw(x) for x in srcs] or [0])              # 세로 1440·4K = 모든 컷이 그만한 세로 원본일 때만
+        first = srcs[0] if srcs else None             # v0.16.55 출력 = 첫 컷 소스의 출력(여러 소스를 이은 타임라인도 영상 1개 = 출력 1개)
+        want = p.out_of(first) if first is not None else o.orientation   # v0.16.70 세로 촬영 = 돌린 크기
+        return RenderItem(name=item_base(p, segs), segs=segs, orientation=clamp_out(want, h, vw), audio=o.audio)
 
     def send_to_render(self):
         self.state.checkpoint()
@@ -1324,7 +1326,6 @@ class EditTab(QWidget):
         """v0.16.25 ▼ · 소스 우클릭: 소스 목록에서 선택한 소스마다 렌더 항목 1개(지금 값: 인/아웃·배속·보정값·◆·출력 방향).
         같은 소스 · 같은 구간(인/아웃) 단독 항목이 있으면: 완료 = 건너뜀, 완료 안 됨 = 지금 값으로 갱신(렌더 중인 것은 건너뜀).
         구간이 다르면 새 항목(v0.16.26: 한 소스를 나눠 렌더). 렌더는 [렌더] 로."""
-        from .project import clamp_out, source_out_h
         p = self.state.project
         rp = self.render_panel
         want = set(self._selected_sids())
@@ -1336,7 +1337,7 @@ class EditTab(QWidget):
         add = upd = skip = 0
         for s in srcs:
             seg = p.snap_seg(self._segment_of(s))
-            orient = clamp_out(s.out or p.output.orientation, source_out_h(s))     # v0.16.32 원본보다 크지 않게
+            orient = p.out_of(s)                    # v0.16.32 원본보다 크지 않게 · v0.16.70 세로 촬영 = 돌린 크기
             same = [it for it in p.render_items if len(it.segs) == 1 and it.segs[0].src == s.id and not it.titles
                     and (it.segs[0].fin, it.segs[0].fout) == (seg.fin, seg.fout)]
             if any(it.done or rp.status.get(it.id, "").startswith("완료") for it in same):
@@ -2506,7 +2507,8 @@ class EditTab(QWidget):
     # ================================================================ 소스 줄 툴팁(프리셋 · 인식 · 출력)
     def _src_tip(self, s):
         from . import auto
-        from .ui_auto import OUT_SHORT, preset_name
+        from .project import out_label
+        from .ui_auto import preset_name
         rec = s.auto or {}
         lines = [s.path]
         if preset_name(rec):
@@ -2514,7 +2516,7 @@ class EditTab(QWidget):
         if rec.get("rec") and rec.get("rec") != rec.get("preset"):
             lines.append(f"인식: {auto.preset_label(rec['rec'])}")
         if s.out:
-            lines.append(f"출력 {OUT_SHORT.get(s.out, '')}")
+            lines.append(f"출력 {out_label(s.out, s, short=True)}")
         return "\n".join(lines)
 
     def _refresh_tips(self):
@@ -2755,7 +2757,7 @@ class EditTab(QWidget):
             for i, (s, f, g, out, orient) in enumerate(todo):
                 if cancel.is_set():
                     raise ff.Cancelled()
-                ff.export_split(s, f, g, out, size, fmt, "vertical" if orient == "vertical" else "horizontal", gpu, layout)
+                ff.export_split(s, f, g, out, size, fmt, "vertical" if ff.is_vertical(orient) else "horizontal", gpu, layout)
                 prog((i + 1) / len(todo))
             return len(todo)
         job = jobs.Job(work, with_progress=True)

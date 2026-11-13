@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (QButtonGroup, QComboBox, QDialog, QFileDialog, QF
 
 from . import auto, ff, jobs, stage as SG, ui_style
 from .ui_render import DragMove
-from .project import (OUTPUTS, Segment, clamp_out, outputs_for, source_out_h, auto_lut, display_name, has_clip_grade, get_setting, grade_at, list_presets, load_preset, set_setting,
+from .project import (ROT, ROT_BACK, Segment, clamp_src, is_portrait, out_label, outputs_for, source_out_h, source_vw, auto_lut, display_name, has_clip_grade, get_setting, grade_at, list_presets, load_preset, set_setting,
                       short_name)
 
 # ------------------------------------------------------------------ 색·모양 (DTME 공통)
@@ -30,7 +30,9 @@ RED_BTN, LIGHT_BTN, ORANGE_BTN = "red", "light", "orange"    # 버튼 색 이름
 ON_BTN = ""                   # 일반 버튼 = 앱 기본(입체감 · 켜짐 파랑)
 SEG_BTN = ON_BTN              # [a|b] 도 격자 버튼과 같은 모양(떨어진 둥근 버튼, 켜짐 = 파랑)
 MAIN_W, MAIN_H = 88, 32
-OUT_SHORT = {"horizontal": "1080", "horizontal1440": "1440", "horizontal2160": "4K", "vertical": "세로"}
+OUT_SHORT = {"horizontal": "1080", "horizontal1440": "1440", "horizontal2160": "4K", "vertical": "인스타",
+             "vertical1440": "세로 1440", "vertical2160": "세로 4K"}     # 소스를 모를 때만. 소스가 있으면 project.out_label
+OUT_BTNS = [("horizontal", "1080"), ("horizontal1440", "1440"), ("horizontal2160", "4K"), ("vertical", "인스타")]   # v0.16.70 크기 칸
 VALUE_ROWS = [("r_gain", "빨강", "{:.2f}"), ("b_gain", "파랑", "{:.2f}"), ("hue", "색조", "{:.1f}°"), ("sat", "채도", "{:.2f}"),
               ("water", "물빛", "{:+.0f}°"), ("gy", "녹황 빼기", "{:.0f}"), ("curve", "명암 S", ""),
               ("nr_chroma", "색 노이즈", "{:.0f}"), ("nr_luma", "밝기 노이즈", "{:.0f}"), ("wnr", "물 노이즈", "{:.0f}")]
@@ -485,7 +487,7 @@ class AutoDelegate(QStyledItemDelegate):
         f2 = QFont(f)
         f2.setPointSizeF(max(7.0, f.pointSizeF() - 1))
         p.setFont(f2)
-        p.drawText(chip, Qt.AlignCenter, OUT_SHORT.get(row.out, "1080"))
+        p.drawText(chip, Qt.AlignCenter, out_label(row.out, self.dlg.state.project.source(row.sid), short=True))
         p.restore()
 
     def editorEvent(self, event, model, option, index):
@@ -515,7 +517,7 @@ class AutoDialog(DragMove, QDialog):
             choice = auto.normalize_key(rec.get("preset", "")) if rec.get("by") == "user" else "auto"
             bad = state.status.get(s.id) in ("읽기 오류", "원본 없음")
             self.rows.append(AutoRow(s, not bad and not (keep == "keep" and has_c), choice or "auto",
-                                     clamp_out(s.out or p.output.orientation, source_out_h(s))))   # v0.16.32 원본보다 크지 않게
+                                     p.out_of(s)))   # v0.16.32 원본보다 크지 않게 · v0.16.70 세로 촬영 = 돌린 크기
         self.jobs = []
         self.waiting = None              # 'start' | 'sample' (분석 끝나길 기다리는 중)
         self.busy = False
@@ -539,7 +541,8 @@ class AutoDialog(DragMove, QDialog):
         self.grid.hovered.connect(self._hover)
         self.strength = Seg([("weak", "약"), ("mid", "중"), ("strong", "강")], self.strength_v)
         self.strength.changed.connect(self._strength)
-        self.out = Seg([(k, OUT_SHORT[k]) for k, _ in OUTPUTS], p.output.orientation)
+        self.out = Seg(OUT_BTNS, ROT_BACK.get(p.output.orientation, p.output.orientation))
+        self.out.btns["vertical"].setToolTip("1080×1920 · 릴스·쇼츠·틱톡")
         self.out.changed.connect(self._out)
         self.lut_combo = QComboBox()                # 창 전체에 LUT 하나(사용자 2026-11-06): 자동 = 파일 정보(D-Log M 만 LUT)
         self.lut_combo.setFixedHeight(30)
@@ -785,7 +788,7 @@ class AutoDialog(DragMove, QDialog):
         r = self._current()
         if r:
             self.grid.set_current(r.choice)
-            self.out.set_value(r.out)
+            self.out.set_value(self._btn_key(r))
         self._out_options()
         self._show_detail()
 
@@ -794,9 +797,24 @@ class AutoDialog(DragMove, QDialog):
         p = self.state.project
         ok = set()
         for r in self._targets():
-            ok |= set(outputs_for(source_out_h(p.source(r.sid))))
+            s = p.source(r.sid)
+            for k in outputs_for(source_out_h(s), source_vw(s)):
+                if is_portrait(s):                      # v0.16.70 세로 촬영: 세로 크기 = 같은 크기 버튼, 인스타 = 숨김(세로 1080 과 같음)
+                    if k in ROT_BACK:
+                        ok.add(ROT_BACK[k])
+                    elif k == "vertical":
+                        ok.add("horizontal")
+                else:
+                    ok.add(k)
         for k, b in self.out.btns.items():
             b.setVisible(k in ok)
+
+    def _btn_key(self, r) -> str:
+        """줄의 출력 → 크기 칸 버튼(세로 촬영의 세로 = 그 크기 버튼)."""
+        s = self.state.project.source(r.sid)
+        if is_portrait(s):
+            return ROT_BACK.get(r.out, "horizontal" if r.out == "vertical" else r.out)
+        return r.out if r.out in self.out.btns else "horizontal"
 
     def _show_detail(self):
         r = self._current()
@@ -832,7 +850,9 @@ class AutoDialog(DragMove, QDialog):
     def _out(self, k):
         p = self.state.project
         for r in self._targets():
-            r.out = clamp_out(k, source_out_h(p.source(r.sid)))     # 원본보다 크면 그 원본의 가장 큰 값
+            s = p.source(r.sid)
+            key = ROT.get(k, k) if is_portrait(s) else k            # v0.16.70 세로 촬영 = 고른 크기를 90도 돌린 세로
+            r.out = clamp_src(key, s)     # 원본보다 크면 그 원본의 가장 큰 값
         self.list.viewport().update()
 
     def _keep(self, k):
