@@ -2,7 +2,7 @@
 사용: python tests/test_ui_v1680.py <작업폴더>"""
 import os, subprocess, sys, time  # noqa: E401
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "app"))
-os.environ["QT_QPA_PLATFORM"] = "offscreen"; os.environ["DTME_NO_AUDIO"] = "1"
+os.environ["QT_QPA_PLATFORM"] = "offscreen"; os.environ["DTME_NO_AUDIO"] = "1"; os.environ["DTME_ASK_QUALITY"] = "1"
 from dtme import paths  # noqa: E402
 W = os.path.abspath(sys.argv[1]); os.makedirs(W, exist_ok=True)
 FF = paths.ffmpeg()

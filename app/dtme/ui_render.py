@@ -234,7 +234,10 @@ def remove_later(path) -> None:
 def ask_quality(parent, state, items=None) -> bool:
     """v0.16.80 [렌더] 누르는 순간 용량 고르기 [고화질|보통|작게] → 그다음 저장폴더. 취소 = False.
     items = 렌더할 항목(예상 크기 = 길이 × 평균 목표, 없으면 1분당). 고른 값 = 다음에도 기본(빨강)."""
+    import os
     from .project import get_setting, set_setting
+    if os.environ.get("QT_QPA_PLATFORM") == "offscreen" and not os.environ.get("DTME_ASK_QUALITY"):
+        return True                                   # 화면 없는 시험 = 묻지 않음(지금 값 그대로)
     o = state.project.output
     last = get_setting("last_quality", "") or o.quality or "normal"
     p = state.project

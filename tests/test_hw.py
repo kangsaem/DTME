@@ -17,6 +17,7 @@ def main(sample, work):
     info = ff.probe(sample)
     src = Source(path=sample, **{k: info[k] for k in ("fps_num", "fps_den", "frames", "width", "height", "has_audio")})
     p = Project()
+    p.output.quality = "high"                                          # v0.16.80 용량: 이 시험은 예전(고화질) 인자 기준
     p.sources.append(src)
     p.grade.update(lut="", nr_chroma=0, nr_luma=0, sharpen=0, wnr=0)
     seg = [Segment(src.id, 0, 60, 1.0)]
