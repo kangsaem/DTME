@@ -44,9 +44,10 @@ dlg.b_min.click(); wait(0.1)                       # 내리기
 assert wait(120, lambda: w.isVisible()), "끝나면 편집 창"
 assert not dlg.isVisible() and st.project.segments
 # 2) 자동 편집 [취소] = 편집 창 다시
+wait(1.0)                                          # 앞 작업 정리(Windows CI 에서 가끔 늦음)
 dlg2 = AutoEditDialog(st, {s.id for s in st.project.sources}, e); dlg2.show(); wait(0.2)
-e.run_autoedit(dlg2, dlg2.settings()); wait(0.2)
-assert not w.isVisible()
+e.run_autoedit(dlg2, dlg2.settings())
+assert wait(3, lambda: not w.isVisible()), "두 번째 자동 편집 = 편집 창 숨김"
 dlg2._cancel(); wait(0.3)
 assert w.isVisible() and not dlg2.isVisible()
 # 3) AUTO 창: [보정+편집] 누른 뒤 분석 기다림 = 편집 창 숨김 / 작업 중 [취소] = 편집 창 + AUTO 창 남음
