@@ -440,6 +440,11 @@ class EditTab(QWidget):
         self.timeline.transActivated.connect(self.edit_transition)
         self.timeline.transDurStart.connect(lambda _cid: self.state.checkpoint())
         self.timeline.ovFollow.connect(self.toggle_follow)                 # v0.16.67
+        self.timeline.ovDragEnd.connect(self._ov_drag_end)                # v0.16.71 앞 검은 구간
+        self._tl_gap = False
+        self._gap_timer = QTimer(self)
+        self._gap_timer.setInterval(33)
+        self._gap_timer.timeout.connect(self._gap_tick)
         self.timeline.cutEdgeStart.connect(self._cut_edge_start)
         self.timeline.cutEdgeDragged.connect(self._cut_edge_drag)
         self.timeline.cutEdgeEnd.connect(self._cut_edge_end)
@@ -641,6 +646,9 @@ class EditTab(QWidget):
             return
         src = self._cur()
         if src is None or not src.frames:
+            return
+        if name == "space" and self.mode == "timeline" and self._tl_gap:     # v0.16.71 검은 구간 재생·멈춤
+            self._gap_play(not self._gap_timer.isActive())
             return
         if name == "space":
             if self.mode == "timeline" and self._tl_seg is not None and not p.is_busy():
@@ -1043,6 +1051,8 @@ class EditTab(QWidget):
 
     def _on_preview(self, gen, frame, tok, data, quick: bool = False):
         p = self.player
+        if self.mode == "timeline" and self._tl_gap:          # v0.16.71 검은 구간 = 보정 화면 안 덮음
+            return
         if gen != self.pgen or frame != p.frame or tok != p._token or p.is_busy():
             ff.dbg(f"표시 버림 #{gen}: 지금 #{self.pgen} f {frame}/{p.frame} 표 {int(tok == p._token)} 재생 {int(p.is_busy())} 빠른={int(quick)}")
             return
@@ -1380,6 +1390,7 @@ class EditTab(QWidget):
         self.state.checkpoint()
         it = self._new_item([p.snap_seg(g.copy()) for g in p.segments])      # 보정값·◆·꺼 둔 항목 = 보내는 순간 값
         it.titles, it.music, it.mix = copy.deepcopy(p.titles), copy.deepcopy(p.music), dict(p.mix)
+        it.lead = p.lead
         p.render_items.append(it)
         self.state.touch("render")
 
@@ -1514,7 +1525,7 @@ class EditTab(QWidget):
         pick = ([part(segs[i - 1], True)] if i > 0 else []) + [part(segs[i], False)]
         orient = "preview_v" if self._vert(p.source(segs[0].src) if segs else None) else "preview"
         # v0.16.33: 그 구간의 타임라인 글자·이미지도 같이(예전 = 전환 미리보기에 글자·PNG 가 안 보임)
-        starts, st = [], 0.0
+        starts, st = [], float(p.lead)                 # v0.16.71 앞 검은 구간
         for k, g in enumerate(segs):
             pt = plan_transitions(segs, lens)[k]
             if k > 0 and pt:
@@ -1623,6 +1634,46 @@ class EditTab(QWidget):
         if g is not None and (g.fin, g.fout) != (fin0, fout0):
             g.loud, g.why = None, ""                 # 구간이 바뀜 → 원본 소리 다시 판단
             self.state.touch("segments")
+
+    def _ov_drag_end(self, _kind, _oid):
+        """v0.16.71 글자·음악을 0초 앞으로 끌어 놓음 = 앞 검은 구간(모두 뒤로) / 앞이 비면 줄임."""
+        p = self.state.project
+        if p.normalize_lead():
+            self.state.touch("segments")
+            self.state.touch("titles")
+            self._say(f"앞 검은 구간 {p.lead:.1f}초" if p.lead > 0 else "앞 검은 구간 없앰")
+
+    def tl_end(self) -> float:
+        p = self.state.project
+        vend = max((st + ln for _g, st, ln in self._tl_cuts), default=p.lead)
+        return vend + p.tail_of(p.titles, vend)
+
+    def _gap_play(self, on: bool):
+        """검은 구간 재생(영상 없음): 시간만 흐르며 글자·음악."""
+        import time as _t
+        if on:
+            self._gap_t0, self._gap_w0 = self.tl_time, _t.monotonic()
+            self._gap_timer.start()
+            self._music_play()
+        else:
+            self._gap_timer.stop()
+            self._music_stop()
+
+    def _gap_tick(self):
+        import time as _t
+        t = self._gap_t0 + (_t.monotonic() - self._gap_w0)
+        first = self._tl_cuts[0][1] if self._tl_cuts else None
+        if first is not None and self._gap_t0 < first <= t:          # 앞 검은 구간 끝 = 첫 컷 재생
+            self._gap_timer.stop()
+            self.tl_time = first
+            self.show_timeline(first + 1e-3, play=True)
+            return
+        if t >= self.tl_end():
+            self._gap_play(False)
+            t = self.tl_end()
+        self.tl_time = t
+        self.timeline.set_time(t)
+        self._update_tl_titles(t)
 
     def toggle_follow(self, kind, oid):
         d = self._ov(kind, oid)
@@ -1944,6 +1995,8 @@ class EditTab(QWidget):
         self.player.mon.set_mode_button(mode)
         if mode == "source":
             self._tl_seg = None
+            self._tl_gap = False
+            self._gap_timer.stop()
             self._music_stop()
             self.player.mon.set_titles([], "")
             self.timeline.update()
@@ -1968,10 +2021,25 @@ class EditTab(QWidget):
     def show_timeline(self, t, play=False):
         """그 시점의 컷 소스를 열어 해당 프레임으로(보정 화면은 평소처럼), 글자·이미지는 모니터에 그림."""
         loc = self._tl_locate(t)
+        vend = max((st + ln for _g, st, ln in self._tl_cuts), default=0.0)
+        if self._tl_cuts and (t < self._tl_cuts[0][1] - 1e-6 or t > vend + 1e-6):
+            loc = None                                       # v0.16.71 앞뒤 검은 구간
+        self._tl_gap = loc is None and bool(self._tl_cuts)
         self.timeline.set_time(t)
         self._update_tl_titles(t)
         if loc is None:
+            if self._tl_gap:
+                self._tl_seg = None
+                self.player.pause()
+                w_, h_ = self.player.mon.out_wh
+                blk = QImage(max(2, w_ // 4), max(2, h_ // 4), QImage.Format_RGB32)
+                blk.fill(QColor("black"))
+                self.player.show_image(blk)
+                if play:
+                    self._gap_play(True)
             return
+        if self._gap_timer.isActive():
+            self._gap_timer.stop()
         seg, _st, f = loc
         self._tl_seg = seg
         if seg.src != self.cur_sid or self.player.frames == 0:
@@ -2016,7 +2084,11 @@ class EditTab(QWidget):
                 QTimer.singleShot(0, lambda: self.show_timeline(self.tl_time + 1e-3, play=True))
             else:
                 self.player.pause()
-                self._music_stop()
+                if self.tl_end() > t + 0.05:                # v0.16.71 뒤 검은 구간 = 이어서 시간만
+                    self.tl_time = max(t, self._tl_cuts[-1][1] + self._tl_cuts[-1][2]) + 1e-3
+                    QTimer.singleShot(0, lambda: self.show_timeline(self.tl_time, play=True))
+                else:
+                    self._music_stop()
 
     def _update_tl_titles(self, t):
         p = self.state.project
@@ -2028,7 +2100,7 @@ class EditTab(QWidget):
                 continue
             from .project import title_anim
             a, ph, akey, af = title_anim(d, t)           # v0.16.57 페이드 또는 밀려 들어오기/나가기
-            if not self.player.is_playing():
+            if not (self.player.is_playing() or self._gap_timer.isActive()):
                 a, ph, af = 1.0, None, 0.0               # 멈춤 = 페이드·밀기 무시(0초 시작 글자·사각형도 제자리에 보이게), 재생할 때만
             anim[d["id"]] = (ph, akey, af)
             img, wh = None, None
@@ -2834,7 +2906,7 @@ class EditTab(QWidget):
         segs = [g for g in p.segments if p.source(g.src) and p.source(g.src).frames]
         lens = [p.seg_out_seconds(g, p.source(g.src).fps) for g in segs]
         plan = plan_transitions(segs, lens)
-        start = 0.0
+        start = float(p.lead)
         cuts = []
         for i, (g, ln, t) in enumerate(zip(segs, lens, plan)):
             s = p.source(g.src)
@@ -2854,7 +2926,10 @@ class EditTab(QWidget):
         if self.sel_ov[1] and not any(d["id"] == self.sel_ov[1] for d in p.titles + p.music):
             self.sel_ov = ("", "")
         self.timeline.set_overlays(p.titles, p.music, self.sel_ov)
-        tot = p.segs_seconds(segs)
+        vend = p.lead + p.segs_seconds(segs)
+        tail = p.tail_of(p.titles, vend) if items else 0.0
+        self.timeline.set_pads(p.lead if items else 0.0, vend, vend + tail)
+        tot = vend + tail
         self.tl_len.setText(f"{tot:.1f}초" if items else "")
         self._scan_loud()
 

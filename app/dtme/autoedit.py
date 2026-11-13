@@ -236,6 +236,7 @@ def build(project, picks: list[dict], minutes: int, seed: int = 0, titles: bool 
         tmp = type(project)()
         tmp.sources = project.sources
         tmp.segments = segs
+        tmp.lead = project.lead
         start = {c: t for c, t, _l in cut_spans(tmp)}
         from .ff import out_size
         o = project.out_of(picks[0]["src"]) if picks else "horizontal"

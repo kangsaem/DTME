@@ -2593,9 +2593,17 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orien
             fparts.append(f"{''.join(labels)}concat=n={n}:v=1:a=0[vo]")
     else:
         total = transition_graph(fparts, plan, lens, audio)
+    lead = max(0.0, float((extras or {}).get("lead", 0) or 0))          # v0.16.71 앞뒤 검은 구간
+    tail = max(0.0, max([float(t["t1"]) for t in (extras or {}).get("titles", [])] + [0.0]) - (lead + total))
+    if lead > 0.005 or tail > 0.005:
+        fparts[:] = [f.replace("[vo]", "[vpad]").replace("[ao]", "[apad]") for f in fparts]
+        fparts.append(f"[vpad]tpad=start_duration={lead:.4f}:stop_duration={tail:.4f}:start_mode=add:stop_mode=add:color=black[vo]")
+        if audio:
+            fparts.append(f"[apad]adelay=delays={int(round(lead * 1000))}:all=1,apad=pad_dur={tail:.4f}[ao]")
+        total += lead + tail
     if audio:                                     # v0.16.66 원본을 키울 컷(말소리·수면 위)의 결과 영상 구간
         from .music import loud_spans
-        spans = loud_spans(segs, lens, plan if any(plan) else [None] * n)
+        spans = [(a + lead, b + lead) for a, b in loud_spans(segs, lens, plan if any(plan) else [None] * n)]
         if spans:
             extras = {**(extras or {}), "loud": spans}
     if extras and (extras.get("titles") or extras.get("music") or extras.get("loud")):
@@ -2811,7 +2819,7 @@ def chunk_plan(project: Project, segs: list, orientation: str, extras: dict | No
     """[(조각 Segment, 버릴 앞 출력 프레임 수, 출력 프레임 수)] 또는 None(통째로)."""
     import dataclasses
     import math
-    if fast or len(segs) != 1 or (extras and (extras.get("titles") or extras.get("music"))):
+    if fast or len(segs) != 1 or (extras and (extras.get("titles") or extras.get("music") or extras.get("lead"))):
         return None
     from .music import seg_up
     if seg_up(segs[0]):               # v0.16.66 원본 키움 경사가 조각 경계마다 생기지 않게 = 통째로

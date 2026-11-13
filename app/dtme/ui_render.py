@@ -470,7 +470,9 @@ class RenderPanel(QWidget):
             st = self.status.get(it.id, "" if ok else "실패: 소스 없음")
             li = QListWidgetItem(file_name(p, it))
             li.setData(Qt.UserRole, it.id)
-            li.setData(Qt.UserRole + 1, f"{ORIENT_TXT.get(it.orientation, '')} {p.segs_seconds(it.segs):.1f}초"
+            vlen = p.segs_seconds(it.segs) + float(getattr(it, "lead", 0) or 0)       # v0.16.71 앞뒤 검은 구간 포함
+            vlen += p.tail_of(it.titles, vlen) if it.titles else 0.0
+            li.setData(Qt.UserRole + 1, f"{ORIENT_TXT.get(it.orientation, '')} {vlen:.1f}초"
                        + ("" if it.audio else " 무음"))
             stale = any(p.seg_stale(g) for g in it.segs)
             li.setData(Qt.UserRole + 2, stale)
@@ -663,7 +665,7 @@ class RenderPanel(QWidget):
         self.status[it.id] = "진행"
         self.progress[it.id] = 0.0
         self.refresh()
-        extras = {"titles": it.titles, "music": it.music, "mix": it.mix}
+        extras = {"titles": it.titles, "music": it.music, "mix": it.mix, "lead": getattr(it, "lead", 0.0)}
 
         def work(prog, cancel, it=it, path=path):
             precache_item(p, it, cancel)               # v0.16.26: HDD 원본을 순서대로 한 번 읽어 메모리에(조각들이 거기서 읽음)

@@ -196,6 +196,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
           python tests/test_ui_v1670.py v1670_test
           if ($LASTEXITCODE -ne 0) { exit 1 }
+          python tests/test_ui_v1671.py v1671_test
+          if ($LASTEXITCODE -ne 0) { exit 1 }
           # 끝난 뒤 Windows 종료 단계에서 접근 위반(시험 내용과 무관, test_ui_autocheck 와 같음 — 실측 2026-11-13) → 결과 줄로 판정
           $o2 = python tests/test_autoedit.py autoedit_test 2>&1 | Out-String
           Write-Output $o2

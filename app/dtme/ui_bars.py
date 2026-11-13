@@ -407,6 +407,7 @@ class SeqTimeline(QWidget):
     transActivated = Signal(str)      # 나비 더블클릭 = 컷편집 창
     cutMenu = Signal(str, object)     # v0.16.66 컷 우클릭 = (컷 id, 화면 좌표) → 원본 소리 메뉴
     ovFollow = Signal(str, str)       # v0.16.67 Shift+클릭 = 따라감 켜고 끄기
+    ovDragEnd = Signal(str, str)      # v0.16.71 끌기 끝(0초 앞으로 나갔으면 앞 검은 구간)
     cutEdgeStart = Signal(str, str)   # v0.16.67 나비 아래 날개 끌기 시작 = (컷 id, 'in'|'out')
     cutEdgeDragged = Signal(str, str, float)   # 누른 곳부터 끈 거리(초, 타임라인)
     cutEdgeEnd = Signal()
@@ -428,6 +429,7 @@ class SeqTimeline(QWidget):
         self.trans_sel = ""           # 선택한 화면 전환(뒤 컷 id)
         self.titles, self.music = [], []
         self.loud = {}                # v0.16.66 컷 id → (원본 키움?, aud, 이유)
+        self.pads = (0.0, 0.0, 0.0)   # v0.16.71 (앞 검은 구간 끝, 영상 끝, 뒤 검은 구간 끝)
         self.music_info = {}          # v0.16.64 음악 파일 → 분석(music.analyze): 파형 · 박자 · 마디 첫 박
         self.ov_sel = ("", "")
         self.t = 0.0
@@ -447,6 +449,10 @@ class SeqTimeline(QWidget):
     def set_overlays(self, titles, music, sel):
         self.titles, self.music, self.ov_sel = titles, music, sel
         self._resize()
+        self.update()
+
+    def set_pads(self, lead: float, vend: float, tend: float):
+        self.pads = (lead, vend, tend)
         self.update()
 
     def set_loud(self, loud: dict):
@@ -645,6 +651,13 @@ class SeqTimeline(QWidget):
         top, vid, mus = self._lanes()
         p.fillRect(top, QColor("#202020"))
         p.fillRect(mus, QColor("#202020"))
+        lead, vend, tend = self.pads                    # v0.16.71 앞뒤 검은 구간(영상 줄)
+        for a_, b_ in ((0.0, lead), (vend, tend)):
+            if b_ - a_ > 0.01:
+                br = QRectF(self._x(a_), vid.top(), (b_ - a_) * self.pps, vid.height())
+                p.fillRect(br, QColor("#000000"))
+                p.setPen(QPen(QColor("#555"), 1, Qt.DashLine))
+                p.drawRect(br.adjusted(0.5, 0.5, -0.5, -0.5))
         rects = self._rects()
         trs_now = dict(self._trans_rects())
         f = QFont(self.font())
@@ -975,23 +988,23 @@ class SeqTimeline(QWidget):
             tg = self._snap_targets(d)
             if kind == "title":
                 t0, t1 = float(o["t0"]), float(o["t1"])
-                if mode == "move":
-                    n0 = max(0.0, t0 + dt)
+                if mode == "move":                      # v0.16.71 0초 앞으로도(놓으면 앞 검은 구간)
+                    n0 = t0 + dt
                     s0, s1 = self._snap(n0, tg), self._snap(n0 + (t1 - t0), tg) - (t1 - t0)
                     n0 = s0 if s0 != n0 else s1
-                    d["t0"], d["t1"] = max(0.0, n0), max(0.0, n0) + (t1 - t0)
+                    d["t0"], d["t1"] = n0, n0 + (t1 - t0)
                 elif mode == "l":
-                    d["t0"] = max(0.0, min(t1 - 0.2, self._snap(t0 + dt, tg)))
+                    d["t0"] = min(t1 - 0.2, self._snap(t0 + dt, tg))
                 else:
                     d["t1"] = max(t0 + 0.2, self._snap(t1 + dt, tg))
             else:
                 t0, off, ln, dur = float(o["t0"]), float(o.get("off", 0)), float(o["len"]), float(o.get("dur", o["len"]))
                 if mode == "move":
-                    n0 = max(0.0, t0 + dt)
+                    n0 = t0 + dt
                     s0, s1 = self._snap(n0, tg), self._snap(n0 + ln, tg) - ln
                     sb = self._bar_snap(d, n0)
                     cands = [x for x in (s0, s1, sb) if x is not None and abs(x - n0) > 1e-6]    # (n0+len)-len 소수 오차 = 안 붙은 것
-                    d["t0"] = max(0.0, min(cands, key=lambda x: abs(x - n0)) if cands else n0)
+                    d["t0"] = min(cands, key=lambda x: abs(x - n0)) if cands else n0
                 elif mode == "l":       # 앞을 자름: 파일 안 시작도 같이
                     n0 = self._snap(t0 + dt, tg)
                     n0 = max(t0 - off, min(t0 + ln - 0.2, n0))
@@ -1031,7 +1044,9 @@ class SeqTimeline(QWidget):
                 self.cutEdgeEnd.emit()
             return
         if self._ov is not None:
+            kind, d = self._ov[0], self._ov[1]
             self._ov = None
+            self.ovDragEnd.emit(kind, d["id"])
             return
         if self._press is not None and self._drag_x is not None:
             src = self._press[0]

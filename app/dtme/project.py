@@ -706,6 +706,7 @@ class RenderItem:
     music: list = field(default_factory=list)
     mix: dict = field(default_factory=dict)
     done: str = ""                               # 렌더 끝난 파일 경로(프로젝트에 저장 → 다시 열어도 완료). "" = 대기
+    lead: float = 0.0                            # v0.16.71 영상 앞 검은 구간(초, 타임라인 전체를 보낼 때 사본)
 
 
 @dataclass
@@ -734,6 +735,33 @@ class Project:
     grade: dict = field(default_factory=load_default_grade)
     output: OutputSettings = field(default_factory=lambda: load_default_output())
     file: str = ""
+    lead: float = 0.0                                # v0.16.71 첫 컷 앞 검은 구간(초) — 글자·음악을 0초 앞으로 끌면 생김
+
+    def tail_of(self, titles=None, video_end: float | None = None) -> float:
+        """영상 끝 뒤 검은 구간(초) = 글자·사각형·이미지가 영상 끝을 넘은 만큼(음악은 안 늘림)."""
+        titles = self.titles if titles is None else titles
+        end = (self.lead + self.out_seconds()) if video_end is None else video_end
+        return max(0.0, max([float(t["t1"]) for t in titles] + [0.0]) - end)
+
+    def normalize_lead(self) -> bool:
+        """v0.16.71: 0초 앞으로 나간 글자·음악 = 그만큼 앞 검은 구간을 늘리고 모두 뒤로 밂.
+        앞 검은 구간이 필요 없어지면(모든 글자·음악이 그보다 뒤) 줄이고 모두 앞으로. 바뀌었으면 True."""
+        items = list(self.titles) + list(self.music)
+        mn = min([float(d["t0"]) for d in items] + [float("inf")])
+        if mn < -1e-6:
+            sh = -mn
+        elif self.lead > 1e-6:
+            sh = -min(self.lead, mn)
+        else:
+            return False
+        if abs(sh) < 1e-6:
+            return False
+        self.lead = round(max(0.0, self.lead + sh), 4)
+        for d in self.titles:
+            d["t0"], d["t1"] = round(float(d["t0"]) + sh, 4), round(float(d["t1"]) + sh, 4)
+        for m in self.music:
+            m["t0"] = round(float(m["t0"]) + sh, 4)
+        return True
 
     # ---- 조회 ----
     def out_of(self, src) -> str:
@@ -816,7 +844,7 @@ class Project:
             "stills": [asdict(s) for s in self.stills],
             "titles": self.titles, "music": self.music, "mix": self.mix, "audios": self.audios,
             "grade": self.grade,
-            "output": asdict(self.output),
+            "output": asdict(self.output), "lead": self.lead,
         }
 
     @classmethod
@@ -839,6 +867,7 @@ class Project:
         p.audios = list(d.get("audios", []))
         p.music = list(d.get("music", []))
         p.mix = {**default_mix(), **d.get("mix", {})}
+        p.lead = float(d.get("lead", 0.0) or 0.0)
         g = dict(FACTORY_GRADE)
         g.update(upgrade_grade(dict(d.get("grade", {}))))
         p.grade = g
@@ -917,7 +946,7 @@ def cut_spans(project, segs=None) -> list:
     segs = [g for g in (p.segments if segs is None else segs) if p.source(g.src) and p.source(g.src).frames]
     lens = [p.seg_out_seconds(g, p.source(g.src).fps) for g in segs]
     plan = plan_transitions(segs, lens)
-    out, t = [], 0.0
+    out, t = [], float(getattr(p, "lead", 0.0) or 0.0)
     for i, (g, ln, tr) in enumerate(zip(segs, lens, plan)):
         if i > 0 and tr:
             t -= tr[1]
