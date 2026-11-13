@@ -19,7 +19,7 @@ TXT_IN = 1.0                           # 글자: 1초 뒤 디졸브 인
 G_IN, G_WIPE = 2.0, 2.0                # 그래프: 2초 뒤 왼쪽부터 2초간 긁어 나타남(페더)
 SHOW_MIN, SHOW_LESS = 10.0, 5.0        # v0.16.88 로그 표시 길이 = 컷 길이 − 5초(최소 10초): 15초 컷 = 10초, 20초 컷 = 15초
 MIN_CUT = 15.0                         # LOG 켠 자동 편집 컷 최소 길이(전환 겹침 포함) = 그래프가 다음 전환 전에 다 사라짐
-FEATHER = 0.18                         # 긁는 경계 부드러움(화면 폭 비율)
+FEATHER = 0.0                          # v0.16.90 긁는 경계 = 페더 없음(사용자), 1px 만 매끈하게
 ANIM_FPS = 15                          # 애니메이션 중 렌더 그림 바꾸는 횟수(초당)
 
 
@@ -58,11 +58,11 @@ def anim_busy(tc: float, L: float, tail: float = 0.0) -> bool:
 
 def wipe_mask(W: int, rv: float) -> np.ndarray:
     """왼쪽부터 드러나는 정도(열마다 0~1). rv=0 전부 숨김, 1 전부."""
-    F = FEATHER * W
+    F = max(1.0, FEATHER * W)
     e = rv * (W + F)
     x = np.arange(W, dtype=np.float32) + 0.5
     m = np.clip((e - x) / F, 0, 1)
-    return m * m * (3 - 2 * m)
+    return m if F <= 1.0 else m * m * (3 - 2 * m)
 
 
 BLUE = (14, 140, 230)          # DTMD 그래프 아래 색
