@@ -5,7 +5,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QAction, QKeySequence
-from PySide6.QtWidgets import QApplication, QFileDialog, QMainWindow, QToolBar
+from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QMainWindow, QToolBar
 
 from . import __version__, paths, ui_style
 from .project import AUDIO_EXT, IMAGE_EXT, Project
@@ -34,12 +34,18 @@ class MainWindow(QMainWindow):
         tb.addSeparator()
         for text, key, fn in (("저장하기", QKeySequence.Save, self.save_project),
                               ("불러오기", QKeySequence.Open, self.open_project),
-                              ("실행취소", QKeySequence.Undo, self.undo)):
+                              ("실행취소", QKeySequence.Undo, self.undo),
+                              ("다시 실행", QKeySequence("Ctrl+Shift+Z"), self.redo)):          # v0.16.76 [다시 실행]
             a = QAction(text, self)
-            a.setShortcut(key)
-            a.setToolTip(QKeySequence(key).toString() + (" · 다시 실행 Ctrl+Shift+Z" if fn == self.undo else ""))
+            if fn != self.redo:                          # Ctrl+Shift+Z 는 편집 화면이 이미 받음(겹치면 두 번 실행)
+                a.setShortcut(key)
+            a.setToolTip(QKeySequence(key).toString() + (" · Ctrl+Y" if fn == self.redo else ""))
             a.triggered.connect(fn)
             tb.addAction(a)
+        a = QAction("되살리기", self)                   # v0.16.76 자동 저장(최근 10개) 고르기
+        a.setToolTip("자동 저장 — 5분마다 최근 10개")
+        a.triggered.connect(self.pick_autosave)
+        tb.addAction(a)
         from PySide6.QtWidgets import QToolButton
         for act in tb.actions():                    # 맨 위 줄도 다른 버튼과 같은 입체감(늘 보이게, 그림자 없음)
             btn = tb.widgetForAction(act)
@@ -92,16 +98,20 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------ 실행취소
     def undo(self):
-        if self.state.undo():
-            self.statusBar().showMessage("실행취소", 3000)
-        else:
-            self.statusBar().showMessage("더 이상 취소할 작업이 없습니다", 3000)
+        lab = self.state.undo_label()
+        if lab in self.state.BIG_UNDO:                  # v0.16.76 큰 작업 = 되돌리기 전에 물음(다시 실행으로 돌아올 수 있지만 새 작업을 하면 사라짐)
+            if ui_style.confirm(self, f"{lab} 전으로 돌아갈까요?", [("cancel", "취소", 72, None), ("ok", "되돌리기", 92, "red")]) != "ok":
+                return
+        r = self.state.undo()
+        msg = ("실행취소" + (f": {r}" if isinstance(r, str) else "")) if r else "더 이상 취소할 작업이 없습니다"
+        self.statusBar().showMessage(msg, 5000)
+        self.edit._say(msg)
 
     def redo(self):
-        if self.state.redo():
-            self.statusBar().showMessage("다시 실행", 3000)
-        else:
-            self.statusBar().showMessage("다시 실행할 작업이 없습니다", 3000)
+        r = self.state.redo()
+        msg = ("다시 실행" + (f": {r}" if isinstance(r, str) else "")) if r else "다시 실행할 작업이 없습니다"
+        self.statusBar().showMessage(msg, 5000)
+        self.edit._say(msg)
 
     # ------------------------------------------------------------ 원본 없음 → 폴더 다시 지정(v0.16.41)
     def relink(self) -> int:
@@ -126,12 +136,12 @@ class MainWindow(QMainWindow):
         except OSError:
             pass
 
-    def restore_autosave(self) -> bool:
+    def restore_autosave(self, file: Path | None = None) -> bool:
         """지난번에 저장 못 하고 꺼진 작업(자동 저장 파일)을 불러옴. 원래 프로젝트 파일 이름은 유지, 저장 안 된 상태로."""
         import json
         from .project import Project
         try:
-            d = json.loads(self.autosave_file().read_text(encoding="utf-8"))
+            d = json.loads((file or self.autosave_file()).read_text(encoding="utf-8"))
             p = Project.from_dict(d)
             p.file = d.get("_file", "") or ""
         except Exception as e:  # noqa: BLE001
@@ -194,14 +204,67 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"저장됨: {f}", 5000)
         return True
 
+    AUTOSAVE_KEEP = 10                               # v0.16.76 최근 10개
+    AUTOSAVE_EVERY = 300                             # 5분마다 하나 남김(자동 저장 자체는 1분마다)
+
+    def autosave_dir(self) -> Path:
+        d = paths.cache_dir() / "autosave"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
     def _do_autosave(self):
         if self.state.dirty and self.state.project.sources:
             try:
                 from .project import write_json_atomic
-                write_json_atomic(self.autosave_file(), {**self.state.project.to_dict(), "_file": self.state.project.file or ""},
-                                  indent=1)
+                data = {**self.state.project.to_dict(), "_file": self.state.project.file or ""}
+                write_json_atomic(self.autosave_file(), data, indent=1)
+                import time as _t
+                if _t.time() - getattr(self, "_hist_t", 0.0) >= self.AUTOSAVE_EVERY:     # v0.16.76 여러 개 남김
+                    self._hist_t = _t.time()
+                    write_json_atomic(self.autosave_dir() / f"{_t.strftime('%Y%m%d_%H%M%S')}.dtme.json", data, indent=1)
+                    old = sorted(self.autosave_dir().glob("*.dtme.json"))[:-self.AUTOSAVE_KEEP]
+                    for f in old:
+                        f.unlink(missing_ok=True)
             except Exception:  # noqa: BLE001
                 pass
+
+    def autosave_list(self) -> list[tuple[Path, str]]:
+        """[(파일, '11-13 16:20 · 컷 21 · 음악 4')] 최신순."""
+        import json
+        out = []
+        for f in sorted(self.autosave_dir().glob("*.dtme.json"), reverse=True):
+            try:
+                d = json.loads(f.read_text(encoding="utf-8"))
+                st = f.name.split(".")[0]
+                when = f"{st[4:6]}-{st[6:8]} {st[9:11]}:{st[11:13]}"
+                out.append((f, f"{when} · 컷 {len(d.get('segments', []))} · 글자 {len(d.get('titles', []))} · 음악 {len(d.get('music', []))}"
+                               + (f" · {Path(d.get('_file')).stem}" if d.get("_file") else "")))
+            except Exception:  # noqa: BLE001
+                pass
+        return out
+
+    def pick_autosave(self):
+        """[되살리기] 자동 저장 목록(최근 10개)에서 골라 불러옴 — 저장 안 된 상태로(원래 파일 이름 유지)."""
+        from PySide6.QtWidgets import QListWidget
+        from .ui_render import Popup
+        items = self.autosave_list()
+        if not items:
+            ui_style.notice(self, "자동 저장된 작업이 없습니다")
+            return
+        dlg = Popup(self)
+        lw = QListWidget()
+        lw.setMinimumWidth(420)
+        for f, text in items:
+            lw.addItem(text)
+        lw.setCurrentRow(0)
+        dlg.body.addWidget(lw)
+        dlg.add_buttons("되살리기")
+        lw.itemDoubleClicked.connect(lambda _it: dlg.accept())
+        if dlg.exec() != QDialog.Accepted or lw.currentRow() < 0:
+            return
+        if not self._confirm_discard():
+            return
+        self.restore_autosave(items[lw.currentRow()][0])
 
     def showEvent(self, e):
         super().showEvent(e)

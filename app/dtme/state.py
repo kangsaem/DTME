@@ -48,33 +48,49 @@ class AppState(QObject):
             self.workChanged.emit(sid)
 
     # ------------------------------------------------------------ 실행취소
-    def checkpoint(self, tag: str = ""):
-        """변경 직전에 호출 → 실행취소 지점. tag 가 같고 1초 안에 다시 오면(슬라이더를 연속으로 움직임) 1번으로 합침."""
+    BIG_UNDO = ("자동 편집", "전체 삭제")       # v0.16.76 되돌리기 전에 묻는 큰 작업
+
+    def checkpoint(self, tag: str = "", label: str = ""):
+        """변경 직전에 호출 → 실행취소 지점. tag 가 같고 1초 안에 다시 오면(슬라이더를 연속으로 움직임) 1번으로 합침.
+        label(v0.16.76) = 실행취소할 때 상태줄에 보일 작업 이름."""
         import time
         now = time.monotonic()
         if tag and tag == self._ck_tag and now - self._ck_t < 1.0:
             self._ck_t = now
             return
         self._ck_tag, self._ck_t = tag, now
-        self._undo.append(copy.deepcopy(self.project.to_dict()))
+        d = copy.deepcopy(self.project.to_dict())
+        d["_label"] = label
+        self._undo.append(d)
         del self._undo[:-80]
         self._redo = []                       # 새 작업 = 다시 실행 목록 비움
 
 
-    def undo(self) -> bool:
+    def undo_label(self) -> str | None:
+        """다음 실행취소가 되돌릴 작업 이름("" = 이름 없음, None = 없음)."""
+        return self._undo[-1].get("_label", "") if self._undo else None
+
+    def undo(self) -> bool | str:
+        """되돌림 → 그 작업 이름(없으면 True). 되돌릴 것 없음 = False."""
         if not self._undo:
             return False
-        self._redo.append(copy.deepcopy(self.project.to_dict()))
-        self._swap(self._undo.pop())
-        return True
+        d = self._undo.pop()
+        cur = copy.deepcopy(self.project.to_dict())
+        cur["_label"] = d.get("_label", "")
+        self._redo.append(cur)
+        self._swap(d)
+        return d.get("_label", "") or True
 
-    def redo(self) -> bool:
+    def redo(self) -> bool | str:
         """다시 실행(v0.16.41): 실행취소한 것을 되돌림. 새 작업을 하면 비워짐."""
         if not self._redo:
             return False
-        self._undo.append(copy.deepcopy(self.project.to_dict()))
-        self._swap(self._redo.pop())
-        return True
+        d = self._redo.pop()
+        cur = copy.deepcopy(self.project.to_dict())
+        cur["_label"] = d.get("_label", "")
+        self._undo.append(cur)
+        self._swap(d)
+        return d.get("_label", "") or True
 
     def _swap(self, d: dict):
         file = self.project.file
@@ -344,7 +360,7 @@ class AppState(QObject):
         return len(new)
 
     def remove_audio(self, aid: str):
-        self.checkpoint()
+        self.checkpoint(label="곡 삭제")
         self.project.audios = [a for a in self.project.audios if a["id"] != aid]
         self.touch("audios")
 

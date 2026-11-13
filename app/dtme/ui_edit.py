@@ -1323,7 +1323,7 @@ class EditTab(QWidget):
 
     def send_to_timeline(self):
         seg = self._cur_segment()
-        self.state.checkpoint()
+        self.state.checkpoint(label="컷 추가")
         self.state.project.segments.append(seg)
         self.state.touch("segments")
         QTimer.singleShot(0, lambda: self.tl_scroll.horizontalScrollBar().setValue(
@@ -1404,7 +1404,7 @@ class EditTab(QWidget):
         p = self.state.project
         if not p.segments:
             return
-        self.state.checkpoint()
+        self.state.checkpoint(label="렌더리스트로")
         it = self._new_item([p.snap_seg(g.copy()) for g in p.segments], tl=True)      # 보정값·◆·꺼 둔 항목 = 보내는 순간 값
         it.titles, it.music, it.mix = copy.deepcopy(p.titles), copy.deepcopy(p.music), dict(p.mix)
         it.lead = p.lead
@@ -1415,7 +1415,7 @@ class EditTab(QWidget):
     def clear_timeline(self):
         if not self.state.project.segments:
             return
-        self.state.checkpoint()
+        self.state.checkpoint(label="전체 삭제")
         self.state.project.segments.clear()
         self.sel_cut = ""
         self.state.touch("segments")
@@ -1425,7 +1425,7 @@ class EditTab(QWidget):
         seg = next((g for g in p.segments if g.id == self.sel_cut), None)
         if not seg:
             return
-        self.state.checkpoint()
+        self.state.checkpoint(label="컷 삭제")
         from .project import follow_anchors, follow_apply
         anc = follow_anchors(p)                      # v0.16.67 따라감 켠 글자·음악 = 지운 만큼 당김
         p.segments.remove(seg)
@@ -1613,7 +1613,7 @@ class EditTab(QWidget):
         if g is None:
             return
         from .project import follow_anchors
-        self.state.checkpoint()
+        self.state.checkpoint(label="컷 길이")
         self.trans_prev.stop()
         self._edge_drag = (cid, kind, g.fin, g.fout, follow_anchors(p))
 
@@ -1745,7 +1745,7 @@ class EditTab(QWidget):
         d = self._ov(kind, oid)
         if d is None:
             return
-        self.state.checkpoint()
+        self.state.checkpoint(label="따라감")
         d = self._ov(kind, oid)
         d["follow"] = not d.get("follow")
         self.state.touch("titles")
@@ -1760,7 +1760,7 @@ class EditTab(QWidget):
 
     def _on_cut_moved(self, a, b):
         segs = self.state.project.segments
-        self.state.checkpoint()
+        self.state.checkpoint(label="컷 순서")
         segs.insert(b, segs.pop(a))
         self.state.touch("segments")
 
@@ -2241,7 +2241,7 @@ class EditTab(QWidget):
 
     def remove_ov(self, kind, oid):
         p = self.state.project
-        self.state.checkpoint()
+        self.state.checkpoint(label="삭제")
         if kind == "title":
             p.titles = [d for d in p.titles if d["id"] != oid]
         else:
@@ -2322,7 +2322,7 @@ class EditTab(QWidget):
         """[글자] = 늘 타임라인 맨 앞(0초)에 만들고 재생 위치도 0초로(v0.16.33, 사용자 — 예전 = 마지막 타임라인 위치라 클립 뒤에 생김)."""
         p = self.state.project
         t0 = 0.0
-        self.state.checkpoint()
+        self.state.checkpoint(label="글자 추가")
         d = new_text(t0, t0 + TITLE_DEFAULT_SEC, "")
         p.titles.append(d)
         self.sel_ov = ("title", d["id"])
@@ -2339,7 +2339,7 @@ class EditTab(QWidget):
         """[사각형] = 타임라인 맨 앞(0초), 글자 아래(맨 아래 = 목록 맨 앞)에 만들고 설정 창(v0.16.34)."""
         from .project import new_rect
         p = self.state.project
-        self.state.checkpoint()
+        self.state.checkpoint(label="사각형 추가")
         d = new_rect(0.0, TITLE_DEFAULT_SEC)
         p.titles.insert(0, d)
         self.sel_ov = ("title", d["id"])
@@ -2484,7 +2484,7 @@ class EditTab(QWidget):
         if p.music:                                     # v0.16.64 이어 붙일 때 = 곡 사이 겹침(크로스페이드)만큼 앞으로
             last = max(p.music, key=lambda m: float(m["t0"]) + float(m["len"]))
             t0 = max(0.0, t0 - min(float(p.mix.get("xfade", 2.0)), float(last["len"]) / 2, float(a["dur"]) / 2))
-        self.state.checkpoint()
+        self.state.checkpoint(label="음악 넣음")
         from . import music
         p.music.append({**new_music(a["path"], t0, a["dur"]), "gain": music.norm_gain(self.music_info.get(a["path"]) or music.cached(a["path"]))})
         self.state.touch("titles")
@@ -2496,7 +2496,7 @@ class EditTab(QWidget):
         a = next((x for x in p.audios if x["id"] == aid), None)
         if a is None:
             return
-        self.state.checkpoint()
+        self.state.checkpoint(label="음악 넣음")
         d = {**new_music(a["path"], max(0.0, t), a["dur"]),
              "gain": music.norm_gain(self.music_info.get(a["path"]) or music.cached(a["path"]))}
         if snap:
@@ -2587,7 +2587,7 @@ class EditTab(QWidget):
             if not dlg.isVisible():
                 return
             p = self.state.project
-            self.state.checkpoint()
+            self.state.checkpoint(label="자동 편집")
             for sid, rr in res.items():                     # AUTO 넣기(AUTO 창 [보정+편집]과 같은 값)
                 s = p.source(sid)
                 if s is None:
@@ -2873,7 +2873,7 @@ class EditTab(QWidget):
             set_setting("auto", dlg.settings())
         except Exception:  # noqa: BLE001
             pass
-        self.state.checkpoint()
+        self.state.checkpoint(label="AUTO")
         if getattr(dlg, "_folder", ""):
             p.output.folder = dlg._folder
         p.output.prefix = dlg.name.text().strip()
