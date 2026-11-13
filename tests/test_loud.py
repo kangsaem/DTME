@@ -48,6 +48,15 @@ for name, (col, aud, _up, _why) in cases.items():
                     "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-ar", "48000", "-ac", "2", str(out)], check=True)
     pi = ff.probe(str(out))
     srcs[name] = Source(path=str(out), **{k: pi[k] for k in ("fps_num", "fps_den", "frames", "width", "height", "has_audio")})
+# v0.16.77 물속 화면 + 말소리처럼 잡힌 소리 = 안 키움(물속에선 말 못 함)
+uw = W / "underwater_talk.mp4"
+subprocess.run([FF, "-v", "error", "-y", "-f", "lavfi", "-i", f"color=c={SEA}:s=640x360:r=30:d=6", "-i", str(D / "speech_librispeech_198-209.ogg"),
+                "-t", "6", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-ar", "48000", "-ac", "2", str(uw)], check=True)
+pi = ff.probe(str(uw))
+su = Source(path=str(uw), **{k: pi[k] for k in ("fps_num", "fps_den", "frames", "width", "height", "has_audio")})
+ru = music.cut_scene(su, Segment(su.id, 0, su.frames, 1.0))
+print("물속 말소리 →", ru["up"], ru["why"], ru.get("speech"))
+assert ru.get("speech") and not ru["up"] and ru["why"] == "물속", ru
 p = Project()
 segs = []
 for name, (_c, _a, up, why) in cases.items():

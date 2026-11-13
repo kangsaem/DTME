@@ -211,7 +211,7 @@ def build(project, picks: list[dict], minutes: int, seed: int = 0, titles: bool 
     n = sum(len(c) for c in cuts)
     cuts = fit_total(cuts, total, max(0, n - 1))
     rnd = random.Random(seed)
-    kinds = [k for k, _ in TRANSITIONS if k != "none"]
+    kinds = [k for k, _ in TRANSITIONS if k not in ("none", "rotzoomin", "rotzoomout")]   # v0.16.77 회전 줌 = 뺌(색 튐 원인 찾는 중)
     segs, scene_of, firsts = [], {}, []
     for p, lens in zip(picks, cuts):
         s = p["src"]

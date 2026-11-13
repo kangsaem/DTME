@@ -638,15 +638,18 @@ def cut_scene(src, seg) -> dict:
         out.update(tr)
         if tr["breath"]:                                   # 호흡기 소리 = 빨강이 많아도 안 키움(사용자)
             return {**out, "up": False, "why": "호흡기"}
-        if tr["speech"]:
-            return {**out, "up": True, "why": "말소리"}
     vid = src.proxy if getattr(src, "proxy", "") and Path(src.proxy).exists() else src.path
     looks = [above_water(a) for a in (_look(vid, t0 + dur * k) for k in (0.3, 0.7)) if a is not None]
+    above = bool(looks) and sum(x[0] for x in looks) * 2 > len(looks)
+    if looks:
+        out.update(rg=looks[0][1], water=looks[0][2])
+    if out.get("speech"):
+        if looks and not above:                          # v0.16.77 물속 화면 = 말소리로 잡혀도 안 키움(물속에선 말 못 함 — 숨·기포 오판, 사용자 로그)
+            return {**out, "up": False, "why": "물속"}
+        return {**out, "up": True, "why": "말소리"}
     if not looks:
         return {**out, "up": False, "why": "물속"}
-    up = sum(x[0] for x in looks) * 2 > len(looks)
-    out.update(rg=looks[0][1], water=looks[0][2])
-    return {**out, "up": bool(up), "why": "수면 위" if up else "물속"}
+    return {**out, "up": above, "why": "수면 위" if above else "물속"}
 
 
 LAST_MUSIC = 0.5                  # v0.16.75 마지막 컷 = 음악 50%(사용자: 끝에 센 음악이 튀지 않게)

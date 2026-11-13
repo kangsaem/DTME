@@ -845,7 +845,7 @@ class Project:
             "stills": [asdict(s) for s in self.stills],
             "titles": self.titles, "music": self.music, "mix": self.mix, "audios": self.audios,
             "grade": self.grade,
-            "output": asdict(self.output), "lead": self.lead, "tl_out": self.tl_out,
+            "output": asdict(self.output), "lead": self.lead, "tl_out": self.tl_out, "loud_rev": 2,
         }
 
     @classmethod
@@ -857,6 +857,10 @@ class Project:
             upgrade_grade(s.grade)
             set_name_hint(s.path, s.ctime)
         p.segments = [Segment(**s) for s in d.get("segments", [])]
+        if int(d.get("loud_rev", 1)) < 2:                 # v0.16.77 예전 '말소리' 판단 = 다시(물속 화면이면 안 키움)
+            for g in p.segments:
+                if g.why == "말소리":
+                    g.loud, g.why = None, ""
         p.render_items = []
         for r in d.get("render_items", []):
             r = dict(r)
