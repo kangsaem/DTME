@@ -2585,7 +2585,7 @@ class EditTab(QWidget):
         self._autoedit_dlg = dlg
         dlg.exec()
 
-    def run_autoedit(self, dlg, st: dict):
+    def run_autoedit(self, dlg, st: dict, then=None):
         """[자동 편집](v0.16.68): (보정 안 된 소스 AUTO) → 화면 읽기·하이라이트 → 컷·전환·글자 → (음악 + 컷 경계를 마디에)
         → 타임라인에 넣기(실행취소 1번). 작업은 뒤에서, 넣기는 화면 스레드에서."""
         from . import auto, autoedit, music
@@ -2594,7 +2594,7 @@ class EditTab(QWidget):
         srcs = autoedit.shoot_order([s for s in p.sources if s.id in set(st["sids"]) and s.frames])
         if not srcs:
             return
-        if p.segments and ui_style.confirm(dlg, "타임라인을 바꿀까요?", [("cancel", "취소", 72, None), ("ok", "바꾸기", 80, "red")]) != "ok":
+        if p.segments and not st.get("replace_ok") and ui_style.confirm(dlg, "타임라인을 바꿀까요?", [("cancel", "취소", 72, None), ("ok", "바꾸기", 80, "red")]) != "ok":
             return
         auds = [a for a in p.audios if Path(a["path"]).exists()] if st.get("music") else []
         need_auto = [s for s in srcs if st.get("grade") and not (s.auto or {}).get("preset") and is_plain(s)]
@@ -2713,6 +2713,8 @@ class EditTab(QWidget):
                 self.set_mode("timeline")
                 self.show_timeline(0.0)
             dlg.accept()
+            if then is not None:
+                then()
 
         def err(msg):
             dlg.set_running(False)
@@ -2900,6 +2902,9 @@ class EditTab(QWidget):
 
     def _auto_start(self, dlg):
         """[시작] 저장폴더 → (분석 덜 끝났으면 기다림) → 클립에 적용 → 바로 렌더 또는 개별 보정."""
+        if dlg.mode == "full":
+            self._auto_full(dlg)
+            return
         if dlg.mode == "render" and not dlg.busy and not getattr(dlg, "_folder", ""):   # [보정+편집]은 파일을 안 만들어 폴더 안 물음
             from .ui_render import ask_quality
             if not ask_quality(dlg, self.state):          # v0.16.80 용량 먼저(1분당 예상) → 저장폴더
@@ -2934,6 +2939,94 @@ class EditTab(QWidget):
         from . import solo
         solo.leave(dlg)
         dlg.accept()
+
+    # ---------------------------------------------------------------- [전부 자동](v0.16.81)
+    def _auto_full(self, dlg):
+        """AUTO 창 [전부 자동]: 설정 팝업(자동 편집과 같음) → 용량 → 저장폴더 → (분석 기다림) → AUTO 값 넣기
+        → 자동 편집(컷·전환·글자·음악) → 타임라인 1편 렌더 → 프로젝트 저장(체크 시)."""
+        from . import solo
+        from .ui_autoedit import AutoEditDialog
+        if not getattr(dlg, "_full", None):
+            if dlg.busy:
+                return
+            sids = [r.sid for r in dlg.rows if r.checked]
+            if not sids:
+                return
+            ed = AutoEditDialog(self.state, set(sids), dlg, full=True)
+            ed.move(dlg.geometry().center().x() - ed.width() // 2, dlg.geometry().center().y() - ed.height() // 2)
+            got = {}
+
+            def go(st, ed=ed):
+                if self._full_ask(ed):
+                    got["st"] = st
+                    ed.accept()
+            ed.startRequested.connect(go)
+            ed.exec()
+            if "st" not in got:
+                return
+            dlg._full = got["st"]
+            dlg._folder = self.state.project.output.folder
+        if dlg.wait_then("start"):                    # 분석 덜 끝남 = 끝나면 다시(→ startRequested → 여기)
+            dlg.set_busy(True)
+            solo.enter(dlg, self.window())
+            return
+        st, dlg._full = dlg._full, None
+        rows = [r for r in dlg.chosen_rows() if r.sid in set(st["sids"])]
+        st["sids"] = [r.sid for r in rows]
+        if not rows:
+            dlg.set_busy(False)
+            return
+        self._auto_begin(dlg)
+        self._auto_apply(dlg, rows)
+        solo.leave(dlg)
+        dlg.accept()
+        st["grade"], st["replace_ok"] = False, True
+        ed = AutoEditDialog(self.state, set(st["sids"]), self, full=True)
+        ed.length.setValue(int(st["minutes"]))
+        geo = self.window().geometry()
+        ed.move(geo.center().x() - ed.width() // 2, geo.center().y() - ed.height() // 2)
+        ed.show()
+        self._full_dlg = ed
+        self.run_autoedit(ed, st, then=lambda: self._full_render(st))
+
+    def _full_ask(self, parent) -> bool:
+        """[전부 자동] 시작 전: (타임라인 바꾸기 확인) → 렌더 용량 → 저장폴더. 하나라도 취소 = False."""
+        from .ui_render import ask_quality
+        p = self.state.project
+        if p.segments and ui_style.confirm(parent, "타임라인을 바꿀까요?",
+                                           [("cancel", "취소", 72, None), ("ok", "바꾸기", 80, "red")]) != "ok":
+            return False
+        if not ask_quality(parent, self.state):
+            return False
+        d = self._ask_folder()
+        if not d:
+            return False
+        if p.output.folder != d:
+            p.output.folder = d
+            self.state.dirty = True
+        return True
+
+    def _full_render(self, st):
+        """자동 편집 끝 → 타임라인을 렌더 리스트에 1개로 → 그것만 렌더 · 프로젝트 저장(영상과 같은 이름 .dtme.json)."""
+        from .ui_render import file_name, out_dir, unique
+        p = self.state.project
+        if not p.segments:
+            return
+        self.timeline_to_render()
+        it = p.render_items[-1]
+        if st.get("save"):
+            try:
+                f = unique(out_dir(p) / f"{file_name(p, it)}.dtme.json")
+                p.save(str(f))
+                self.state.dirty = False
+                self._say(f"프로젝트 저장 ✓  {f}", C_OK)
+                w = self.window()
+                if hasattr(w, "_title"):
+                    w._title()
+            except Exception as ex:  # noqa: BLE001
+                ff.log_error("전부 자동 프로젝트 저장", str(ex))
+        self._set_auto_bar(0.0, "#d9604f")
+        self.render_panel.enqueue([it])
 
     def _auto_begin(self, dlg):
         """AUTO 적용 시작: 설정 저장 · 실행취소 지점 1번 · 저장폴더·이름."""
@@ -2972,6 +3065,7 @@ class EditTab(QWidget):
 
     def _auto_cancel_work(self, dlg):
         """AUTO 창 작업 중 [취소](v0.16.72): [보정+렌더]로 시작한 렌더·샘플 멈춤, 창은 남김(다시 누르면 처음부터)."""
+        dlg._full = None                              # v0.16.81 [전부 자동] 분석 기다리던 중 취소 = 다시 누르면 팝업부터
         if getattr(dlg, "_started", False):
             self._auto_feeding = False
             dlg._started = False

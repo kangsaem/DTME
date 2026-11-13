@@ -40,7 +40,7 @@ class _RowDelegate(QStyledItemDelegate):
 class AutoEditDialog(DragMove, QDialog):
     startRequested = Signal(dict)
 
-    def __init__(self, state, sids, parent=None):
+    def __init__(self, state, sids, parent=None, full: bool = False):
         super().__init__(parent, Qt.Dialog | Qt.FramelessWindowHint)
         self.state = state
         self.setModal(True)
@@ -89,6 +89,9 @@ class AutoEditDialog(DragMove, QDialog):
         self.music_on.setEnabled(bool(p.audios))
         self.grade_on = QCheckBox("보정 안 된 소스는 AUTO 먼저")   # AUTO 했거나 손으로 보정한 소스는 건너뜀
         self.grade_on.setChecked(True)
+        self.full = full                                   # v0.16.81 [전부 자동] 팝업: 보정은 AUTO 창 값 → 보정 칸 대신 프로젝트 저장
+        self.save_on = QCheckBox("프로젝트 저장 (영상 옆 .dtme.json — 나중에 편집 창에서 고침)")
+        self.save_on.setChecked(True)
 
         def line():
             f = QFrame()
@@ -100,7 +103,7 @@ class AutoEditDialog(DragMove, QDialog):
         right.setContentsMargins(9, 4, 9, 9)
         right.addLayout(labeled("전체 길이", len_row))
         right.addWidget(line())
-        for cb in (self.title_on, self.music_on, self.grade_on):
+        for cb in (self.title_on, self.music_on, self.save_on if full else self.grade_on):
             right.addLayout(labeled("", cb))
         right.addStretch(1)
         rw = QWidget()
@@ -119,7 +122,7 @@ class AutoEditDialog(DragMove, QDialog):
         self.b_cancel = main_button("취소")
         self.b_cancel.clicked.connect(self._cancel)
         self._job = None
-        self.b_start = main_button("자동 편집", RED_BTN, 100)
+        self.b_start = main_button("전부 자동" if full else "자동 편집", RED_BTN, 100)
         self.b_start.clicked.connect(lambda: self.startRequested.emit(self.settings()))
         bot = QHBoxLayout()
         bot.addWidget(self.state_lab, 1)
@@ -127,7 +130,7 @@ class AutoEditDialog(DragMove, QDialog):
         bot.addWidget(self.b_start)
         top = QHBoxLayout()
         top.setContentsMargins(0, 0, 0, 0)
-        title = QLabel("자동 편집")
+        title = QLabel("전부 자동 — 보정 → 편집 → 음악 → 렌더" if full else "자동 편집")
         title.setStyleSheet("font-weight:bold; font-size:14px;")
         top.addWidget(title)
         top.addWidget(Grip(), 1)
@@ -161,12 +164,13 @@ class AutoEditDialog(DragMove, QDialog):
 
     def settings(self) -> dict:
         return {"sids": self.chosen(), "minutes": int(self.length.value()), "title": self.title_on.isChecked(),
-                "music": self.music_on.isChecked(), "grade": self.grade_on.isChecked()}
+                "music": self.music_on.isChecked(), "grade": self.grade_on.isChecked() and not self.full,
+                "save": self.full and self.save_on.isChecked()}
 
     def set_running(self, on: bool):
         self.b_start.setEnabled(not on)
         self.list.setEnabled(not on)
-        for w in (self.length, self.title_on, self.music_on, self.grade_on):
+        for w in (self.length, self.title_on, self.music_on, self.grade_on, self.save_on):
             w.setEnabled(not on and (w is not self.music_on or bool(self.state.project.audios)))
         if on:
             self.set_progress(0.0, "")

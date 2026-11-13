@@ -613,8 +613,8 @@ class RenderPanel(QWidget):
         self.refresh()
         self._next()
 
-    def render(self):
-        """렌더 시작(폴더는 비어 있을 때만 물음 — AUTO·코드 경로). 버튼은 press()."""
+    def render(self, only=None):
+        """렌더 시작(폴더는 비어 있을 때만 물음 — AUTO·코드 경로). 버튼은 press(). only = 이 항목들만(v0.16.81 AUTO·전부 자동)."""
         if self.running:
             return
         if not ensure_folder(self, self.state):
@@ -622,7 +622,8 @@ class RenderPanel(QWidget):
         self.settings._load()
         p = self.state.project
         self.queue = [it for it in p.render_items
-                      if not it.done and not self.status.get(it.id, "").startswith("완료") and all(p.source(g.src) for g in it.segs)]
+                      if not it.done and not self.status.get(it.id, "").startswith("완료") and all(p.source(g.src) for g in it.segs)
+                      and (only is None or it.id in only)]
         if not self.queue:
             self.message.emit("새 항목 없음")
             return
@@ -638,7 +639,7 @@ class RenderPanel(QWidget):
     def enqueue(self, items):
         """렌더 중이면 뒤에 붙여 이어서, 아니면 바로 시작(AUTO: 분석 끝난 영상부터)."""
         if not self.running:
-            self.render()
+            self.render(only={it.id for it in items})
             return
         p = self.state.project
         known = {x.id for x in self.queue} | set(self.active)

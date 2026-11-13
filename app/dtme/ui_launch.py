@@ -250,7 +250,7 @@ class Launcher(QWidget):
         dlg.move(c.x() - dlg.width() // 2, c.y() - dlg.height() // 2)
         self.hide()
         r = dlg.exec()
-        if r == QDialog.Accepted and dlg.mode == "each":       # [보정+편집] → 메인 편집 화면
+        if r == QDialog.Accepted and dlg.mode in ("each", "full"):   # [보정+편집]·[전부 자동](v0.16.81) → 메인 편집 화면
             mw.state.resume_proxies()
             mw.show()
             mw.raise_()

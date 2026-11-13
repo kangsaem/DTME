@@ -629,6 +629,9 @@ class AutoDialog(DragMove, QDialog):
         self.b_start = main_button("보정+렌더", RED_BTN)
         self.b_start.setToolTip("클립에 값을 넣고 바로 렌더")
         self.b_start.clicked.connect(lambda: self._go("render"))
+        self.b_full = main_button("전부 자동", RED_BTN, 100)       # v0.16.81 보정 → 편집 → 음악 → 렌더(설정 = 자동 편집 팝업)
+        self.b_full.setToolTip("보정 → 편집(컷·전환·글자) → 음악 → 렌더, 한 번에")
+        self.b_full.clicked.connect(lambda: self._go("full"))
         # 기존 보정·키프레임 = 오른쪽 맨 위, 아래 줄 = 오른쪽 버튼 4개
         self._top_opts.addSpacing(81)             # 왼쪽 끝 = 강도 [약] 버튼 x (라벨 76 + 간격 5)
         self._top_opts.addWidget(self.keep)
@@ -655,6 +658,7 @@ class AutoDialog(DragMove, QDialog):
         self.ver_lab = QLabel(f"DTME {__version__}")     # v0.16.37 왼쪽 아래 버전
         self.ver_lab.setStyleSheet("color:#6f6f6f; font-size:11px;")
         r1.addWidget(self.ver_lab)
+        r1.addWidget(self.b_full)
         r1.addWidget(self.state_lab)
         r1.addStretch(1)
         r1.addWidget(rbw)
@@ -1162,7 +1166,7 @@ class AutoDialog(DragMove, QDialog):
         self.busy = on
         for w in (self.grid, self.strength, self.out, self.name, self.keep, self.keys, self.b_sample, self.lens_s, self.stab_s,
                   self.lut_combo,
-                  self.b_each, self.b_start, self.list):
+                  self.b_each, self.b_start, self.b_full, self.list):
             w.setEnabled(not on)
         if color:
             self.set_bar_color(color)
