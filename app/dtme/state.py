@@ -170,6 +170,10 @@ class AppState(QObject):
                 self.img_status[m.id] = "원본 없음"
             elif not m.width:
                 self._queue_image(m)
+        for a in getattr(p, "audios", []):               # v0.16.78 길이 읽기 전에 저장된 곡 = 다시 읽음
+            if not float(a.get("dur") or 0) and Path(a.get("path", "")).exists():
+                self.img_status[a["id"]] = "읽는 중"
+                self._queue_audio(a)
         for s in p.sources:
             if not Path(s.path).exists():
                 self.status[s.id] = "원본 없음"
@@ -248,6 +252,7 @@ class AppState(QObject):
                 return
             for k in ("fps_num", "fps_den", "frames", "width", "height", "has_audio"):
                 setattr(s, k, info[k])
+            s.rotation = int(info.get("rotation", 0) or 0)
             first = not s.lut_mode
             if first:                              # v0.16.55 처음 불러올 때만: 이름에 날짜 없으면 만든 시각 · 아이폰 자르기(AAE) → 인/아웃
                 from .project import name_has_date, set_name_hint
@@ -293,10 +298,10 @@ class AppState(QObject):
         if not new:
             return 0
         self.checkpoint()
-        for m in new:
+        for m in new:                           # v0.16.78 목록 먼저(읽는 중 = 흐리게), 크기는 뒤에서(예전 = 하나씩 읽고 나서 → 화면 멈춤)
             self.project.images.append(m)
-            if not self._read_image_now(m):     # 보통 즉시 끝남(헤더만 읽음). 실패할 때만 ffprobe 로
-                self._queue_image(m)
+            self.img_status[m.id] = "읽는 중"
+            self._queue_image(m)
         self.touch("images")
         return len(new)
 
@@ -317,8 +322,22 @@ class AppState(QObject):
             ff.log_error(f"이미지 {m.path}", str(e))
             return False
 
+    @staticmethod
+    def _image_info(path: str) -> dict:
+        """크기·방향: Qt 로 헤더만(빠름), 안 되면 ffprobe. 작업 스레드에서."""
+        try:
+            from PySide6.QtGui import QImageReader
+            sz = QImageReader(path).size()
+            if sz.isValid() and sz.width() > 0:
+                o = ff.exif_orientation(path)
+                w, h = sz.width(), sz.height()
+                return {"width": h if o >= 5 else w, "height": w if o >= 5 else h, "orient": o}
+        except Exception:  # noqa: BLE001
+            pass
+        return ff.probe_image(path)
+
     def _queue_image(self, m: ImageSource):
-        job = jobs.Job(lambda: ff.probe_image(m.path))
+        job = jobs.Job(lambda: self._image_info(m.path))
 
         def done(info, iid=m.id):
             im = self.project.image(iid)
@@ -346,18 +365,40 @@ class AppState(QObject):
             if pth in known:
                 continue
             known.add(pth)
-            try:
-                dur = ff.probe_audio(str(pth))
-            except Exception as e:  # noqa: BLE001
-                ff.log_error(f"음악 {pth}", str(e))
-                self.message.emit(f"{pth.name}: 읽을 수 없음")
-                continue
-            new.append({"id": _id(), "path": str(pth), "dur": dur})
+            new.append({"id": _id(), "path": str(pth), "dur": 0.0})      # v0.16.78 목록 먼저, 길이는 뒤에서
         if new:
             self.checkpoint()
             self.project.audios += new
+            for a in new:
+                self.img_status[a["id"]] = "읽는 중"
+                self._queue_audio(a)
             self.touch("audios")
         return len(new)
+
+    def _queue_audio(self, a: dict):
+        job = jobs.Job(lambda path=a["path"]: ff.probe_audio(path))
+
+        def done(dur, aid=a["id"], path=a["path"]):
+            self.img_status[aid] = ""
+            for x in self.project.audios:
+                if x["id"] == aid or x["path"] == path:
+                    x["dur"] = float(dur)
+            for m in self.project.music:                 # 읽기 전에 넣은 곡 = 임시 길이 → 실제 길이로
+                if m.get("path") == path and m.get("_pending"):
+                    m["dur"] = float(dur)
+                    m["len"] = round(max(0.2, min(float(m["len"]), float(dur) - float(m.get("off", 0)))), 3)
+                    m.pop("_pending", None)
+            self.changed.emit("audios")
+            self.changed.emit("titles")
+
+        def err(msg, aid=a["id"], path=a["path"]):
+            ff.log_error(f"음악 {path}", msg)
+            self.img_status[aid] = "읽기 오류"
+            self.message.emit(f"{Path(path).name}: 읽을 수 없음")
+            self.changed.emit("audios")
+        job.signals.done.connect(done)
+        job.signals.error.connect(err)
+        jobs.submit(jobs.ANALYZE_POOL, job, priority=2)
 
     def remove_audio(self, aid: str):
         self.checkpoint(label="곡 삭제")

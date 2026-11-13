@@ -1013,6 +1013,15 @@ def reframe_expr(keys: list, f0: int, frames_per_sec: float, mul: float = 1.0) -
     return f"if(lt(t,{tk[0][0]:.6f}),{tk[0][1]:.3f},{e})"
 
 
+ROT_FIX_T = 1794558600.0          # 2026-11-13 17:30 KST — 이 전에 만든 세로 촬영 프록시는 GPU 경로로 누웠을 수 있음
+
+
+def may_rotate(src) -> bool:
+    """v0.16.78 회전 정보가 있는(또는 있을 수 있는 = 세로) 원본. GPU 프레임(-hwaccel_output_format cuda)으로 읽으면 ffmpeg 이
+    자동 회전을 못 해서 누운 채로 읽힘 → 세로 출력에 눌린 그림 + 결과 파일에 회전 정보가 남아 플레이어가 또 돌림(사용자 렌더)."""
+    return bool(getattr(src, "rotation", 0)) or (bool(src.width) and src.height > src.width)
+
+
 def _crop_noop(src: Source, orientation: str) -> bool:
     """화면비가 이미 출력과 같음(크롭 없음) — GPU 축소 조건."""
     w, h = out_size(orientation)
@@ -1549,6 +1558,11 @@ def make_proxy(src: Source, lut: str, gpu: bool, on_progress=None, cancel=None) 
     걸린 시간은 cache/dtme.log 에 남김(사용자 PC 속도 확인용)."""
     import time
     out = proxy_path(src.path, lut or "")
+    if out.exists() and may_rotate(src) and out.stat().st_mtime < ROT_FIX_T:     # v0.16.78 예전에 GPU 로 누운 채 만든 프록시 = 다시
+        try:
+            out.unlink()
+        except OSError:
+            pass
     if out.exists() and out.stat().st_size > 0:
         return str(out)
     tmp = out.with_suffix(".part.mp4")
@@ -1564,9 +1578,10 @@ def make_proxy(src: Source, lut: str, gpu: bool, on_progress=None, cancel=None) 
              "-color_trc", "bt709", "-color_range", "tv", "-movflags", "+faststart", _abs(tmp)]
     tries = []
     if gpu and has_cuda():
-        dl = "p010le" if "10" in _proxy_pix(src.path) else "nv12"
-        tries.append(("GPU 축소", ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"],
-                      [f"scale_cuda={pw}:{ph}:interp_algo=bilinear", "hwdownload", f"format={dl}"]))
+        if not may_rotate(src):                  # v0.16.78 세로 촬영(회전 정보) = GPU 프레임 경로 안 씀(자동 회전 안 됨)
+            dl = "p010le" if "10" in _proxy_pix(src.path) else "nv12"
+            tries.append(("GPU 축소", ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"],
+                          [f"scale_cuda={pw}:{ph}:interp_algo=bilinear", "hwdownload", f"format={dl}"]))
         tries.append(("GPU 디코딩", ["-hwaccel", "cuda"], [f"scale={pw}:{ph}:flags=bilinear"]))
     tries.append(("CPU", [], [f"scale={pw}:{ph}:flags=bilinear"]))
     dur = src.frames / float(src.fps)
@@ -2509,7 +2524,7 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orien
         lensf = lens_chain(g, src.width, src.height)
         sp = None if fast else stab_params(g)       # 미리보기 렌더는 흔들림 보정 생략(분석이 느림)
         gs = (gpu_scale and not sp and not lensf and not seg_reframe(src, seg, orientation)
-              and _crop_noop(src, orientation))
+              and _crop_noop(src, orientation) and not may_rotate(src))
         cmd += [*_hw(o.gpu_decode), *(["-hwaccel_output_format", "cuda"] if gs else []),
                 "-ss", _seek(seg.fin, src.fps), "-t", f"{seg_src_sec + 0.5:.6f}", "-i", _abs(src.path)]
         v = [f"trim=end_frame={seg.frames}", "setpts=PTS-STARTPTS"]

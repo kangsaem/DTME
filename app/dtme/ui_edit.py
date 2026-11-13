@@ -171,12 +171,17 @@ class ImageDelegate(QStyledItemDelegate):
 
     def paint(self, p: QPainter, option, index):
         iid = index.data(Qt.UserRole)
-        bad = bool(self.tab.state.img_status.get(iid))
+        stt = self.tab.state.img_status.get(iid) or ""
+        reading = stt == "읽는 중"                        # v0.16.78 목록 먼저 넣고 뒤에서 읽는 중 = 흐리게
+        bad = bool(stt) and not reading
         r = QRectF(option.rect).adjusted(2, 2, -2, -2)
         p.save()
         p.setRenderHint(QPainter.Antialiasing)
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor("#7a2a22") if bad else QColor(self.color))
+        col = QColor(self.color)
+        if reading:
+            col = col.darker(170)
+        p.setBrush(QColor("#7a2a22") if bad else col)
         p.drawRoundedRect(r, 3, 3)
         if option.state & QStyle.State_Selected:
             p.setPen(QPen(QColor("#4a8fe0"), 2))
@@ -416,13 +421,19 @@ class EditTab(QWidget):
         f.setPixelSize(15)
         b_down.setFont(f)
         self.zoom = QSlider(Qt.Horizontal)
-        self.zoom.setRange(5, 200)
+        self.zoom.setRange(1, 200)                         # v0.16.78 최소 5 → 1(10분도 한 화면에)
         self.zoom.setValue(30)
         self.zoom.setFixedWidth(140)
         self.zoom.setFocusPolicy(Qt.NoFocus)
-        self.zoom.valueChanged.connect(lambda v: self.timeline.set_zoom(float(v)))
+        self.zoom.valueChanged.connect(self._zoom_moved)
+        self._tl_fit = True                                # v0.16.78 맞춤 = 타임라인 전체가 화면 폭에(직접 확대하면 꺼짐)
+        self.b_fit = _btn("맞춤", "타임라인 전체 보기(슬라이더 더블클릭도)", lambda: self.set_tl_fit(True))
+        self.b_fit.setFixedWidth(52)
+        ui_style.tone(self.b_fit, "key_on")
+        self.zoom.mouseDoubleClickEvent = lambda _e: self.set_tl_fit(True)
         rbox = QHBoxLayout()
         rbox.addWidget(self.zoom)
+        rbox.addWidget(self.b_fit)
         b_clr = _btn("전체 삭제", "", self.clear_timeline)
         rbox.addWidget(b_clr)
         rbox.addWidget(render_list_button(self.timeline_to_render, "타임라인 전체를 렌더리스트로"))
@@ -565,6 +576,8 @@ class EditTab(QWidget):
     def eventFilter(self, obj, e):
         if e.type() == QEvent.Resize and obj is self.tl_scroll.viewport():
             self.timeline.fit()
+            if self._tl_fit:
+                QTimer.singleShot(0, self._fit_zoom)
             return False
         if e.type() == QEvent.Resize and obj in (self.player, self.lbar):
             QTimer.singleShot(0, self._sync_right)
@@ -1652,6 +1665,35 @@ class EditTab(QWidget):
             g.loud, g.why = None, ""                 # 구간이 바뀜 → 원본 소리 다시 판단
             self.state.touch("segments")
 
+    # ---------------------------------------------------------------- v0.16.78 타임라인 맞춤
+    def _zoom_moved(self, v):
+        if not getattr(self, "_zoom_auto", False):         # 사용자가 움직임 = 맞춤 끔
+            self._tl_fit = False
+            self._paint_fit()
+        self.timeline.set_zoom(float(v))
+
+    def set_tl_fit(self, on: bool = True):
+        self._tl_fit = on
+        self._paint_fit()
+        if on:
+            self._fit_zoom()
+
+    def _paint_fit(self):
+        ui_style.tone(self.b_fit, "key_on" if self._tl_fit else "")      # 켜짐 = 노랑(◆ 켜짐과 같은 색)
+
+    def _fit_zoom(self):
+        """타임라인 전체(앞뒤 검은 구간 포함)가 보이는 화면 폭에 맞게 확대."""
+        tot = self.timeline.total()
+        vw = self.tl_scroll.viewport().width()
+        if tot <= 0 or vw < 50:
+            return
+        pps = max(0.5, min(200.0, (vw - 30) / tot))
+        self._zoom_auto = True
+        self.zoom.setValue(int(max(1, min(200, round(pps)))))
+        self._zoom_auto = False
+        self.timeline.set_zoom(pps)
+        self.tl_scroll.horizontalScrollBar().setValue(0)
+
     def _keep_tl_visible(self):
         """v0.16.75 실행취소·삭제로 내용이 줄었는데 화면이 빈 끝에 머물면 = 내용이 보이게 되돌림."""
         sb = self.tl_scroll.horizontalScrollBar()
@@ -2394,7 +2436,7 @@ class EditTab(QWidget):
         for a in self.state.project.audios:
             it = QListWidgetItem(Path(a["path"]).stem)
             it.setData(Qt.UserRole, a["id"])
-            it.setToolTip(f"{a['path']}\n{a['dur']:.1f}초")
+            it.setToolTip(f"{a['path']}\n" + (f"{a['dur']:.1f}초" if a.get("dur") else "읽는 중"))
             self.mus_list.addItem(it)
         self.mus_list.setVisible(bool(self.state.project.audios))
         self.b_mauto.setVisible(bool(self.state.project.audios))
@@ -2486,7 +2528,11 @@ class EditTab(QWidget):
             t0 = max(0.0, t0 - min(float(p.mix.get("xfade", 2.0)), float(last["len"]) / 2, float(a["dur"]) / 2))
         self.state.checkpoint(label="음악 넣음")
         from . import music
-        p.music.append({**new_music(a["path"], t0, a["dur"]), "gain": music.norm_gain(self.music_info.get(a["path"]) or music.cached(a["path"]))})
+        dur = float(a.get("dur") or 0)
+        d = {**new_music(a["path"], t0, dur or 600.0), "gain": music.norm_gain(self.music_info.get(a["path"]) or music.cached(a["path"]))}
+        if not dur:
+            d["_pending"] = True
+        p.music.append(d)
         self.state.touch("titles")
 
     def add_music_at(self, aid: str, t: float, snap: bool = True):
@@ -2497,8 +2543,11 @@ class EditTab(QWidget):
         if a is None:
             return
         self.state.checkpoint(label="음악 넣음")
-        d = {**new_music(a["path"], max(0.0, t), a["dur"]),
+        dur = float(a.get("dur") or 0)
+        d = {**new_music(a["path"], max(0.0, t), dur or 600.0),       # 길이 읽는 중 = 임시(읽히면 맞춤)
              "gain": music.norm_gain(self.music_info.get(a["path"]) or music.cached(a["path"]))}
+        if not dur:
+            d["_pending"] = True
         if snap:
             sb = self.timeline._bar_snap(d, d["t0"])
             if sb is not None:
@@ -2642,6 +2691,7 @@ class EditTab(QWidget):
             ff.log_info(f"자동 편집: {st} → 컷 {[(Path(p.source(g.src).path).name, g.fin, g.fout) for g in p.segments]} · "
                         f"장면 {[x['scene'] for x in picks]} · 음악 {[(Path(m['path']).name, m['t0'], m['len']) for m in p.music] if auds else '-'}")
             solo.leave(dlg)
+            self.set_tl_fit(True)                         # v0.16.78 자동 편집 뒤 = 타임라인 끝에서 끝까지
             if p.segments:
                 self.set_mode("timeline")
                 self.show_timeline(0.0)
@@ -3100,7 +3150,7 @@ class EditTab(QWidget):
         self._fill_tl_out()
         tot = vend + tail
         self.tl_len.setText(f"{tot:.1f}초" if items else "")
-        QTimer.singleShot(0, self._keep_tl_visible)
+        QTimer.singleShot(0, self._fit_zoom if self._tl_fit else self._keep_tl_visible)
         self._scan_loud()
 
     # ---------------------------------------------------------------- 컷 원본 소리(v0.16.66): 말소리·수면 위 = 키움

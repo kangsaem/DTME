@@ -46,7 +46,7 @@ ta = new_text(1.0, 3.0, "A"); tb = new_text(9.0, 12.0, "B")           # B = 영�
 p.titles = [ta, tb]
 st.touch("segments"); st.touch("titles"); wait(0.3)
 assert tl.pads == (0.0, 10.0, 12.0) and e.tl_len.text() == "12.0초", (tl.pads, e.tl_len.text())
-tl.set_zoom(30.0); wait(0.1)
+e.set_tl_fit(False); tl.set_zoom(30.0); wait(0.1)
 
 
 def mouse(kind, pos):

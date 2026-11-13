@@ -55,7 +55,7 @@ m1, m2 = p.music
 assert abs((m1["t0"] + m1["len"]) - m2["t0"] - 2.0) < 1e-6, (m1, m2)
 # 2) 화면: 파형·박자·X
 tl = e.timeline
-tl.set_zoom(40); wait(0.3)
+e.set_tl_fit(False); tl.set_zoom(40); wait(0.3)
 assert tl.music_info and tl.ML == 30
 tl.grab().save(str(W / "timeline_music.png"))
 # 3) 자석: 곡을 컷 경계 근처로 끌면 마디 첫 박이 컷 경계(6초)에 붙음

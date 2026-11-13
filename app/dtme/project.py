@@ -363,6 +363,7 @@ class Source:
     ctime: str = ""                              # 파일 안의 만든 시각 YYYYMMDDhhmm(현지 시간) — 이름에 날짜가 없을 때 표시·렌더 이름(v0.16.55)
     off: list = field(default_factory=list)      # 이름을 눌러 잠시 끈 보정 항목(미리보기·보낼 때 빼고 적용)
     lut_mode: str = ""                           # DJI 메타로 판단한 색 모드 dlog | normal | unknown ("" = 옛 프로젝트, 판단 안 함)
+    rotation: int = 0                            # v0.16.78 파일의 회전 정보(세로 촬영 ±90) — GPU 프레임 경로는 자동 회전이 안 돼서 피함
     id: str = field(default_factory=_id)
 
     @property

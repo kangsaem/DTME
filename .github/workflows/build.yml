@@ -220,6 +220,12 @@ jobs:
           Write-Output $o_v1676
           if ($o_v1676 -notmatch "OK test_ui_v1676") { exit 1 }
           $global:LASTEXITCODE = 0
+          python tests/test_rotate_gpu.py rotgpu_test
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $o_v1678 = python tests/test_ui_v1678.py v1678_test 2>&1 | Out-String
+          Write-Output $o_v1678
+          if ($o_v1678 -notmatch "OK test_ui_v1678") { exit 1 }
+          $global:LASTEXITCODE = 0
           # 끝난 뒤 Windows 종료 단계에서 접근 위반(시험 내용과 무관, test_ui_autocheck 와 같음 — 실측 2026-11-13) → 결과 줄로 판정
           $o2 = python tests/test_autoedit.py autoedit_test 2>&1 | Out-String
           Write-Output $o2

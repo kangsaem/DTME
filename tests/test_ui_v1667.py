@@ -93,7 +93,7 @@ def drag(pos, dx):
 
 
 # 셋째 컷 앞 날개(전환 없음, 컷인) = 오른쪽으로 1초(pps 만큼) → 셋째 컷이 1초 짧아짐(인 +1초), 따라감 사각형 = 셋째 컷 안이라 그대로
-tl.set_zoom(30.0); wait(0.1)
+e.set_tl_fit(False); tl.set_zoom(30.0); wait(0.1)              # v0.16.78 맞춤 끄고 고정 배율
 nu = len(st._undo)
 r_in = next(r for k, c, r in tl._handles() if (k, c) == ("in", s2))
 drag(r_in.center(), 30)
