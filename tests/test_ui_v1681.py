@@ -43,7 +43,15 @@ e._ask_folder = lambda title="": OUT
 # 렌더 리스트에 다른 항목이 있어도 = 전부 자동 1편만 렌더
 s0 = st.project.sources[0]
 st.project.render_items.append(RenderItem(name="other", segs=[Segment(s0.id, 0, 30, 1.0)]))
+from dtme import ui_autoedit  # noqa: E402
+stages = []
+_set = ui_autoedit.StageBar.set
+ui_autoedit.StageBar.set = lambda self, kind, v, text="": (stages.append(kind) if not stages or stages[-1] != kind else None, _set(self, kind, v, text))[1]
+for s_ in st.project.sources:
+    s_.auto = {}
 ad = e.make_auto_dialog(); ad.show(); wait(0.3)
+for r in ad.rows:                                   # 분석 기다림부터(작업 창 막대 = 보정 단계)
+    r.result, r.prog = None, 0.0
 assert ad.b_full.text() == "전부 자동" and ad.b_full.isVisible()
 seen = {}
 
@@ -64,7 +72,13 @@ QTimer.singleShot(200, click_popup)
 ad.b_full.click()
 print("팝업:", seen)
 assert seen == {"save": True, "grade_hidden": True, "btn": "전부 자동"}, seen
-ok = wait(400, lambda: any(f.endswith(".mp4") for f in os.listdir(OUT)) and not e.render_panel.running)
+wait(0.5)
+work = e._full_dlg
+assert work is not None and work.isVisible() and work.stage_bar.isVisible() and not ad.isVisible(), "작업 창 하나"
+print("작업 중: 편집 창 숨김", not w.isVisible())
+assert not w.isVisible()
+ok = wait(400, lambda: any(f.endswith(".mp4") for f in os.listdir(OUT)) and not e.render_panel.running and not work.isVisible())
+assert w.isVisible(), "끝 = 편집 창"
 p = st.project
 files = sorted(os.listdir(OUT))
 print("결과:", files, "· 컷", len(p.segments), "· 음악", len(p.music), "· 보정", [s.auto.get("preset") for s in p.sources])
@@ -77,5 +91,7 @@ assert p.file and p.file.endswith(".dtme.json")
 other = next(it for it in p.render_items if it.name == "other")
 assert not other.done, "다른 렌더 항목은 안 함"
 d = __import__("dtme.ff", fromlist=["ff"]).probe(os.path.join(OUT, mp4[0]))
+print("단계", stages)
+assert stages == ["analyze", "edit", "music", "render"], stages
 print("영상 길이", round(d["frames"] / (d["fps_num"] / d["fps_den"]), 1), "초")
 print("OK test_ui_v1681", flush=True); os._exit(0)

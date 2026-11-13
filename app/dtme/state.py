@@ -96,6 +96,8 @@ class AppState(QObject):
         file = self.project.file
         p = Project.from_dict(d)
         p.file = file
+        if len(p.audios) != len(self.project.audios):     # v0.16.81 진단: 음악 목록이 사라진 일(사용자 18:24, 재현 안 됨)
+            ff.log_info(f"실행취소/다시: 음악 {len(self.project.audios)} → {len(p.audios)} ({d.get('_label', '')})")
         self.project = p
         self._ck_tag = ""
         self.dirty = True
@@ -159,6 +161,8 @@ class AppState(QObject):
         self.changed.emit(what)
 
     def set_project(self, p: Project):
+        if getattr(self, "project", None) is not None and self.project.audios and len(p.audios) != len(self.project.audios):
+            ff.log_info(f"프로젝트 바뀜: 음악 {len(self.project.audios)} → {len(p.audios)}")
         self.project = p
         self._undo = []
         self._redo = []
@@ -401,6 +405,7 @@ class AppState(QObject):
         jobs.submit(jobs.ANALYZE_POOL, job, priority=2)
 
     def remove_audio(self, aid: str):
+        ff.log_info(f"곡 삭제: {next((a['path'] for a in self.project.audios if a['id'] == aid), aid)}")
         self.checkpoint(label="곡 삭제")
         self.project.audios = [a for a in self.project.audios if a["id"] != aid]
         self.touch("audios")

@@ -141,7 +141,8 @@ class Launcher(QWidget):
         self.bar = QProgressBar()
         self.bar.setTextVisible(False)
         self.bar.setFixedSize(160, 6)
-        self.bar.setStyleSheet("QProgressBar{background:#2a2a2a; border:none;} QProgressBar::chunk{background:#c0392b;}")
+        from . import stage as SG
+        self.bar.setStyleSheet("QProgressBar{background:#2a2a2a; border:none;} QProgressBar::chunk{background:%s;}" % SG.STAGE["render"][1])   # v0.16.82 렌더 색 통일
         self.bar.setVisible(False)
         self.msg = QLabel("")
         self.msg.setAlignment(Qt.AlignCenter)

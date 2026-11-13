@@ -37,6 +37,50 @@ class _RowDelegate(QStyledItemDelegate):
         return s
 
 
+class StageBar(QWidget):
+    """[전부 자동](v0.16.82) 막대 하나: 단계마다 그 단계 색으로 왼쪽부터 다시 차오름(앞 단계 색 = 꽉 찬 채로 아래에).
+    위 = 단계 이름(끝남 ✓ · 지금 = 굵게), 오른쪽 = 'n/4 단계 글자'."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        from . import stage as SG
+        self.steps = SG.FULL_STEPS
+        self.k, self.v, self.text = 0, 0.0, ""
+        self.setFixedHeight(40)
+
+    def set(self, kind: str, v: float, text: str = ""):
+        k = next((i for i, (x, _n) in enumerate(self.steps) if x == kind), self.k)
+        self.k, self.v, self.text = max(self.k, k), max(0.0, min(1.0, v)), text
+        self.update()
+
+    def paintEvent(self, _e):
+        from PySide6.QtGui import QFont
+        from . import stage as SG
+        p = QPainter(self)
+        f = QFont(self.font())
+        x = 0
+        for i, (kind, name) in enumerate(self.steps):
+            col = SG.STAGE[kind][1] if i <= self.k else "#5a5a5a"
+            f.setBold(i == self.k)
+            p.setFont(f)
+            p.setPen(QColor(col))
+            t = ("✓ " if i < self.k else "") + name
+            p.drawText(x, 0, 90, 20, Qt.AlignLeft | Qt.AlignVCenter, t)
+            x += 78
+        kind, name = self.steps[self.k]
+        lab = f"{self.k + 1}/{len(self.steps)} {name}" + (f" · {self.text}" if self.text else f" {int(self.v * 100)}%")
+        f.setBold(False)
+        p.setFont(f)
+        p.setPen(QColor(SG.STAGE[kind][1]))
+        p.drawText(0, 0, self.width(), 20, Qt.AlignRight | Qt.AlignVCenter, lab)
+        y, h, w = 28, 8, self.width()
+        p.fillRect(0, y, w, h, QColor("#2a2a2a"))
+        if self.k > 0:
+            p.fillRect(0, y, w, h, QColor(SG.STAGE[self.steps[self.k - 1][0]][1]))
+        p.fillRect(0, y, int(w * self.v), h, QColor(SG.STAGE[kind][1]))
+        p.end()
+
+
 class AutoEditDialog(DragMove, QDialog):
     startRequested = Signal(dict)
 
@@ -118,7 +162,11 @@ class AutoEditDialog(DragMove, QDialog):
         self.bar.setTextVisible(False)
         self.bar.setFixedHeight(6)
         self.state_lab = QLabel("")
-        self.state_lab.setStyleSheet(f"color:{SUB};")
+        from . import stage as SG
+        self.state_lab.setStyleSheet(f"color:{SG.STAGE['edit'][1]};")       # v0.16.82 편집 = 보라(단계 색 통일)
+        self.bar.setStyleSheet("QProgressBar{background:#2a2a2a; border:none; border-radius:3px;}"
+                               f"QProgressBar::chunk{{background:{SG.STAGE['edit'][1]}; border-radius:3px;}}")
+        self.stage_bar = StageBar() if full else None
         self.b_cancel = main_button("취소")
         self.b_cancel.clicked.connect(self._cancel)
         self._job = None
@@ -142,7 +190,11 @@ class AutoEditDialog(DragMove, QDialog):
         v.setSpacing(10)
         v.addLayout(top)
         v.addLayout(mid, 1)
-        v.addWidget(self.bar)
+        if self.stage_bar is not None:                     # 전부 자동 = 단계 막대 하나(보통 막대·글자 대신)
+            self.bar.setVisible(False)
+            v.addWidget(self.stage_bar)
+        else:
+            v.addWidget(self.bar)
         v.addLayout(bot)
         self.resize(940, 420)
         self._sum()
@@ -179,9 +231,25 @@ class AutoEditDialog(DragMove, QDialog):
 
     def set_progress(self, v: float, text: str = ""):
         self.bar.setValue(int(v * 100))
-        self.state_lab.setText(text)
+        if self.stage_bar is None:
+            self.state_lab.setText(text)
+        if self.stage_bar is not None and self.stage_bar.k in (1, 2):     # 전부 자동 편집 중: '음악' 단계 글자 = 음악 단계
+            if text.startswith("음악"):
+                self.stage_bar.set("music", 0.5)
+            elif text.startswith("실패"):
+                self.stage_bar.set(self.stage_bar.steps[self.stage_bar.k][0], self.stage_bar.v, text)
+            else:
+                self.stage_bar.set("edit", v)
+
+    def set_stage(self, kind: str, v: float, text: str = ""):
+        if self.stage_bar is not None:
+            self.stage_bar.set(kind, v, text)
+
+    on_cancel = None                                      # 전부 자동: 밖(EditTab)에서 단계별 멈춤
 
     def _cancel(self):
         if self._job is not None:
             self._job.cancel.set()
+        if self.on_cancel is not None:
+            self.on_cancel()
         self.reject()

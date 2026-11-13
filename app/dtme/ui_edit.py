@@ -2606,8 +2606,10 @@ class EditTab(QWidget):
             bases[s.id] = b
         dlg.set_running(True)
         from . import solo
-        solo.enter(dlg, self.window())                  # v0.16.74 작업 중 = 편집 창 숨김, 이 창만 작업 표시줄에(끝·취소 = 편집 창)
-        dlg.rejected.connect(lambda: solo.leave(dlg))
+        if not st.get("full"):
+            solo.enter(dlg, self.window())              # v0.16.74 작업 중 = 편집 창 숨김, 이 창만 작업 표시줄에(끝·취소 = 편집 창)
+        if not st.get("full"):
+            dlg.rejected.connect(lambda: solo.leave(dlg))
         n_steps = len(need_auto) + len(srcs) + (1 if auds else 0)
 
         def work(prog, cancel):
@@ -2646,7 +2648,8 @@ class EditTab(QWidget):
         dlg_text = [""]
         job = jobs.Job(work, with_progress=True)
         dlg._job = job
-        job.signals.progress.connect(lambda v: (dlg.set_progress(v, dlg_text[0]), solo.progress(dlg, v)))
+        job.signals.progress.connect(lambda v: (dlg.set_progress(v, dlg_text[0]),
+                                                solo.progress(dlg, 0.25 + 0.5 * v if st.get("full") else v)))
 
         def done(r):
             res, picks, infos = r
@@ -2707,12 +2710,14 @@ class EditTab(QWidget):
                       + (f" · 음악 {len(p.music)}곡(마디 맞춤 {snapped})" if auds else ""), C_OK)
             ff.log_info(f"자동 편집: {st} → 컷 {[(Path(p.source(g.src).path).name, g.fin, g.fout) for g in p.segments]} · "
                         f"장면 {[x['scene'] for x in picks]} · 음악 {[(Path(m['path']).name, m['t0'], m['len']) for m in p.music] if auds else '-'}")
-            solo.leave(dlg)
+            if not st.get("full"):                        # 전부 자동 = 작업 창 그대로(렌더까지)
+                solo.leave(dlg)
             self.set_tl_fit(True)                         # v0.16.78 자동 편집 뒤 = 타임라인 끝에서 끝까지
             if p.segments:
                 self.set_mode("timeline")
                 self.show_timeline(0.0)
-            dlg.accept()
+            if not st.get("full"):
+                dlg.accept()
             if then is not None:
                 then()
 
@@ -2942,8 +2947,8 @@ class EditTab(QWidget):
 
     # ---------------------------------------------------------------- [전부 자동](v0.16.81)
     def _auto_full(self, dlg):
-        """AUTO 창 [전부 자동]: 설정 팝업(자동 편집과 같음) → 용량 → 저장폴더 → (분석 기다림) → AUTO 값 넣기
-        → 자동 편집(컷·전환·글자·음악) → 타임라인 1편 렌더 → 프로젝트 저장(체크 시)."""
+        """AUTO 창 [전부 자동]: 설정 팝업(자동 편집과 같음) → 용량 → 저장폴더 → 작업 창 하나로 끝까지(v0.16.82)
+        [보정(분석) → 편집 → 음악 → 렌더] 단계 막대 · 프로젝트 저장(체크 시). AUTO 창은 설정 뒤 바로 닫음(분석은 계속)."""
         from . import solo
         from .ui_autoedit import AutoEditDialog
         if not getattr(dlg, "_full", None):
@@ -2953,6 +2958,7 @@ class EditTab(QWidget):
             if not sids:
                 return
             ed = AutoEditDialog(self.state, set(sids), dlg, full=True)
+            ed.stage_bar.setVisible(False)                  # 설정 팝업에서는 막대 없음
             ed.move(dlg.geometry().center().x() - ed.width() // 2, dlg.geometry().center().y() - ed.height() // 2)
             got = {}
 
@@ -2966,28 +2972,79 @@ class EditTab(QWidget):
                 return
             dlg._full = got["st"]
             dlg._folder = self.state.project.output.folder
-        if dlg.wait_then("start"):                    # 분석 덜 끝남 = 끝나면 다시(→ startRequested → 여기)
-            dlg.set_busy(True)
-            solo.enter(dlg, self.window())
+            self._auto_begin(dlg)                          # 설정 저장·이름(실행취소 지점 = 자동 편집 1번)
+            # 작업 창(단계 막대) — 편집 창은 숨김, 이 창만 작업 표시줄에
+            w = AutoEditDialog(self.state, set(sids), self, full=True)
+            w.length.setValue(int(got["st"]["minutes"]))
+            w.title_on.setChecked(got["st"].get("title", True))
+            w.music_on.setChecked(bool(got["st"].get("music")))
+            w.save_on.setChecked(bool(got["st"].get("save")))
+            w.set_running(True)
+            w.set_stage("analyze", 0.0)
+            w.on_cancel = lambda: self._full_cancel(dlg)
+            geo = self.window().geometry()
+            w.move(geo.center().x() - w.width() // 2, geo.center().y() - w.height() // 2)
+            self._full_dlg, self._full_auto = w, dlg
+            dlg.accept()                                   # AUTO 창 닫음(분석 작업·결과는 이 객체에 남아 계속)
+            w.show()
+            if not solo.enter(w, self.window()):
+                w.raise_()
+            w.rejected.connect(lambda: solo.leave(w))
+            if dlg.wait_then("start"):                     # 분석 덜 끝남 = 끝나면 startRequested → 여기(다시)
+                self._full_poll()
+                return
+        w = getattr(self, "_full_dlg", None)
+        if w is None or not w.isVisible():
+            dlg._full = None
+            return
+        if dlg.pending():
             return
         st, dlg._full = dlg._full, None
         rows = [r for r in dlg.chosen_rows() if r.sid in set(st["sids"])]
         st["sids"] = [r.sid for r in rows]
         if not rows:
-            dlg.set_busy(False)
+            w.set_stage("analyze", 0.0, "분석 결과 없음")
+            w.set_running(False)
             return
-        self._auto_begin(dlg)
+        w.set_stage("analyze", 1.0)
         self._auto_apply(dlg, rows)
-        solo.leave(dlg)
-        dlg.accept()
-        st["grade"], st["replace_ok"] = False, True
-        ed = AutoEditDialog(self.state, set(st["sids"]), self, full=True)
-        ed.length.setValue(int(st["minutes"]))
-        geo = self.window().geometry()
-        ed.move(geo.center().x() - ed.width() // 2, geo.center().y() - ed.height() // 2)
-        ed.show()
-        self._full_dlg = ed
-        self.run_autoedit(ed, st, then=lambda: self._full_render(st))
+        st["grade"], st["replace_ok"], st["full"] = False, True, True
+        w.set_stage("edit", 0.0)
+        self.run_autoedit(w, st, then=lambda: self._full_render(st))
+
+    def _full_poll(self):
+        """보정(분석) 단계 진행 = AUTO 창(닫힌 채) 상태를 0.3초마다 읽어 작업 창 막대에."""
+        w, dlg = getattr(self, "_full_dlg", None), getattr(self, "_full_auto", None)
+        if w is None or dlg is None or not w.isVisible() or w.stage_bar.k > 0 or not getattr(dlg, "_full", None):
+            return
+        _t, _kind, v = dlg.status_text()
+        rows = [r for r in dlg.rows if r.checked]
+        n = len(rows)
+        done = sum(1 for r in rows if r.result is not None or r.error)
+        v = sum(min(1.0, r.prog) for r in rows) / max(1, n) if n else v
+        w.set_stage("analyze", v, f"{done}/{n}")
+        from . import solo
+        solo.progress(w, 0.25 * v)
+        QTimer.singleShot(300, self._full_poll)
+
+    def _full_cancel(self, dlg):
+        """작업 창 [취소]: 그 단계만 멈춤(분석 · 편집 · 렌더). 넣은 값·편집 결과는 그대로(실행취소로 되돌림)."""
+        w = getattr(self, "_full_dlg", None)
+        k = w.stage_bar.k if w is not None else 0
+        if k == 0 and dlg is not None:
+            dlg._full = None
+            dlg.waiting = None
+            for j in dlg.jobs:
+                j.cancel.set()
+                jobs.AUTO_POOL.tryTake(j)
+            dlg.jobs = []
+            self.state.clear_work("analyze", {r.sid for r in dlg.rows})
+        if k == 3 and self.render_panel.running:
+            self.render_panel.cancel_all()
+        self._full_dlg = None
+        from . import solo
+        if w is not None:
+            solo.leave(w)
 
     def _full_ask(self, parent) -> bool:
         """[전부 자동] 시작 전: (타임라인 바꾸기 확인) → 렌더 용량 → 저장폴더. 하나라도 취소 = False."""
@@ -3007,10 +3064,14 @@ class EditTab(QWidget):
         return True
 
     def _full_render(self, st):
-        """자동 편집 끝 → 타임라인을 렌더 리스트에 1개로 → 그것만 렌더 · 프로젝트 저장(영상과 같은 이름 .dtme.json)."""
+        """자동 편집 끝 → 타임라인을 렌더 리스트에 1개로 → 그것만 렌더(막대 = 렌더 단계) · 프로젝트 저장(영상과 같은 이름 .dtme.json)."""
         from .ui_render import file_name, out_dir, unique
         p = self.state.project
+        w = getattr(self, "_full_dlg", None)
         if not p.segments:
+            if w is not None:
+                w.set_stage("edit", 0.0, "컷 없음")
+                w.set_running(False)
             return
         self.timeline_to_render()
         it = p.render_items[-1]
@@ -3020,11 +3081,35 @@ class EditTab(QWidget):
                 p.save(str(f))
                 self.state.dirty = False
                 self._say(f"프로젝트 저장 ✓  {f}", C_OK)
-                w = self.window()
-                if hasattr(w, "_title"):
-                    w._title()
+                win = self.window()
+                if hasattr(win, "_title"):
+                    win._title()
             except Exception as ex:  # noqa: BLE001
                 ff.log_error("전부 자동 프로젝트 저장", str(ex))
+        if w is not None:
+            w.set_stage("render", 0.0)
+            from . import solo
+            rp = self.render_panel
+
+            def on_prog(frac, text, _bad, w=w):
+                if w.isVisible():
+                    w.set_stage("render", frac, text)
+                    solo.progress(w, 0.75 + 0.25 * frac)
+
+            def on_end(ok, bad, _sec, _folder, w=w):
+                for sig, fn in ((rp.runProgress, on_prog), (rp.runFinished, on_end)):
+                    try:
+                        sig.disconnect(fn)
+                    except (RuntimeError, TypeError):
+                        pass
+                if self._full_dlg is w:
+                    self._full_dlg = None
+                if w.isVisible():
+                    w.set_stage("render", 1.0, f"완료 {ok}" + (f" · 실패 {bad}" if bad else ""))
+                    solo.leave(w)
+                    w.accept()
+            rp.runProgress.connect(on_prog)
+            rp.runFinished.connect(on_end)
         self._set_auto_bar(0.0, "#d9604f")
         self.render_panel.enqueue([it])
 
