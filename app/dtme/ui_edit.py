@@ -439,6 +439,11 @@ class EditTab(QWidget):
         self.timeline.transRemove.connect(self.remove_transition)
         self.timeline.transActivated.connect(self.edit_transition)
         self.timeline.transDurStart.connect(lambda _cid: self.state.checkpoint())
+        self.timeline.ovFollow.connect(self.toggle_follow)                 # v0.16.67
+        self.timeline.cutEdgeStart.connect(self._cut_edge_start)
+        self.timeline.cutEdgeDragged.connect(self._cut_edge_drag)
+        self.timeline.cutEdgeEnd.connect(self._cut_edge_end)
+        self._edge_drag = None
         self.timeline.transDurEdited.connect(self._trans_dur)
         from .ui_trans import TransPreview
         self.trans_prev = TransPreview(self.player.mon)
@@ -1392,9 +1397,14 @@ class EditTab(QWidget):
         if not seg:
             return
         self.state.checkpoint()
+        from .project import follow_anchors, follow_apply
+        anc = follow_anchors(p)                      # v0.16.67 따라감 켠 글자·음악 = 지운 만큼 당김
         p.segments.remove(seg)
+        follow_apply(p, anc)
         self.sel_cut = ""
         self.state.touch("segments")
+        if anc["items"]:
+            self.state.touch("titles")
 
     def edit_transition(self, cid: str = ""):
         from .ui_trans import TransitionDialog
@@ -1564,6 +1574,64 @@ class EditTab(QWidget):
         job.signals.done.connect(done)
         job.signals.error.connect(err)
         jobs.submit(jobs.PREVIEW_POOL, job)
+
+    # ---------------------------------------------------------------- v0.16.67 타임라인 컷 인·아웃 끌기 · 따라감
+    CUT_MIN_SEC = 0.5
+
+    def _cut_edge_start(self, cid, kind):
+        p = self.state.project
+        g = next((x for x in p.segments if x.id == cid), None)
+        if g is None:
+            return
+        from .project import follow_anchors
+        self.state.checkpoint()
+        self.trans_prev.stop()
+        self._edge_drag = (cid, kind, g.fin, g.fout, follow_anchors(p))
+
+    def _cut_edge_drag(self, cid, kind, dsec):
+        """아래 날개 끌기: 오른쪽 = 늘 같은 방향(아웃 = 길게, 인 = 짧게). 원본 범위·최소 0.5초 안에서."""
+        from .project import follow_apply
+        if not self._edge_drag or self._edge_drag[0] != cid:
+            return
+        _c, _k, fin0, fout0, anc = self._edge_drag
+        p = self.state.project
+        g = next((x for x in p.segments if x.id == cid), None)
+        s = p.source(g.src) if g else None
+        if s is None:
+            return
+        df = int(round(dsec * float(s.fps) * float(g.speed)))
+        mn = max(1, int(round(self.CUT_MIN_SEC * float(s.fps) * float(g.speed))))
+        if kind == "out":
+            g.fout = max(g.fin + mn, min(s.frames, fout0 + df))
+        else:
+            g.fin = max(0, min(g.fout - mn, fin0 + df))
+        follow_apply(p, anc)
+        self.state.touch("segments")
+        if anc["items"]:
+            self.state.touch("titles")
+        self._say(f"{'컷아웃' if kind == 'out' else '컷인'} {p.seg_out_seconds(g, s.fps):.1f}초")
+        if self.mode == "source" and self.cur_sid == g.src:          # 같은 소스를 보고 있으면 끄는 곳 프레임을 모니터에
+            self.player.seek(g.fout - 1 if kind == "out" else g.fin)
+
+    def _cut_edge_end(self):
+        if not self._edge_drag:
+            return
+        cid, _k, fin0, fout0, _a = self._edge_drag
+        self._edge_drag = None
+        g = next((x for x in self.state.project.segments if x.id == cid), None)
+        if g is not None and (g.fin, g.fout) != (fin0, fout0):
+            g.loud, g.why = None, ""                 # 구간이 바뀜 → 원본 소리 다시 판단
+            self.state.touch("segments")
+
+    def toggle_follow(self, kind, oid):
+        d = self._ov(kind, oid)
+        if d is None:
+            return
+        self.state.checkpoint()
+        d = self._ov(kind, oid)
+        d["follow"] = not d.get("follow")
+        self.state.touch("titles")
+        self._say("따라감 켬" if d["follow"] else "따라감 끔")
 
     def _on_cut_selected(self, cid):
         self.sel_cut = cid
@@ -2089,6 +2157,11 @@ class EditTab(QWidget):
             if kind == "title" and d.get("kind") == "text" and not (d.get("text") or "").strip():   # 빈 글자만(사각형 X)
                 drop()
             else:
+                ab = getattr(dlg, "apply_all", None)        # v0.16.67 모든 글자·모든 사각형에 적용: 인 · 아웃 · 길이
+                if ab is not None and ab.isChecked():
+                    for x in p.titles:
+                        if x is not d and x.get("kind") == d.get("kind"):
+                            x["ain"], x["aout"], x["fade"] = d.get("ain", "fade"), d.get("aout", "fade"), d.get("fade", 0.5)
                 self.state.touch("titles")
 
         def cancel():

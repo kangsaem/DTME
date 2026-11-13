@@ -869,3 +869,84 @@ def timecode(frame: int, fps: Fraction) -> str:
     f = fr - int(round((m * 60 + s) * float(fps)))
     f = max(0, min(fps_round - 1, f))
     return f"{m:02d}:{s:02d}.{f:02d}"
+
+
+# ------------------------------------------------------------------ 따라감(v0.16.67): 컷 길이가 바뀌면 'follow' 켠 글자·사각형·이미지·음악이 따라 움직임
+def cut_spans(project, segs=None) -> list:
+    """타임라인 컷 → [(컷 id, 시작 초, 길이 초)] (전환 겹침 반영). 소스 없는 컷은 뺌."""
+    p = project
+    segs = [g for g in (p.segments if segs is None else segs) if p.source(g.src) and p.source(g.src).frames]
+    lens = [p.seg_out_seconds(g, p.source(g.src).fps) for g in segs]
+    plan = plan_transitions(segs, lens)
+    out, t = [], 0.0
+    for i, (g, ln, tr) in enumerate(zip(segs, lens, plan)):
+        if i > 0 and tr:
+            t -= tr[1]
+        out.append((g.id, t, ln))
+        t += ln
+    return out
+
+
+def _anchor(spans, t: float, end: bool = False):
+    """시각 t → (컷 id, 컷 시작부터 거리). 끝(end)이 타임라인 끝에 붙어 있으면 ('END', 끝부터 거리)."""
+    total = max((s + ln for _c, s, ln in spans), default=0.0)
+    if end and spans and t >= total - 1e-3:
+        return ("END", t - total)
+    cur = None
+    for cid, s, _ln in spans:
+        if s <= t + 1e-6:
+            cur = (cid, t - s)
+    return cur or ("", t)
+
+
+def follow_anchors(project) -> dict:
+    """변경 전에 부름: 따라감 켠 항목의 자리를 컷 기준으로 적어 둠."""
+    spans = cut_spans(project)
+    order = [c for c, _s, _l in spans]
+    items = {}
+    for d in project.titles:
+        if d.get("follow"):
+            items[d["id"]] = ("title", _anchor(spans, float(d["t0"])), float(d["t1"]) - float(d["t0"]))
+    for m in project.music:
+        if m.get("follow"):
+            t0, ln = float(m["t0"]), float(m["len"])
+            items[m["id"]] = ("music", _anchor(spans, t0), _anchor(spans, t0 + ln, end=True), t0, ln)
+    return {"order": order, "items": items}
+
+
+def _place(spans, order, a) -> float:
+    cid, off = a
+    if not cid:
+        return off
+    total = max((s + ln for _c, s, ln in spans), default=0.0)
+    if cid == "END":
+        return total + off
+    start = {c: s for c, s, _l in spans}
+    if cid in start:
+        return start[cid] + off
+    i = order.index(cid) if cid in order else -1             # 지운 컷 = 그 자리(다음 남은 컷 시작)
+    nxt = next((start[c] for c in order[i + 1:] if c in start), None) if i >= 0 else None
+    return (total if nxt is None else nxt) + off
+
+
+def follow_apply(project, anchors: dict) -> None:
+    """변경 뒤에 부름. 글자·사각형·이미지 = 시작이 따라가고 길이 그대로.
+    음악 = 시작이 따라감, 끝은 곡 뒤를 늘리거나 줄여 맞춤(곡이 모자라면 곡 끝까지)."""
+    if not anchors or not anchors.get("items"):
+        return
+    spans = cut_spans(project)
+    order = anchors["order"]
+    it = anchors["items"]
+    for d in project.titles:
+        a = it.get(d["id"])
+        if a and a[0] == "title":
+            t0 = max(0.0, _place(spans, order, a[1]))
+            d["t0"], d["t1"] = round(t0, 4), round(t0 + a[2], 4)
+    for m in project.music:
+        a = it.get(m["id"])
+        if a and a[0] == "music":
+            t0 = max(0.0, _place(spans, order, a[1]))
+            end = _place(spans, order, a[2])
+            room = float(m.get("dur", a[4])) - float(m.get("off", 0))
+            m["t0"] = round(t0, 4)
+            m["len"] = round(max(0.2, min(room, end - t0)), 4)

@@ -12,8 +12,12 @@ from . import paths
 FONT_EXT = {".ttf", ".otf", ".ttc"}
 # 파일 이름 앞부분 → 보여줄 이름
 NICE = {"Pretendard": "Pretendard", "NotoSansKR": "Noto Sans KR", "BlackHanSans": "Black Han Sans",
-        "Montserrat": "Montserrat", "Inter": "Inter"}
-ORDER = ["Pretendard", "Noto Sans KR", "Black Han Sans", "Montserrat", "Inter", "맑은 고딕"]
+        "Montserrat": "Montserrat", "Inter": "Inter",
+        # v0.16.67 Google Fonts(OFL) 9개
+        "DoHyeon": "도현", "Jua": "주아", "Gugi": "구기", "Dokdo": "독도", "YeonSung": "연성", "Gaegu": "개구",
+        "GamjaFlower": "감자꽃", "HiMelody": "하이멜로디", "KirangHaerang": "기랑해랑"}
+ORDER = ["Pretendard", "Noto Sans KR", "Black Han Sans", "Montserrat", "Inter", "맑은 고딕",
+         "도현", "주아", "구기", "독도", "연성", "개구", "감자꽃", "하이멜로디", "기랑해랑"]
 
 
 def _family_of(stem: str) -> tuple[str, bool]:

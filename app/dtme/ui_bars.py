@@ -8,6 +8,8 @@ from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import QWidget
 
 SPEED_COLOR = {2.0: QColor("#d9822b"), 1.0: QColor("#5b7fa6"), 0.5: QColor("#3d9a8b")}
+WING_DUR = QColor(242, 201, 76, 225)      # v0.16.67 나비 위 = 전환 길이(노랑)
+WING_CUT = QColor(124, 200, 240, 225)     # 나비 아래 = 컷 아웃·인(하늘색)
 TAG_COLOR = {"E": QColor("#8c939b"), "C": QColor("#f2c94c")}
 
 
@@ -404,6 +406,12 @@ class SeqTimeline(QWidget):
     transRemove = Signal(str)         # 나비 우클릭 = 빼기
     transActivated = Signal(str)      # 나비 더블클릭 = 컷편집 창
     cutMenu = Signal(str, object)     # v0.16.66 컷 우클릭 = (컷 id, 화면 좌표) → 원본 소리 메뉴
+    ovFollow = Signal(str, str)       # v0.16.67 Shift+클릭 = 따라감 켜고 끄기
+    cutEdgeStart = Signal(str, str)   # v0.16.67 나비 아래 날개 끌기 시작 = (컷 id, 'in'|'out')
+    cutEdgeDragged = Signal(str, str, float)   # 누른 곳부터 끈 거리(초, 타임라인)
+    cutEdgeEnd = Signal()
+
+    WING = 9         # 전환 없는 경계·맨 앞·맨 뒤 날개 폭(px)
 
     RULER = 20
     TL = 18          # 글자·이미지 줄 높이
@@ -426,7 +434,8 @@ class SeqTimeline(QWidget):
         self._press = None            # 컷: (index, x)
         self._drag_x = None
         self._ov = None               # (kind, dict, mode, x0, snapshot)
-        self._tdur = None             # 전환 구간 끝 끌기: (컷 id, 앞 컷 끝 x)
+        self._tdur = None             # 전환 길이 끌기: (컷 id, 누른 x, 처음 길이, 왼쪽 반?, 시작함?)
+        self._edge = None             # 컷 인·아웃 끌기: (컷 id, 'in'|'out', 누른 x, 시작함?)
         self.setMouseTracking(True)
 
     # ---------------------------------------------------------------- 데이터
@@ -531,12 +540,46 @@ class SeqTimeline(QWidget):
                 out.append((it[0], QRectF(r.left(), r.top(), tw, r.height())))
         return out
 
-    def _trans_edge(self, pos):
-        """전환 구간 양 끝 근처면 (컷 id, 앞 컷 끝 x). 앞 컷 끝은 길이를 바꿔도 그대로라 기준점."""
-        for cid, r in self._trans_rects():
-            if r.top() <= pos.y() <= r.bottom() and (abs(pos.x() - r.left()) <= 5 or abs(pos.x() - r.right()) <= 5):
-                return cid, r.right()
+    def _handles(self):
+        """v0.16.67 나비 = 위 노랑(전환 길이) · 아래 왼쪽 하늘색(앞 컷 아웃) · 아래 오른쪽 하늘색(뒤 컷 인).
+        → [(종류 'dur'|'out'|'in', 컷 id, 사각형)]. 전환 없는 경계·맨 앞(인)·맨 뒤(아웃)는 아래 날개만."""
+        out = []
+        rects = self._rects()
+        trs = dict(self._trans_rects())
+        w = self.WING
+        for i, (it, r) in enumerate(zip(self.items, rects)):
+            mid = r.top() + r.height() / 2
+            tr = trs.get(it[0])
+            if tr is not None:
+                cx = tr.center().x()
+                out.append(("dur", it[0], QRectF(tr.left(), tr.top(), tr.width(), tr.height() / 2)))
+                if i > 0:
+                    out.append(("out", self.items[i - 1][0], QRectF(tr.left(), mid, cx - tr.left(), tr.bottom() - mid)))
+                out.append(("in", it[0], QRectF(cx, mid, tr.right() - cx, tr.bottom() - mid)))
+            else:
+                x = r.left()
+                if i > 0:
+                    out.append(("out", self.items[i - 1][0], QRectF(x - w, mid, w, r.bottom() - mid)))
+                out.append(("in", it[0], QRectF(x, mid, w, r.bottom() - mid)))
+        if self.items:
+            r = rects[-1]
+            out.append(("out", self.items[-1][0], QRectF(r.right() + 2 - w, r.top() + r.height() / 2, w, r.height() / 2)))
+        return out
+
+    def _handle_at(self, pos):
+        for kind, cid, r in self._handles():
+            if r.adjusted(-1, 0, 1, 0).contains(pos):
+                return kind, cid, r
         return None
+
+    def _handle_tip(self, h):
+        kind, cid, _r = h
+        if kind == "out":
+            return "컷아웃 수정"
+        if kind == "in":
+            return "컷인 수정"
+        it = next((x for x in self.items if x[0] == cid), None)
+        return f"{it[5][0]} 수정" if it and it[5] else ""
 
     def _trans_at(self, pos):
         for cid, r in self._trans_rects():
@@ -632,13 +675,22 @@ class SeqTimeline(QWidget):
             p.setPen(Qt.NoPen)
             p.setBrush(QColor(15, 30, 60, 150))        # 섞이는 구간 칠하기(v0.16.34, 컷 파랑과 구분되게 어둡게)
             p.drawRect(r)
-            p.setPen(QPen(QColor("white"), 2) if sel else Qt.NoPen)
-            p.setBrush(QColor(74, 143, 224, 215))
             x0, x1, y0, y1 = r.left(), r.right(), r.top() + 2, r.bottom() - 2
-            p.drawPolygon(QPolygonF([QPointF(x0, y0), QPointF(x1, y1), QPointF(x1, y0), QPointF(x0, y1)]))
-            p.setPen(QPen(QColor("#cfe3ff"), 2))       # 양 끝 = 끌어서 길이
-            p.drawLine(QPointF(x0, r.top()), QPointF(x0, r.bottom()))
-            p.drawLine(QPointF(x1, r.top()), QPointF(x1, r.bottom()))
+            bow = QPolygonF([QPointF(x0, y0), QPointF(x1, y1), QPointF(x1, y0), QPointF(x0, y1)])
+            ym, xc = r.top() + r.height() / 2, r.center().x()
+            for clip, col in ((QRectF(x0 - 1, r.top(), x1 - x0 + 2, ym - r.top()), WING_DUR),       # v0.16.67 위 = 전환 길이(노랑)
+                              (QRectF(x0 - 1, ym, xc - x0 + 1, r.bottom() - ym), WING_CUT),         # 아래 왼쪽 = 앞 컷 아웃
+                              (QRectF(xc, ym, x1 - xc + 1, r.bottom() - ym), WING_CUT)):            # 아래 오른쪽 = 뒤 컷 인
+                p.save()
+                p.setClipRect(clip)
+                p.setPen(Qt.NoPen)
+                p.setBrush(col)
+                p.drawPolygon(bow)
+                p.restore()
+            if sel:
+                p.setPen(QPen(QColor("white"), 2))
+                p.setBrush(Qt.NoBrush)
+                p.drawPolygon(bow)
             it = next((x for x in self.items if x[0] == cid), None)
             if it and it[5]:
                 fl = QFont(self.font())
@@ -653,6 +705,18 @@ class SeqTimeline(QWidget):
                 p.drawRoundedRect(box, 3, 3)
                 p.setPen(QColor("#ffffff"))
                 p.drawText(box, Qt.AlignCenter, txt)
+        trs = {c for c, _r in self._trans_rects()}
+        p.setPen(Qt.NoPen)
+        p.setBrush(WING_CUT)
+        for kind, cid, r in self._handles():           # 전환 없는 경계·맨 앞·맨 뒤 = 아래 날개(하늘색 삼각형, 뾰족한 쪽 = 경계)
+            if kind == "dur" or (kind == "in" and cid in trs) or (kind == "out" and self._next_has_trans(cid, trs)):
+                continue
+            y0, y1 = r.top(), r.bottom() - 2
+            if kind == "out":
+                pts = [QPointF(r.left(), y0), QPointF(r.left(), y1), QPointF(r.right(), y1)]
+            else:
+                pts = [QPointF(r.right(), y0), QPointF(r.right(), y1), QPointF(r.left(), y1)]
+            p.drawPolygon(QPolygonF(pts))
         if self._press is not None and self._drag_x is not None:
             j = self._drop_index(self._drag_x)
             xs = [r.left() for r in rects] + [rects[-1].right() + 2 if rects else 4]
@@ -678,8 +742,11 @@ class SeqTimeline(QWidget):
             if (kind, d.get("id")) == self.ov_sel:
                 p.setPen(QPen(QColor("white"), 2))
                 p.drawRect(r.adjusted(1, 1, -1, -1))
+            fl = 14 if d.get("follow") else 4
+            if d.get("follow"):
+                self._ring(p, r)
             p.setPen(QColor("#f4f4f4"))
-            p.drawText(r.adjusted(4, 0, -2, 0), Qt.AlignVCenter | Qt.AlignLeft, label)
+            p.drawText(r.adjusted(fl, 0, -2, 0), Qt.AlignVCenter | Qt.AlignLeft, label)
         # 눈금
         y0 = h - self.RULER
         p.fillRect(QRectF(0, y0, w, self.RULER), QColor("#151515"))
@@ -699,6 +766,26 @@ class SeqTimeline(QWidget):
         x = self._x(self.t)
         p.setPen(QPen(QColor("#e5484d"), 2))
         p.drawLine(QPointF(x, 0), QPointF(x, h))
+
+    def _next_has_trans(self, cid, trs):
+        i = next((k for k, x in enumerate(self.items) if x[0] == cid), -1)
+        return 0 <= i < len(self.items) - 1 and self.items[i + 1][0] in trs
+
+    @staticmethod
+    def _ring(p, r):
+        """따라감 = 고리 표시(막대 왼쪽 안)."""
+        d = min(9.0, r.height() - 4)
+        if d < 4 or r.width() < d + 4:
+            return
+        p.save()
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setBrush(Qt.NoBrush)
+        rr = QRectF(r.left() + 3, r.center().y() - d / 2, d, d)
+        p.setPen(QPen(QColor(0, 0, 0, 160), 3))
+        p.drawEllipse(rr)
+        p.setPen(QPen(QColor("#f2c94c"), 1.6))
+        p.drawEllipse(rr)
+        p.restore()
 
     def _paint_music(self, p, m, r):
         """음악 막대 안: 파형(밝은 초록) · 박자(짧은 눈금) · 마디 첫 박(긴 눈금) · 다른 곡과 겹친 곳 = X(크로스페이드)."""
@@ -800,11 +887,20 @@ class SeqTimeline(QWidget):
     # ---------------------------------------------------------------- 마우스
     def mousePressEvent(self, e):
         pos = e.position()
-        te = self._trans_edge(pos) if e.button() == Qt.LeftButton else None
-        if te:                                   # 전환 구간 끝 = 끌어서 길이(v0.16.34)
-            self._tdur = te
-            self.trans_sel = te[0]
-            self.transDurStart.emit(te[0])
+        hd = self._handle_at(pos)
+        if hd and hd[0] == "dur" and e.button() == Qt.RightButton:
+            self.transRemove.emit(hd[1])
+            return
+        if hd and e.button() == Qt.LeftButton:
+            kind, cid, r = hd
+            if kind == "dur":                        # 위 노랑 = 고르기(미리보기) + 끌어서 전환 길이
+                it = next((x for x in self.items if x[0] == cid), None)
+                d0 = it[5][1] if it and it[5] else 0.5
+                self._tdur = (cid, pos.x(), d0, pos.x() < r.center().x(), False)
+                self.trans_sel = cid
+                self.transSelected.emit(cid)
+            else:                                    # 아래 하늘색 = 컷 아웃·인 끌기
+                self._edge = (cid, kind, pos.x(), False)
             self.update()
             return
         tid = self._trans_at(pos)
@@ -821,6 +917,9 @@ class SeqTimeline(QWidget):
             kind, d, mode = hit
             if e.button() == Qt.RightButton:
                 self.ovRemove.emit(kind, d["id"])
+                return
+            if e.modifiers() & Qt.ShiftModifier:    # v0.16.67 Shift+클릭 = 따라감 켜고 끄기
+                self.ovFollow.emit(kind, d["id"])
                 return
             self.ov_sel = (kind, d["id"])
             self.ovSelected.emit(kind, d["id"])
@@ -845,10 +944,26 @@ class SeqTimeline(QWidget):
 
     def mouseMoveEvent(self, e):
         pos = e.position()
-        if getattr(self, "_tdur", None) and (e.buttons() & Qt.LeftButton):
-            cid, xend = self._tdur
-            d = round(max(0.0, (xend - pos.x()) / self.pps) * 10) / 10      # 0.1초 단위(범위는 받는 쪽이 맞춤)
-            self.transDurEdited.emit(cid, d)
+        if self._tdur and (e.buttons() & Qt.LeftButton):
+            cid, x0, d0, left, started = self._tdur
+            dx = pos.x() - x0
+            if not started:
+                if abs(dx) < 3:
+                    return
+                self._tdur = (cid, x0, d0, left, True)
+                self.transDurStart.emit(cid)
+            d = d0 + (-dx if left else dx) / self.pps
+            self.transDurEdited.emit(cid, round(max(0.0, d) * 10) / 10)      # 0.1초 단위(범위는 받는 쪽이 맞춤)
+            return
+        if self._edge and (e.buttons() & Qt.LeftButton):
+            cid, kind, x0, started = self._edge
+            dx = pos.x() - x0
+            if not started:
+                if abs(dx) < 3:
+                    return
+                self._edge = (cid, kind, x0, True)
+                self.cutEdgeStart.emit(cid, kind)
+            self.cutEdgeDragged.emit(cid, kind, dx / self.pps)
             return
         if self._ov is not None and (e.buttons() & Qt.LeftButton):
             kind, d, mode, x0, o = self._ov
@@ -885,12 +1000,13 @@ class SeqTimeline(QWidget):
             return
         if not e.buttons():
             hit = self._ov_at(pos)
+            hd = self._handle_at(pos)
             tid = self._trans_at(pos)
-            te = self._trans_edge(pos)
-            self.setCursor(Qt.SizeHorCursor if te else Qt.PointingHandCursor if tid else
+            self.setCursor(Qt.SizeHorCursor if hd else Qt.PointingHandCursor if tid else
                            Qt.SizeHorCursor if hit and hit[2] in ("l", "r") else
                            Qt.OpenHandCursor if hit else Qt.ArrowCursor)
-            self.setToolTip(self._trans_tip(tid) if tid else self.tooltip_at(pos.x()) if not hit else "")
+            self.setToolTip(self._handle_tip(hd) if hd else self._trans_tip(tid) if tid else
+                            self.tooltip_at(pos.x()) if not hit else "")
         if self._press is not None and (e.buttons() & Qt.LeftButton):
             if self._drag_x is not None or abs(pos.x() - self._press[1]) > 6:
                 self._drag_x = pos.x()
@@ -901,8 +1017,14 @@ class SeqTimeline(QWidget):
             self.update()
 
     def mouseReleaseEvent(self, e):
-        if getattr(self, "_tdur", None):
+        if self._tdur:
             self._tdur = None
+            return
+        if self._edge:
+            started = self._edge[3]
+            self._edge = None
+            if started:
+                self.cutEdgeEnd.emit()
             return
         if self._ov is not None:
             self._ov = None
@@ -919,6 +1041,9 @@ class SeqTimeline(QWidget):
         self.update()
 
     def mouseDoubleClickEvent(self, e):
+        hd = self._handle_at(e.position())
+        if hd and hd[0] in ("in", "out"):
+            return
         tid = self._trans_at(e.position())
         if tid:
             self.transActivated.emit(tid)

@@ -194,7 +194,6 @@ class Monitor(QWidget):
                 p.drawRoundedRect(rr, rad, rad)
                 bw = max(0.0, min(min(rr.width(), rr.height()) / 2, float(t.get("border", 0)) * k8))
                 if bw > 0.25:                                                     # 테두리(사각형 안쪽으로)
-                    from PySide6.QtGui import QPen
                     pen = QPen(QColor(t.get("bcolor", "#ffffff")), bw)
                     pen.setJoinStyle(Qt.MiterJoin)
                     p.setPen(pen)
