@@ -82,9 +82,14 @@ def k_of(W: int, H: int) -> float:
     return min(W, H) / 1080
 
 
+G_TOP, G_BOTTOM = 270, 73                 # v0.16.89 그래프 세로를 늘림(사용자): 수면 = 시각 글자 조금 아래(270k),
+#                                           최대 수심 = 화면 아래에서 73k 위 — 다이빙마다 최대 수심이 10m 든 40m 든 같은 높이로
+
+
 def geo(W: int, H: int):
     k = k_of(W, H)
-    return k, H - 330 * k, 260 * k          # k, 수면 y, 최대 수심까지 높이
+    top = G_TOP * k
+    return k, top, max(10.0, H - G_BOTTOM * k - top)          # k, 수면 y, 최대 수심까지 높이
 
 
 def band_top(W: int, H: int) -> int:
@@ -271,7 +276,7 @@ def fill_alpha(W: int, H: int, dive: dict, t: float, rv: float = 1.0, ga: float 
     xp = px(max(0.0, min(n, t)))
     ys = np.arange(y0, H, dtype=np.float32)[:, None] + 0.5
     under = ys > cy[None, :]
-    r = np.hypot(xs[None, :], ys - H) / (760 * k)
+    r = np.hypot(xs[None, :], ys - H) / (1000 * k)          # 그래프가 커진 만큼 색 번지는 범위도(760 → 1000)
     a = np.interp(r, [0, .55, 1], [.55, .22, 0]).astype(np.float32)
     L = max(0.6 * xp, FADE_MIN * k)
     f = np.clip((xp - xs) / L, 0, 1)

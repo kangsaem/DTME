@@ -102,7 +102,7 @@ def main(work):
                       f"crop={box[2]}:{box[3]}:{box[0]}:{box[1]},format=rgb24", "-f", "rawvideo", "-"])
         return np.frombuffer(raw, np.uint8).reshape(box[3], box[2], 3).astype(float)
     TXT = (40, 90, 260, 160)              # 수심·시각 글자 자리
-    GR = (0, 760, 1920, 300)              # 그래프 자리
+    GR = (0, 280, 1920, 790)              # 그래프 자리(v0.16.89 세로로 늘림: 270~1007)
     res = {}
     for t in (0.5, 1.25, 3.0, 5.0, 8.0, 11.3, 12.3):
         a, b = grab(out, t, TXT), grab(plain, t, TXT)
