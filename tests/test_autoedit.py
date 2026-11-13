@@ -1,7 +1,6 @@
 """v0.16.68 자동 편집 · 음악 웅장함: 엔진(나누기·구간 고르기·웅장함·장면별 곡) + 화면 흐름(창 → 타임라인, 실행취소 1번).
 사용: python tests/test_autoedit.py [작업폴더]"""
-import faulthandler, os, subprocess, sys, tempfile, time  # noqa: E401
-faulthandler.enable()
+import os, subprocess, sys, tempfile, time  # noqa: E401
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "app"))
 os.environ["QT_QPA_PLATFORM"] = "offscreen"; os.environ["DTME_NO_AUDIO"] = "1"
 import numpy as np
