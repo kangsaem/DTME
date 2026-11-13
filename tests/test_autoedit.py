@@ -1,6 +1,7 @@
 """v0.16.68 자동 편집 · 음악 웅장함: 엔진(나누기·구간 고르기·웅장함·장면별 곡) + 화면 흐름(창 → 타임라인, 실행취소 1번).
 사용: python tests/test_autoedit.py [작업폴더]"""
-import os, subprocess, sys, tempfile, time  # noqa: E401
+import faulthandler, os, subprocess, sys, tempfile, time  # noqa: E401
+faulthandler.enable()
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "app"))
 os.environ["QT_QPA_PLATFORM"] = "offscreen"; os.environ["DTME_NO_AUDIO"] = "1"
 import numpy as np
@@ -42,7 +43,7 @@ epic = epic + loud * (0.5 * np.sin(2 * np.pi * 55 * t) * (0.6 + 0.4 * beat) + 0.
 calm = 0.15 * np.sin(2 * np.pi * 880 * t) * (0.7 + 0.3 * np.sin(2 * np.pi * 0.2 * t)) + 0.08 * np.sin(2 * np.pi * 1320 * t)
 f_epic, f_calm = wav("epic.wav", epic), wav("calm.wav", calm)
 ie, ic = music.analyze(f_epic), music.analyze(f_calm)
-print("웅장함 epic", music.grand(ie), ie["dyn"], ie["bass"], "/ calm", music.grand(ic), ic["dyn"], ic["bass"])
+print("웅장함 epic", music.grand(ie), ie["dyn"], ie["bass"], "/ calm", music.grand(ic), ic["dyn"], ic["bass"], flush=True)
 assert music.grand(ie) > 0.7 and music.grand(ic) < 0.3
 # 장면별 곡: 블루워터 구간 = 웅장한 곡, 얕은 구간 = 잔잔한 곡
 auds = [{"path": f_epic, "dur": ie["dur"]}, {"path": f_calm, "dur": ic["dur"]}]
@@ -55,7 +56,7 @@ assert cov >= 59.5, items
 spans = [("a", 0.0, 10.0), ("b", 10.0, 10.0), ("c", 20.0, 30.0), ("d", 50.0, 15.0)]
 mr = autoedit.music_runs(spans, {"a": "bluewater", "b": "bluewater", "c": "shallow", "d": "deep"})
 assert [g for _a, _b, g in mr] == ["grand", "calm"] and mr[0][1] == 20.0, mr      # 20초 미만 '깊은' 구간 = 앞에 붙음
-print("엔진 OK")
+print("엔진 OK", flush=True)
 
 # ---------------------------------------------------------------- 2) 화면 흐름
 from PySide6.QtWidgets import QApplication  # noqa: E402
@@ -83,6 +84,7 @@ def wait(sec, cond=None):
 
 st, e = w.state, w.edit
 e.import_files(vids); wait(90, lambda: len(st.project.sources) == 4 and all(st.status.get(x.id) == "준비" for x in st.project.sources))
+print("단계: 가져오기", flush=True)
 p = st.project
 for s, k in zip(p.sources, ["bluewater", "shallow", "", "bluewater"]):
     if k:
@@ -99,15 +101,17 @@ assert dlg.settings()["minutes"] == 1 and dlg.settings()["grade"] and dlg.settin
 dlg.show(); wait(0.2)
 dlg.grab().save(os.path.join(d, "autoedit_dialog.png"))
 ui_style.confirm = lambda *a_, **k_: "ok"            # 타임라인 바꾸기 확인
+print("단계: 실행", flush=True)
 nu = len(st._undo)
 e.run_autoedit(dlg, dlg.settings())
 assert wait(240, lambda: not dlg.isVisible()), dlg.state_lab.text()
+print("단계: 끝남", flush=True)
 wait(0.5)
 p = st.project
 segs = p.segments
 lens = [p.seg_out_seconds(g, p.source(g.src).fps) for g in segs]
 tot = p.out_seconds()
-print("컷", len(segs), [round(x, 2) for x in lens], "결과", round(tot, 2), "음악", [(os.path.basename(m["path"]), m["t0"], m["len"]) for m in p.music])
+print("컷", len(segs), [round(x, 2) for x in lens], "결과", round(tot, 2), "음악", [(os.path.basename(m["path"]), m["t0"], m["len"]) for m in p.music], flush=True)
 assert len(st._undo) == nu + 1                       # 실행취소 1번
 assert len(segs) >= 4 and all(autoedit.CUT_MIN - 0.05 <= x <= autoedit.CUT_MAX + 0.05 for x in lens)
 assert abs(tot - 60) < 3.0, tot
@@ -132,7 +136,8 @@ assert max(float(m["t0"]) + float(m["len"]) for m in p.music) >= tot - 0.2
 assert os.path.basename(p.music[0]["path"]) == "epic.wav"                  # 첫 구간 = 블루워터 = 웅장한 곡
 w.grab().save(os.path.join(d, "autoedit_after.png"))
 e.timeline.grab().save(os.path.join(d, "autoedit_tl.png"))
+print("단계: 실행취소", flush=True)
 w.undo(); wait(0.3)
 assert len(st.project.segments) == 1 and not any(x.get("auto_edit") for x in st.project.titles)
-print("OK test_autoedit")
+print("OK test_autoedit", flush=True)
 os._exit(0)
