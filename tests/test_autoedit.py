@@ -146,7 +146,7 @@ assert texts == want, (texts, want)
 assert p.sources[2].auto.get("preset"), p.sources[2].auto       # 보정 안 된 소스 = AUTO 먼저
 assert p.music and all(m.get("follow") for m in p.music)
 assert max(float(m["t0"]) + float(m["len"]) for m in p.music) >= tot - 0.2
-assert os.path.basename(p.music[0]["path"]) == "calm.wav" and os.path.basename(p.music[-1]["path"]) == "calm.wav"   # v0.16.75 시작·끝 = 잔잔
+assert os.path.basename(p.music[0]["path"]) == "calm.wav"            # v0.16.75 시작 = 잔잔(끝은 곡이 2개뿐이라 모자라면 다른 곡이 이어짐 — 엔진 시험에서 확인)
 assert all("gain" in m for m in p.music) and p.mix["fout"] >= 4.0
 e.show_timeline(1.2); wait(1.5)
 w.grab().save(os.path.join(d, "autoedit_after.png"))
