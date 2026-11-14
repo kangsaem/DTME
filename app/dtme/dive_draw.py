@@ -208,7 +208,11 @@ def paint_graph(p: QPainter, W: int, H: int, dive: dict, t: float):
     p.restore()
 
 
-PULSE_SEC, PULSE_FPS = 1.5, 12          # v0.16.91 빨간 점 둘레 은은한 깜빡임(1.5초 주기)
+PULSE_SEC, PULSE_FPS = 3.0, 12          # v0.16.92 소나(사용자 19:25): 3초 주기 = 흰 링 1.8초 퍼짐 + 1.2초 쉼
+SONAR_RUN = 0.6                          # 주기 중 퍼지는 비율
+SONAR_R0, SONAR_R1 = 12.5, 54.0          # 링 반지름(1080 기준 px): 점(11) 바로 밖 → 약 5배
+SONAR_W, SONAR_A = 3.0, 0.9              # 링 두께 · 처음 진하기(→ 0)
+PULSE_BOX = 2 * (SONAR_R1 + SONAR_W) + 4  # 깜빡임 그림 한 변(1080 기준 px)
 
 
 def dot_xy(W: int, H: int, dive: dict, t: float):
@@ -218,23 +222,20 @@ def dot_xy(W: int, H: int, dive: dict, t: float):
 
 
 def paint_glow(p: QPainter, cx: float, cy: float, k: float, phase: float, alpha: float = 1.0):
-    """점 둘레 퍼지는 빨간 빛(phase 0~1): 반지름 11k → 30k, 진하기 0.55 → 0."""
-    from PySide6.QtGui import QRadialGradient
+    """v0.16.92 소나: 점에서 흰 링 하나가 퍼지며 사라짐(phase 0~1 중 SONAR_RUN 동안), 나머지는 쉼."""
     if alpha <= 0.002:
         return
-    ph = phase % 1.0
-    r = (11 + 19 * ph) * k
-    a = 0.55 * (1 - ph) * alpha
-    g = QRadialGradient(QPointF(cx, cy), r)
-    c0, c1 = QColor(DOT), QColor(DOT)
-    c0.setAlphaF(a)
-    c1.setAlphaF(0.0)
-    g.setColorAt(0.45, c0)
-    g.setColorAt(1.0, c1)
+    q = (phase % 1.0) / SONAR_RUN
+    if q >= 1.0:
+        return
+    e = 1 - (1 - q) ** 2                          # 빠르게 나가 천천히 멈춤
+    c = QColor("#ffffff")
+    c.setAlphaF(max(0.0, SONAR_A * (1 - q) * alpha))
     p.save()
     p.setRenderHint(QPainter.Antialiasing)
-    p.setPen(Qt.NoPen)
-    p.setBrush(g)
+    p.setPen(QPen(c, SONAR_W * k))
+    p.setBrush(Qt.NoBrush)
+    r = (SONAR_R0 + (SONAR_R1 - SONAR_R0) * e) * k
     p.drawEllipse(QPointF(cx, cy), r, r)
     p.restore()
 
@@ -623,7 +624,7 @@ def render_layers(project, dives: list, off: float, spans: list, total: float, W
             lambda a_=a_: to_qimage(fill_rgb(a_, "add")) if a_ is not None else to_qimage(np.zeros((fh, fw, 3), np.uint8)), dur)
     # v0.16.91 점 깜빡임 = 작은 그림 따로(1.5초 주기 반복) + 위치는 0.5초마다(sendcmd) · 그래프가 다 보일 때만
     k = k_of(W, H)
-    S = int(64 * k) // 2 * 2 + 2
+    S = int(PULSE_BOX * k) // 2 * 2 + 2
     nfr = int(PULSE_SEC * PULSE_FPS)
     pulse = []
     for j in range(nfr):
