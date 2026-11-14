@@ -2343,19 +2343,93 @@ def type_layout(t: dict, ow: int, oh: int):
     return rows, (bx, by, bw, bh)
 
 
+_TYPE_MEASURE: dict = {}
+
+
+def _measure_gray(vf: str, ow: int, oh: int):
+    """lavfi 검은 화면 1장에 필터 → 회색 ndarray (글자 자리 재기)."""
+    import numpy as np
+    raw = run([paths.ffmpeg(), "-v", "error", "-f", "lavfi", "-i", f"color=black:s={ow}x{oh}:r=25:d=0.2", "-vf", vf,
+               "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray", "-"], cwd=str(paths.cache_dir() / "lut"))
+    return np.frombuffer(raw[:ow * oh], np.uint8).reshape(oh, ow)
+
+
+def type_layout_ff(t: dict, ow: int, oh: int, base: list):
+    """v0.16.91 타이핑 자리를 ffmpeg 로 직접 잼(보통 글자와 같은 엔진 = Windows 에서도 같은 자리, CI 실측 Qt 계산 = 55px 어긋남).
+    보통 글자(다 친 것)를 한 번 그려 줄마다 잉크 상자 → 줄마다 한 줄로 그렸을 때의 잉크 시작점 차이 → [(줄, x, y)] (y_align=font).
+    줄 수가 안 맞으면 None(Qt 계산으로)."""
+    import numpy as np
+    key = (t.get("text"), t.get("font"), t.get("size"), bool(t.get("bold")), t.get("cx"), t.get("cy"), ow, oh, tuple(base))
+    if key in _TYPE_MEASURE:
+        return _TYPE_MEASURE[key]
+    res = None
+    try:
+        plain = dict(t, ain="fade", aout="fade", fade=0, bg="none", t0=0.0, t1=100.0)
+        full = text_filter(plain, ow, oh)
+        g = _measure_gray(full, ow, oh) > 60
+        rows_on = np.nonzero(g.any(axis=1))[0]
+        groups = []
+        for y in rows_on:
+            if groups and y - groups[-1][1] <= max(2, int(oh * 0.004)):
+                groups[-1][1] = y
+            else:
+                groups.append([y, y])
+        lines = (t.get("text") or "").replace("\r\n", "\n").split("\n")
+        real = [ln for ln in lines if ln.strip()]
+        if len(groups) == len(real):
+            nb = [x for x in base if not x.startswith(("shadow", "box", "borderw", "bordercolor"))]
+            out, gi = [], 0
+            for ln in lines:
+                if not ln.strip():
+                    continue
+                y0, y1 = groups[gi]
+                gi += 1
+                xs = np.nonzero(g[y0:y1 + 1].any(axis=0))[0]
+                tf = paths.cache_dir() / "lut" / f"tx_{hashlib.sha1(ln.encode()).hexdigest()[:10]}.txt"
+                tf.write_text(ln, encoding="utf-8")
+                one = _measure_gray("drawtext=" + ":".join(nb + [f"textfile={tf.name}", "y_align=font", "x=100", "y=100"]), ow, oh) > 60
+                ys1, xs1 = np.nonzero(one)
+                if not len(xs1):
+                    raise ValueError("빈 줄 그림")
+                out.append((ln, float(xs[0] - (xs1.min() - 100)), float(y0 - (ys1.min() - 100))))
+            xs_all = np.nonzero(g.any(axis=0))[0]
+            res = (out, (float(xs_all[0]), float(rows_on[0]), float(xs_all[-1] - xs_all[0] + 1), float(rows_on[-1] - rows_on[0] + 1)))
+    except Exception as ex:  # noqa: BLE001
+        log_error("타이핑 자리 재기", str(ex))
+        res = None
+    if len(_TYPE_MEASURE) > 200:
+        _TYPE_MEASURE.clear()
+    _TYPE_MEASURE[key] = res
+    return res
+
+
 def _type_filters(t: dict, ow: int, oh: int, base: list, col: str) -> str:
     """타이핑: 줄마다 · 글자 수마다 drawtext 하나(앞부분, 보이는 구간만). 자리 = 다 친 줄(왼쪽부터 채움)."""
     from .project import TYPE_SEC
     t0, t1 = float(t["t0"]), float(t["t1"])
     ts = t0 + float(t.get("tdelay", 0.0) or 0.0)
-    rows, (bx, by, bw, bh) = type_layout(t, ow, oh)
+    m = type_layout_ff(t, ow, oh, base)
+    if m is not None:
+        rows, (bx, by, bw, bh) = m
+        ya = "y_align=font"
+    else:
+        rows, (bx, by, bw, bh) = type_layout(t, ow, oh)
+        ya = "y_align=baseline"
     k = min(ow, oh) / 1080
     tt = dict(t, ain="fade")
     sx, sy = _slide_xy(tt, f"{bx:.1f}", f"{by:.1f}", f"{bw:.1f}", f"{bh:.1f}", ow, oh, 24 * k)
     _ain, aout, _fd = _anim_sides(tt)
     alpha = _fade_alpha(t0, t1, float(t.get("fade", 0.5)), False, aout == "fade")
     out, idx = [], 0
+    lines = (t.get("text") or "").replace("\r\n", "\n").split("\n")
+    pos = {}
     for ln, x, yb in rows:
+        pos.setdefault(ln, []).append((x, yb))
+    for ln in lines:
+        if not pos.get(ln):
+            idx += len(ln)
+            continue
+        x, yb = pos[ln].pop(0)
         for c in range(1, len(ln) + 1):
             a = max(t0, ts + (idx + c - 1) * TYPE_SEC)
             b = t1 if c == len(ln) else max(t0, ts + (idx + c) * TYPE_SEC)
@@ -2366,7 +2440,7 @@ def _type_filters(t: dict, ow: int, oh: int, base: list, col: str) -> str:
                 continue
             tf = paths.cache_dir() / "lut" / f"tx_{hashlib.sha1(part.encode()).hexdigest()[:10]}.txt"
             tf.write_text(part, encoding="utf-8")
-            o = base + [f"textfile={tf.name}", "y_align=baseline",
+            o = base + [f"textfile={tf.name}", ya,
                         f"x='({sx})+{x - bx:.1f}'", f"y='({sy})+{yb - by:.1f}'",
                         f"enable='between(t,{a:.4f},{b:.4f})'", f"alpha='{alpha}'"]
             out.append("drawtext=" + ":".join(o))

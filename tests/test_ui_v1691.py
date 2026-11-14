@@ -50,7 +50,7 @@ def _bb(x):
     return np.array([xs.min(), ys.min(), xs.max(), ys.max()])
 shift = np.abs(_bb(full) - _bb(typed)).max()
 print("타이핑: 다 친 화면 차이", round(diff, 2), "상자 어긋남 px", int(shift), "중간 픽셀", int((mid > 128).sum()), "/", int((typed > 128).sum()))
-assert shift <= 6 and (before > 128).sum() == 0 and 0 < (mid > 128).sum() < 0.6 * (typed > 128).sum()
+assert shift <= 3 and (before > 128).sum() == 0 and 0 < (mid > 128).sum() < 0.6 * (typed > 128).sum()
 
 from dtme.ui_titles import RectDialog, TextDialog  # noqa: E402
 td = TextDialog(dict(t))
