@@ -889,8 +889,11 @@ class AutoDialog(DragMove, QDialog):
     def _media_count(self):
         p = self.state.project
         na, ni, nd = len(p.audios), len(p.images), len(p.dives)
-        self.media_lab.setText(" · ".join(x for x in (f"음악 {na}" if na else "", f"사진 {ni}" if ni else "",
+        songs = " · ".join(Path(a["path"]).stem for a in p.audios)          # v0.16.91 곡 이름(사용자)
+        self.media_lab.setText(" · ".join(x for x in (f"음악 {na}곡: {songs}" if na else "", f"사진 {ni}" if ni else "",
                                                       f"다이빙 {nd}" if nd else "") if x))
+        self.media_lab.setWordWrap(True)
+        self.media_lab.setToolTip("\n".join(Path(a["path"]).name for a in p.audios))
         self.media_lab.setVisible(bool(na or ni or nd))
 
     def dragEnterEvent(self, e):
@@ -953,7 +956,18 @@ class AutoDialog(DragMove, QDialog):
             i = self.list.row(it)
             if i >= len(self.rows):
                 return False
+            anc = getattr(self, "_check_anchor", None)
+            if e.modifiers() & Qt.ShiftModifier and anc is not None and anc[0] < len(self.rows):   # v0.16.91 Shift = 범위
+                a, b = min(anc[0], i), max(anc[0], i)
+                old = [r.checked for r in self.rows]
+                for k in range(a, b + 1):
+                    self.rows[k].checked = anc[1]
+                self.list.viewport().update()
+                if [r.checked for r in self.rows] != old:
+                    self._row_changed()
+                return True
             self._cdrag = (i, not self.rows[i].checked, [r.checked for r in self.rows])
+            self._check_anchor = (i, not self.rows[i].checked)
             self._paint_checks(i)
             return True
         if self._cdrag is None:

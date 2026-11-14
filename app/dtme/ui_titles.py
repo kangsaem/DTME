@@ -18,20 +18,22 @@ RECT_SWATCHES = ["#000000", "#ffffff", "#1f3a5f", "#7a1f1f"]
 ANIM_BTNS = (("fade", "페이드"), ("right", "→"), ("left", "←"), ("up", "↑"), ("down", "↓"))
 
 
-def anim_rows(dlg, grid, row: int, data: dict, all_label: str = ""):
-    """들어올 때(인)·나갈 때(아웃): [페이드 | → | ← | ↑ | ↓] 두 줄(v0.16.57). 화살표 = 움직이는 방향. dlg.anim = {'ain': 그룹, 'aout': 그룹}."""
+def anim_rows(dlg, grid, row: int, data: dict, all_label: str = "", typing: bool = False):
+    """들어올 때(인)·나갈 때(아웃): [페이드 | → | ← | ↑ | ↓] 두 줄(v0.16.57). 화살표 = 움직이는 방향. dlg.anim = {'ain': 그룹, 'aout': 그룹}.
+    typing = 글자 창: 인 줄에 [타이핑](v0.16.91, 한 글자씩)."""
     dlg.anim = {}
     for i, (key, name) in enumerate((("ain", "인"), ("aout", "아웃"))):
         grid.addWidget(QLabel(name), row + i, 0)
         h = QHBoxLayout()
         h.setSpacing(0)
         grp = QButtonGroup(dlg)
-        for j, (k, n) in enumerate(ANIM_BTNS):
+        btns = ANIM_BTNS + ((("type", "타이핑"),) if typing and key == "ain" else ())
+        for j, (k, n) in enumerate(btns):
             b = QPushButton(n)
             b.setCheckable(True)
             b.setFocusPolicy(Qt.NoFocus)
             b.setProperty("key", k)
-            b.setMinimumWidth(34 if k != "fade" else 52)
+            b.setMinimumWidth(52 if k in ("fade", "type") else 34)
             b.setChecked(data.get(key, "fade") == k)
             grp.addButton(b, j)
             h.addWidget(b, 1)
@@ -151,7 +153,7 @@ class TextDialog(_Undoable):
             brow.addWidget(b, 1)
         self.bg.buttonClicked.connect(lambda b: self._set("bg", b.property("key")))
         g.addLayout(brow, 2, 1, 1, 2)
-        anim_rows(self, g, 3, title, "모든 글자에 적용")
+        anim_rows(self, g, 3, title, "모든 글자에 적용", typing=True)
         g.addWidget(QLabel("길이"), 6, 0)            # 페이드·밀기 길이(예전 이름 '페이드')
         self.fade = _slider(0, 20, int(round(float(title.get("fade", 0.5)) * 10)))
         self.fade_v = QLabel(f"{self.fade.value() / 10:.1f}초")

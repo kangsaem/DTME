@@ -2317,9 +2317,67 @@ def _work_copy(path: str, prefix: str) -> str:
     return dst.name
 
 
+def type_layout(t: dict, ow: int, oh: int):
+    """v0.16.91 타이핑 글자 자리(출력 px): [(줄, 왼쪽 x, 기준선 y)], (상자 x, y, w, h). 모니터와 같은 계산(Qt 글꼴).
+    화면 없이(시험) = 어림."""
+    k = min(ow, oh) / 1080
+    lines = (t.get("text") or "").replace("\r\n", "\n").split("\n")
+    px = max(8, round(float(t.get("size", 64)) * k))
+    try:
+        from PySide6.QtGui import QFontMetricsF, QGuiApplication
+        if QGuiApplication.instance() is None:
+            raise RuntimeError("no app")
+        from .ui_player import Monitor
+        f = Monitor._title_font(None, t, 1.0)
+        f.setPixelSize(px)
+        fm = QFontMetricsF(f)
+        ws = [fm.horizontalAdvance(x) for x in lines]
+        ls, asc = fm.lineSpacing(), fm.ascent()
+    except Exception:  # noqa: BLE001
+        ws = [len(x) * px * 0.58 for x in lines]
+        ls, asc = px * 1.3, px * 0.95
+    gap = 8 * k
+    bw, bh = max(ws + [1.0]) + 4, ls * len(lines) + gap * (len(lines) - 1)
+    bx, by = float(t.get("cx", 0.5)) * ow - bw / 2, float(t.get("cy", 0.8)) * oh - bh / 2
+    rows = [(ln, bx + bw / 2 - w / 2, by + i * (ls + gap) + asc) for i, (ln, w) in enumerate(zip(lines, ws))]
+    return rows, (bx, by, bw, bh)
+
+
+def _type_filters(t: dict, ow: int, oh: int, base: list, col: str) -> str:
+    """타이핑: 줄마다 · 글자 수마다 drawtext 하나(앞부분, 보이는 구간만). 자리 = 다 친 줄(왼쪽부터 채움)."""
+    from .project import TYPE_SEC
+    t0, t1 = float(t["t0"]), float(t["t1"])
+    ts = t0 + float(t.get("tdelay", 0.0) or 0.0)
+    rows, (bx, by, bw, bh) = type_layout(t, ow, oh)
+    k = min(ow, oh) / 1080
+    tt = dict(t, ain="fade")
+    sx, sy = _slide_xy(tt, f"{bx:.1f}", f"{by:.1f}", f"{bw:.1f}", f"{bh:.1f}", ow, oh, 24 * k)
+    _ain, aout, _fd = _anim_sides(tt)
+    alpha = _fade_alpha(t0, t1, float(t.get("fade", 0.5)), False, aout == "fade")
+    out, idx = [], 0
+    for ln, x, yb in rows:
+        for c in range(1, len(ln) + 1):
+            a = max(t0, ts + (idx + c - 1) * TYPE_SEC)
+            b = t1 if c == len(ln) else max(t0, ts + (idx + c) * TYPE_SEC)
+            if b <= a:
+                continue
+            part = ln[:c]
+            if not part.strip():
+                continue
+            tf = paths.cache_dir() / "lut" / f"tx_{hashlib.sha1(part.encode()).hexdigest()[:10]}.txt"
+            tf.write_text(part, encoding="utf-8")
+            o = base + [f"textfile={tf.name}", "y_align=baseline",
+                        f"x='({sx})+{x - bx:.1f}'", f"y='({sy})+{yb - by:.1f}'",
+                        f"enable='between(t,{a:.4f},{b:.4f})'", f"alpha='{alpha}'"]
+            out.append("drawtext=" + ":".join(o))
+        idx += len(ln)
+    return ",".join(out) or None
+
+
 def text_filter(t: dict, ow: int, oh: int) -> str | None:
     """타임라인 글자 1개 → drawtext."""
     from .fonts import font_file
+    from .project import TYPE
     if not (t.get("text") or "").strip():
         return None
     k = min(ow, oh) / 1080
@@ -2346,6 +2404,8 @@ def text_filter(t: dict, ow: int, oh: int) -> str | None:
         o.append(f"shadowx={sh}:shadowy={sh}:shadowcolor=0x000000@0.6")
     elif bg == "band":
         o.append(f"box=1:boxcolor=0x000000@0.45:boxborderw={round(16 * k)}")
+    if t.get("ain") == TYPE:                        # v0.16.91 타이핑
+        return _type_filters(t, ow, oh, [x for x in o if not x.startswith(("textfile=", "x=", "y=", "text_align"))], col)
     o.append(f"enable='between(t,{t0:.4f},{t1:.4f})'")
     ain, aout, _fd = _anim_sides(t)
     o.append(f"alpha='{_fade_alpha(t0, t1, float(t.get('fade', 0.5)), ain == 'fade', aout == 'fade')}'")

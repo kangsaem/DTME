@@ -16,7 +16,7 @@ import subprocess
 import numpy as np
 
 from . import ff, paths
-from .project import (TRANSITIONS, Segment, display_name, new_rect, new_text, short_name)
+from .project import (TRANSITIONS, TYPE_SEC, Segment, display_name, new_rect, new_text, short_name)
 
 STEP = 0.5                       # 초 — 화면 읽는 간격
 SW, SH = 96, 54
@@ -193,6 +193,42 @@ def allot(durs: list[float], total: float, cut_max: list | None = None) -> list[
     return out
 
 
+BLUR_CONTRAST = 0.035               # v0.16.91 클립 화면 대비(밝기 표준편차, 중간값)가 이보다 낮음 = 흐림
+SHAKE_MOTION = 0.09                 # 0.5초 사이 화면 차(중간값)가 이보다 큼 = 심하게 흔들림
+
+
+def trim_picks(project, picks: list[dict], minutes: float) -> tuple[list[dict], list[tuple[str, str]]]:
+    """v0.16.91 클립이 너무 많아 정한 길이에 다 못 넣을 때: 가능한 많이 넣고, 넘치면 흐린(대비 아주 낮음)·심하게 흔들린 클립 먼저 뺌,
+    그다음 하이라이트 점수가 낮은 클립. 클립마다 최소 = 컷 1개(5초, LOG 다이빙 = 15초) − 전환 겹침.
+    → (남길 것(촬영순 그대로), [(이름, 'blur'|'shake'|'time')])."""
+    total = float(minutes) * 60.0
+
+    def need(pk):
+        return (DIVE_MIN if dive_src(project, pk["src"]) else CUT_MIN) - TRANS_SEC
+
+    if sum(need(pk) for pk in picks) + TRANS_SEC <= total + 1e-6:
+        return list(picks), []
+
+    def bad(pk):
+        c, m = pk.get("contrast"), pk.get("motion")
+        if c is not None and c < BLUR_CONTRAST:
+            return (0, c)
+        if m is not None and m > SHAKE_MOTION:
+            return (1, -m)
+        sc = pk.get("score")
+        return (2, float(np.mean(sc)) if sc is not None and len(sc) else 0.0)
+    order = sorted(range(len(picks)), key=lambda i: bad(picks[i]))
+    drop, room = set(), sum(need(pk) for pk in picks) + TRANS_SEC
+    for i in order:
+        if room <= total + 1e-6 or len(picks) - len(drop) <= 1:
+            break
+        drop.add(i)
+        room -= need(picks[i])
+    why = {0: "blur", 1: "shake", 2: "time"}
+    return ([pk for i, pk in enumerate(picks) if i not in drop],
+            [(display_name(picks[i]["src"].path), why[bad(picks[i])[0]]) for i in sorted(drop)])
+
+
 def fit_total(cuts: list[list[float]], total: float, n_trans: int) -> list[list[float]]:
     """전환 겹침(경계마다 0.5초)만큼 컷을 늘려 결과 길이 = total (5~60초 안에서)."""
     cur = sum(sum(c) for c in cuts) - n_trans * TRANS_SEC
@@ -230,8 +266,10 @@ def dive_lens(lens: list, dur: float) -> list:
     return [min(dur, max(DIVE_MIN, tot / k))] * k
 
 
-def build(project, picks: list[dict], minutes: int, seed: int = 0, titles: bool = True, cut_max: list | None = None) -> dict:
+def build(project, picks: list[dict], minutes: int, seed: int = 0, titles: bool = True, cut_max: list | None = None,
+          date_mode: str = "clip", first_fade: bool = True) -> dict:
     """picks = [{"src": Source, "scene": str, "score": ndarray, "surface": bool 배열(칸마다 물 밖)}] (촬영순).
+    date_mode(v0.16.91 날짜 바): 'clip' = 원본 클립마다(그 클립 첫 컷) · 'gap' = 첫 컷 + 마지막으로 보인 것보다 1시간 넘게 뒤 클립만(전부 자동).
     → {"segs": [Segment], "titles": [dict], "scenes": {컷 id: scene | 'surface'}}"""
     total = float(minutes) * 60.0
     durs = [p["src"].frames / float(p["src"].fps) for p in picks]
@@ -243,7 +281,6 @@ def build(project, picks: list[dict], minutes: int, seed: int = 0, titles: bool 
     # v0.16.91 컷 사이 = 검정·흰색 페이드 안 씀(첫 컷 시작·마지막 컷 끝만, 사용자) · 회전 줌·사각 파동 = 각각 한 영상 2번까지, 연달아 안 씀
     kinds = [k for k, _ in TRANSITIONS if k not in ("none", "fadeblack", "fadewhite")]
     special = {"rot": [], "rip": []}
-    rot_n, last_rot = 0, False
     segs, scene_of, firsts = [], {}, []
     for p, lens in zip(picks, cuts):
         s = p["src"]
@@ -270,8 +307,8 @@ def build(project, picks: list[dict], minutes: int, seed: int = 0, titles: bool 
                 if k.startswith("ripple"):
                     special["rip"].append(k)
                 g.trans = {"type": k, "dur": TRANS_SEC}
-            else:
-                g.trans = {"type": "fadeblack", "dur": FADE_IN_SEC}             # 첫 컷 = 검정에서 페이드 인
+            elif first_fade:
+                g.trans = {"type": "fadeblack", "dur": FADE_IN_SEC}             # 첫 컷 = 검정에서 페이드 인(시작 화면 있으면 = 화면이 디졸브)
             if j == 0:
                 firsts.append((g.id, s))
             sf = p.get("surface")
@@ -293,13 +330,23 @@ def build(project, picks: list[dict], minutes: int, seed: int = 0, titles: bool 
         wh = (1080, 1920) if out_size(o)[0] < out_size(o)[1] else (1920, 1080)     # 위치 비율 = 화면 방향만(크기 무관)
         seg_of = {g.id: g for g in segs}
         dives = list(getattr(project, "dives", []) or []) if getattr(project, "dive_on", True) else []
+        last_shown = None
         for cid, s in firsts:
+            g = seg_of[cid]
+            when = cut_when(s, g)
             if dives:                                  # v0.16.84 수심 그래프가 들어가는 컷 = 날짜·시간 사각형 안 넣음(좌상단에 날짜·시각)
                 from . import dive_draw
-                if dive_draw.cut_dive(dives, s, seg_of[cid], getattr(project, "dive_off", 0.0)):
+                if getattr(g, "log", True) and dive_draw.cut_dive(dives, s, g, getattr(project, "dive_off", 0.0)):
+                    last_shown = when if when is not None else last_shown
                     continue
+            if date_mode == "gap" and last_shown is not None and when is not None and when - last_shown <= DATE_GAP:
+                continue
             t0 = start.get(cid, 0.0) + tdur.get(cid, 0.0) + TITLE_DELAY     # v0.16.72 디졸브 끝나고 1초 뒤(사용자)
-            tts += title_pair(display_name(s.path), t0, wh)
+            if when is not None:
+                tts += date_bar(when, t0, wh)          # v0.16.91 날짜 바(연도 · 날짜 · 시각, 타이핑)
+                last_shown = when
+            else:
+                tts += title_pair(display_name(s.path), t0, wh)
     return {"segs": segs, "titles": tts, "scenes": scene_of, "end_fade": FADE_OUT_SEC}
 
 
@@ -341,6 +388,75 @@ def title_pair(text: str, t0: float, out_wh: tuple[int, int] = (1920, 1080)) -> 
     rc.update(cx=round(full / 2 / W, 4), cy=round(cy, 4), w=round(full / W, 4), h=round(rh / H, 4), opacity=0.5, ain="right", aout="left",
               follow=True, auto_edit=True)
     return [rc, tx]
+
+
+# ------------------------------------------------------------------ v0.16.91 날짜 바(확정 시안 U_date_bar7, 1080 기준 px)
+DATE_GAP = 3600.0                   # 전부 자동: 마지막으로 보인 날짜보다 1시간 넘게 뒤 클립만
+DB_FONT = "TeX Gyre Heros"
+DB_YEAR, DB_DATE, DB_TIME = 26, 58, 92          # 글자 크기
+DB_LEFT, DB_RIGHT, DB_PADY = 84, 56, 18         # 왼쪽 여백(화면 왼쪽 끝부터) · 오른쪽 · 위아래
+DB_YEAR_DX, DB_GAP = 3, 20                      # 연도 = 날짜보다 약간 오른쪽 · 날짜 ↔ 시각 사이
+DB_CY = 0.64                                    # 바 가운데 = 화면 높이 64% + 아래로 DB_DOWN 바 높이
+DB_DOWN = 2.0
+DB_TYPE0 = 0.5                                  # 바가 들어온 뒤 타이핑 시작(초)
+
+
+def cut_when(src, seg) -> float | None:
+    """컷 시작의 실제 시각(카메라 현지, 시간대 없는 초) — 파일 이름(초까지) 또는 파일 안 만든 시각."""
+    try:
+        from .dive_draw import shot_time
+        t = shot_time(src)
+    except Exception:  # noqa: BLE001
+        t = None
+    return None if t is None or not src.fps else t + seg.fin / float(src.fps)
+
+
+def _metrics(t: dict) -> tuple[float, float, float, float]:
+    """글자(1080 기준 px) → (폭, 줄 높이, 기준선까지, 숫자 높이). 화면 없으면 어림."""
+    try:
+        from PySide6.QtGui import QFontMetricsF, QGuiApplication
+        if QGuiApplication.instance() is None:
+            raise RuntimeError("no app")
+        from .ui_player import Monitor
+        fm = QFontMetricsF(Monitor._title_font(None, t, 1.0))
+        return fm.horizontalAdvance(t["text"]), fm.lineSpacing(), fm.ascent(), fm.tightBoundingRect("0123456789").height()
+    except Exception:  # noqa: BLE001
+        z = float(t.get("size", 64))
+        return len(t["text"]) * z * 0.56, z * 1.2, z * 0.93, z * 0.72
+
+
+def date_bar(when: float, t0: float, out_wh: tuple[int, int] = (1920, 1080)) -> list[dict]:
+    """날짜 바: 화면 왼쪽 끝부터 사각형(검정 50%) + 연도(작게, 위) · 날짜(아래, 시각과 기준선 같음) · 시각(크게, 연도 위~날짜 아래).
+    사각형 = 왼쪽에서 들어오고 왼쪽으로 나감, 글자 = 한 글자씩 타이핑(약 0.06초) 뒤 왼쪽으로 나감. 5초, 따라감.
+    → [사각형, 연도, 날짜, 시각]."""
+    from datetime import datetime, timezone
+    W, H = out_wh
+    k = min(W, H) / 1080
+    d = datetime.fromtimestamp(when, timezone.utc)
+    t1 = t0 + TITLE_SEC
+    items = []
+    for text, size, bold in ((f"{d.year}", DB_YEAR, False), (f"{d.month:02d}/{d.day:02d}", DB_DATE, True),
+                             (f"{d.hour:02d}:{d.minute:02d}", DB_TIME, True)):
+        tx = new_text(t0, t1, text)
+        tx.update(font=DB_FONT, size=size, bold=bold, bg="none", ain="type", aout="left", follow=True, auto_edit=True, datebar=True)
+        items.append((tx,) + _metrics(tx))
+    (ty, wy, ly, ay, hy), (td, wd, ld, ad, hd), (tt, wt, lt, at, ht) = items
+    B = DB_CY * H / k + (ht + 2 * DB_PADY) / 2 - DB_PADY            # 시각 기준선(1080 기준) — 바 가운데가 DB_CY
+    B += DB_DOWN * (ht + 2 * DB_PADY)                                # v0.16.91 사용자 11:05: 바 높이 2배만큼 아래로
+    top = B - ht                                                     # 시각 숫자 위 = 연도 숫자 위
+    place = [(ty, wy, ly, ay, DB_LEFT + DB_YEAR_DX, top + hy),       # (글자, 폭, 줄높이, 기준선까지, 왼쪽, 기준선)
+             (td, wd, ld, ad, DB_LEFT, B),
+             (tt, wt, lt, at, DB_LEFT + max(wd, wy + DB_YEAR_DX) + DB_GAP, B)]
+    delay = DB_TYPE0
+    for tx, w, ls, asc, left, base in place:
+        tx.update(cx=round((left + w / 2) * k / W, 5), cy=round((base + ls / 2 - asc) * k / H, 5), tdelay=round(delay, 3))
+        delay += len(tx["text"]) * TYPE_SEC
+    right = (place[2][4] + wt + DB_RIGHT) * k
+    rh = (ht + 2 * DB_PADY) * k
+    rc = new_rect(t0, t1)
+    rc.update(cx=round(right / 2 / W, 5), cy=round((top - DB_PADY) * k / H + rh / 2 / H, 5), w=round(right / W, 5), h=round(rh / H, 5),
+              opacity=0.5, ain="right", aout="left", follow=True, auto_edit=True, datebar=True)
+    return [rc, ty, td, tt]
 
 
 def music_runs(spans, scenes: dict, min_len: float = 20.0) -> list[tuple[float, float, str]]:
@@ -441,3 +557,156 @@ def snap_to_bars(project, music_info: dict, tol_bar: float = 0.5) -> int:
         follow_apply(p, anc)
         moved += 1
     return moved
+
+
+# ------------------------------------------------------------------ v0.16.91 시작·끝 화면(자동 편집)
+# 배경 = 스틸 + 흰색 50% · 글자 남색 · 타이핑. 시작 = 검정에서 페이드 인(→ 첫 컷으로 디졸브), 끝 = 마지막 컷에서 디졸브 → 검정으로 페이드 아웃.
+START_SEC, END_SEC = 4.0, 5.0       # 시작 화면 = 첫 컷 앞 검은 구간 · 끝 화면 = 영상 끝 뒤 검은 구간
+CARD_X = 0.5                        # 겹침(디졸브) 초 = 화면이 컷 위로 넘어가는 만큼
+CARD_FADE = 1.0
+CARD_COLOR = "#1b2a4e"              # 남색
+CARD_FONT = "Pretendard"
+CARD_WHITE = 0.5
+
+
+def card_png(src_png: str, out_png: str, wh: tuple[int, int]) -> tuple[int, int]:
+    """스틸 → 화면을 꽉 채우게 자르고(가운데) 흰색 50% 덮은 그림(1080 기준 크기). → (폭, 높이)."""
+    from PySide6.QtCore import QRectF
+    from PySide6.QtGui import QColor, QImage, QPainter
+    W, H = wh
+    src = QImage(src_png)
+    if src.isNull():
+        raise ff.FFError(f"스틸을 못 읽음: {src_png}")
+    im = QImage(W, H, QImage.Format_RGB888)
+    im.fill(QColor("#ffffff"))
+    q = QPainter(im)
+    q.setRenderHint(QPainter.SmoothPixmapTransform)
+    s = max(W / src.width(), H / src.height())
+    w, h = src.width() * s, src.height() * s
+    q.drawImage(QRectF((W - w) / 2, (H - h) / 2, w, h), src)
+    c = QColor("#ffffff")
+    c.setAlphaF(CARD_WHITE)
+    q.fillRect(0, 0, W, H, c)
+    q.end()
+    if not im.save(out_png, "PNG"):
+        raise ff.FFError(f"그림 저장 실패: {out_png}")
+    return W, H
+
+
+def pick_stills(picks: list[dict], n: int = 2) -> list[tuple]:
+    """좋은 스틸 자동: 하이라이트 점수가 높은 칸(물 밖·녹화 처음·끝 1.5초 제외), 서로 다른 클립 먼저.
+    → [(Source, 원본 프레임)] 최대 n."""
+    cands = []
+    for p in picks:
+        sc, s = p.get("score"), p["src"]
+        if sc is None or not len(sc) or not s.fps:
+            continue
+        sf = p.get("surface") or []
+        for i, v in enumerate(sc):
+            if i < int(1.5 / STEP) or i >= len(sc) - int(1.5 / STEP):
+                continue
+            if i < len(sf) and sf[i]:
+                continue
+            cands.append((float(v), s, i))
+    if not cands:                                     # 점수 없음 = 클립 가운데
+        cands = [(0.0, p["src"], int(p["src"].frames / float(p["src"].fps) / STEP / 2)) for p in picks if p["src"].fps]
+    cands.sort(key=lambda x: -x[0])
+    out, used = [], set()
+    for v, s, i in cands:
+        if s.id in used:
+            continue
+        out.append((s, min(s.frames - 1, int(round(i * STEP * float(s.fps))))))
+        used.add(s.id)
+        if len(out) >= n:
+            return out
+    for v, s, i in cands:                             # 클립이 하나뿐 = 같은 클립에서 30초 넘게 떨어진 칸
+        f = min(s.frames - 1, int(round(i * STEP * float(s.fps))))
+        if all(x[0] is not s or abs(x[1] - f) > 30 * float(s.fps) for x in out):
+            out.append((s, f))
+        if len(out) >= n:
+            break
+    return out
+
+
+def _ymd(t: float):
+    from datetime import datetime, timezone
+    return datetime.fromtimestamp(t, timezone.utc)
+
+
+def period_text(a: float | None, b: float | None) -> str:
+    """기간: 같은 날 = '2026.10.30' · 같은 해 = '2026.10.27 – 11.02' · 아니면 둘 다 연도."""
+    if a is None:
+        return ""
+    x, y = _ymd(a), _ymd(b if b is not None else a)
+    s = f"{x.year}.{x.month:02d}.{x.day:02d}"
+    if (x.year, x.month, x.day) == (y.year, y.month, y.day):
+        return s
+    return s + (f" – {y.month:02d}.{y.day:02d}" if x.year == y.year else f" – {y.year}.{y.month:02d}.{y.day:02d}")
+
+
+def period_dives(dives: list, a: float | None, b: float | None) -> list:
+    """기간(그날 0시 ~ 마지막 날 24시)의 다이빙."""
+    if a is None or not dives:
+        return []
+    d0 = a - (a % 86400)
+    d1 = (b if b is not None else a)
+    d1 = d1 - (d1 % 86400) + 86400
+    return [d for d in dives if d0 <= float(d["start"]) < d1]
+
+
+def place_of(dives: list, a: float | None, b: float | None) -> str:
+    """그 기간 다이빙 메모 '위치:' 중 가장 많은 것(같으면 먼저 나온 것)."""
+    from collections import Counter
+    locs = [d.get("loc") for d in period_dives(dives, a, b) if d.get("loc")]
+    return Counter(locs).most_common(1)[0][0] if locs else ""
+
+
+def dive_line(dives: list) -> str:
+    """'12 DIVES · MAX 39.2m · 9h 41m'."""
+    from .divelog import dur
+    n = len(dives)
+    mx = max(float(d.get("max") or max(x[1] for x in d["pts"])) for d in dives)
+    tot = int(round(sum(dur(d) for d in dives) / 60))
+    tt = f"{tot // 60}h {tot % 60:02d}m" if tot >= 60 else f"{tot}m"
+    return f"{n} DIVE{'S' if n != 1 else ''} · MAX {mx:.1f}m · {tt}"
+
+
+def card_titles(img_id: str, lines: list[tuple[str, int, bool]], t0: float, t1: float, type_at: float, which: str) -> list[dict]:
+    """화면 = 이미지(꽉 참) + 글자 줄(남색, 가운데, 타이핑 차례로). lines = [(글자, 크기, 굵게)]."""
+    from .project import new_title_image
+    im = new_title_image(img_id, t0, t1, 1.0)
+    im.update(fade=CARD_FADE, auto_edit=True, card=which)
+    out = [im]
+    lines = [x for x in lines if x[0]]
+    gap = 0.075
+    hs = [sz / 1080 * 1.25 for _t, sz, _b in lines]
+    y = 0.5 - (sum(hs) + gap * (len(lines) - 1) * 0.5) / 2
+    d = type_at - t0
+    for (text, size, bold), h in zip(lines, hs):
+        tx = new_text(t0, t1, text)
+        tx.update(font=CARD_FONT, size=size, bold=bold, color=CARD_COLOR, bg="none", ain="type", aout="fade", fade=0.5,
+                  tdelay=round(d, 3), cx=0.5, cy=round(y + h / 2, 4), auto_edit=True, card=which)
+        out.append(tx)
+        y += h + gap * 0.5
+        d += len(text) * TYPE_SEC + 0.2
+    return out
+
+
+def start_card(img_id: str, place: str, period: str, lead: float) -> list[dict]:
+    """시작 화면: 0 ~ lead + 0.5(첫 컷으로 디졸브). 지명(크게) + 기간."""
+    return card_titles(img_id, [(place, 76, True), (period, 40, False)], 0.0, lead + CARD_X, CARD_FADE, "start")
+
+
+def end_card(img_id: str, video_end: float, lines: list[tuple[str, int, bool]]) -> list[dict]:
+    """끝 화면: 영상 끝 0.5초 전(디졸브) ~ 끝 + END_SEC(검정으로 = end_fade)."""
+    return card_titles(img_id, lines, video_end - CARD_X, video_end + END_SEC, video_end + CARD_X, "end")
+
+
+def end_lines(log: bool, dives: list, place: str, period: str, text: str = "") -> list[tuple[str, int, bool]]:
+    """끝 문구: 직접 쓴 문구(줄바꿈 = 줄) · LOG = 다이빙 요약 + 지명 · 날짜 · 아니면 'See You Underwater' / 'DTME'."""
+    if text.strip():
+        ls = [x.strip() for x in text.strip().split("\n") if x.strip()]
+        return [(ls[0], 64, True)] + [(x, 40, False) for x in ls[1:]]
+    if log and dives:
+        return [(dive_line(dives), 52, True), (" · ".join(x for x in (place, period) if x), 36, False)]
+    return [("See You Underwater", 72, True), ("DTME", 40, True)]

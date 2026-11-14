@@ -422,6 +422,25 @@ def match(dives: list, src, src_sec: float, off: float = 0.0):
     return (d, w - d["start"], w) if d else None
 
 
+def guess_off(dives: list, sources: list) -> float:
+    """v0.16.91 시각 맞춤 자동(초): 카메라와 다이빙 컴퓨터 시간대가 다를 때(예: 카메라 필리핀 +8 · 시계 한국 +9, 예전 DTMD 백업 = UTC 없음).
+    30분 단위 −12~+12시간 중 클립 가운데가 다이빙 안에 드는 클립 수가 가장 많은 값(같으면 0에 가까운 쪽). 0 이 이미 가장 많으면 0."""
+    srcs = [s for s in sources if s.fps and s.frames and shot_time(s) is not None]
+    if not dives or not srcs:
+        return 0.0
+
+    def score(off):
+        return sum(1 for s in srcs if match(dives, s, s.frames / float(s.fps) / 2, off))
+    best, bs = 0.0, score(0.0)
+    for k in sorted(range(-24, 25), key=abs):
+        if k == 0:
+            continue
+        v = score(k * 1800.0)
+        if v > bs:
+            best, bs = k * 1800.0, v
+    return best
+
+
 def cut_dive(dives: list, src, seg, off: float = 0.0):
     """v0.16.88 컷 전체(처음·끝)가 같은 다이빙 안일 때만 그 다이빙(입수·출수 클립 = 표시 안 함, 사용자 11/13)."""
     if not dives or not src.fps:

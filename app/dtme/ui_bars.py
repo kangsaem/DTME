@@ -705,7 +705,15 @@ class SeqTimeline(QWidget):
                 p.setPen(QColor("white"))
                 f.setBold(True)
                 p.setFont(f)
-                if lr is not None:                    # v0.16.91 x1 · LOG 칩 · 이름 = 세 줄(칩 = 컷 가운데)
+                small = rr.height() < 34
+                if lr is not None and small and rr.width() > 120:   # 낮은 줄 = 한 줄: x1 [LOG] 이름
+                    p.drawText(QRectF(rr.left() + 4, rr.top(), lr.left() - rr.left() - 10, rr.height()),
+                               Qt.AlignRight | Qt.AlignVCenter, speed_text(sp))
+                    p.drawText(QRectF(lr.right() + 6, rr.top(), rr.right() - lr.right() - 10, rr.height()),
+                               Qt.AlignLeft | Qt.AlignVCenter, label)
+                elif lr is not None and small:
+                    pass
+                elif lr is not None:                    # v0.16.91 x1 · LOG 칩 · 이름 = 세 줄(칩 = 컷 가운데)
                     p.drawText(QRectF(rr.left() + 4, rr.top() + 2, rr.width() - 8, lr.top() - rr.top() - 2),
                                Qt.AlignHCenter | Qt.AlignBottom, speed_text(sp))
                     if rr.width() > 90:
@@ -948,9 +956,11 @@ class SeqTimeline(QWidget):
 
     # ---------------------------------------------------------------- 마우스
     def _log_rect(self, rr):
-        """컷 가운데 LOG 칩 자리(컷이 좁으면 없음)."""
-        if rr.width() < 46 or rr.height() < 34:
+        """컷 가운데 LOG 칩 자리(컷이 좁으면 없음). 줄이 낮으면(34px 아래) 조금 작은 칩 = 한 줄 'x1 [LOG] 이름'."""
+        if rr.width() < 46 or rr.height() < 16:
             return None
+        if rr.height() < 34:
+            return QRectF(rr.center().x() - 16, rr.center().y() - 6.5, 32, 13)
         return QRectF(rr.center().x() - 17, rr.center().y() - 7, 34, 14)
 
     def mousePressEvent(self, e):
@@ -997,8 +1007,15 @@ class SeqTimeline(QWidget):
                 self.update()
                 self.ovMenu.emit(kind, d["id"], e.globalPosition().toPoint())
                 return
-            if kind == "title":                       # v0.16.91 Shift+클릭 = 같이 고르기(따라감은 우클릭 메뉴로)
-                if e.modifiers() & Qt.ShiftModifier:
+            if kind == "title":                       # v0.16.91 Ctrl+클릭 = 하나씩 더하기·빼기 · Shift+클릭 = 고른 것부터 여기까지(시간 순)
+                anc = next((t for t in self.titles if self.ov_sel[0] == "title" and t["id"] == self.ov_sel[1]), None)
+                if e.modifiers() & Qt.ShiftModifier and anc is not None:
+                    a, b = sorted((float(anc["t0"]), float(d["t0"])))
+                    self.ov_multi = {t["id"] for t in self.titles if a - 1e-6 <= float(t["t0"]) <= b + 1e-6}
+                    self.ov_sel = ("title", anc["id"])
+                    self.update()
+                    return
+                if e.modifiers() & Qt.ControlModifier:
                     if self.ov_sel[0] == "title" and self.ov_sel[1]:
                         self.ov_multi.add(self.ov_sel[1])
                     if d["id"] in self.ov_multi and len(self.ov_multi) > 1:

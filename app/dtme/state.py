@@ -256,8 +256,27 @@ class AppState(QObject):
         n = len([d for d in p.dives if d["id"] not in before])
         ff.log_info(f"다이빙 기록: 파일 {len(files)} · 다이빙 {len(new)}(새로 {n}) · 못 읽음 {bad} · 전체 {len(p.dives)}")
         self.dive_msg = (n, len(new), bad)
+        self.auto_dive_off()
         self.touch("dives")
         return n, bad
+
+    def auto_dive_off(self) -> bool:
+        """v0.16.91 LOG 시각이 0(손대지 않음)이면 시간대 차이를 자동으로 맞춤(dive_draw.guess_off). 바꿨으면 True."""
+        p = self.project
+        if not p.dives or abs(float(p.dive_off or 0.0)) > 0.01:
+            return False
+        try:
+            from . import dive_draw
+            off = dive_draw.guess_off(p.dives, p.sources)
+        except Exception as ex:  # noqa: BLE001
+            ff.log_error("LOG 시각 자동", str(ex))
+            return False
+        if not off:
+            return False
+        p.dive_off = float(off)
+        self.dive_auto_msg = off
+        ff.log_info(f"LOG 시각 자동: {off:+.0f}초 (카메라·다이빙 컴퓨터 시간대 차이)")
+        return True
 
     def retune(self):
         """원본 저장장치에 맞춰 동시 분석·렌더 수(jobs.tune)."""
@@ -268,6 +287,10 @@ class AppState(QObject):
 
     def _set_status(self, sid, text):
         self.status[sid] = text
+        if text in ("준비", "읽음") and self.project.dives and not self.project.dive_off:     # v0.16.91 영상이 다 읽히면 LOG 시각 자동
+            a, _d, n, _f = self.progress_summary()
+            if a >= n and self.auto_dive_off():
+                self.touch("dives")
         self.sourceStatus.emit(sid)
         self.importProgress.emit()
 

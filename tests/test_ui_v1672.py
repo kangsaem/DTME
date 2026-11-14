@@ -70,8 +70,8 @@ quit_called = []
 la._quit = lambda: quit_called.append(1)
 la.run_auto([WORK])
 print(seen)
-assert seen["rows"] == 2 and seen["media"] == "음악 1 · 사진 1", seen
-assert seen["media2"] == "음악 1 · 사진 2", seen
+assert seen["rows"] == 2 and seen["media"] == "음악 1곡: song · 사진 1", seen
+assert seen["media2"] == "음악 1곡: song · 사진 2", seen
 assert seen["busy"] and seen["after_cancel_visible"] and not seen["after_cancel_busy"], seen
 st, e = mw.state, mw.edit
 p = st.project

@@ -234,10 +234,13 @@ class Monitor(QWidget):
                 pad = 16 * k
                 p.fillRect(r.adjusted(-pad, -pad, pad, pad), QColor(0, 0, 0, 115))
             lines = (t.get("text") or "").split("\n")
+            from .project import type_lines
+            shown = type_lines(t.get("text") or "", getattr(self, "title_type", {}).get(t.get("id")))   # v0.16.91 타이핑 = 앞부분만
             y = r.top()
-            for line in lines:
+            for line, part in zip(lines, shown):
                 lw = fm.horizontalAdvance(line)
-                x = r.center().x() - lw / 2
+                x = r.center().x() - lw / 2             # 자리 = 다 친 줄 기준(왼쪽부터 채워짐)
+                line = part
                 if t.get("bg") == "shadow":
                     p.setPen(QColor(0, 0, 0, 150))
                     p.drawText(QPointF(x + 3 * k, y + fm.ascent() + 3 * k), line)

@@ -207,6 +207,18 @@ def _naive(y, mo, d, h=0, mi=0, s=0.0) -> float:
     return datetime(y, mo, d, h, mi, tzinfo=timezone.utc).timestamp() + s
 
 
+_LOC = re.compile(r"^\s*위치\s*[:：]\s*(.+?)\s*$", re.M)
+
+
+def memo_loc(memo: str) -> str:
+    """v0.16.91 다이빙 메모의 '위치:' 줄 → 뒤 두 부분('팡라오, 보홀주, 필리핀' → '보홀주, 필리핀'). 없으면 ''."""
+    m = _LOC.search(memo or "")
+    if not m:
+        return ""
+    parts = [x.strip() for x in re.split(r"[,，]", m.group(1)) if x.strip()]
+    return ", ".join(parts[-2:])
+
+
 def dtmd_dives(obj, name: str = "") -> list:
     """DTMD logbook.json(백업) → 다이빙. FIT·UDDF·JSON 에서 온 다이빙만(손으로 그린 로그 = 뺌).
     입수 시각 = 그날 첫 입수(시:분) + 앞 다이빙 길이 + 수면 휴식(분) (DTMD rowsOf 와 같음)."""
@@ -248,7 +260,9 @@ def dtmd_dives(obj, name: str = "") -> list:
                 start = float(d["start"])
             pts, t0 = _trim(pts)                                 # 입수 전 수면 구간 = 뺌(FIT 과 같게), 입수 시각도 그만큼
             start += t0
+            loc = memo_loc(memo) or memo_loc(x.get("memo") or "")
             out.append({"id": f"dtmd{int(start)}", "src": "dtmd", "name": name, "start": float(start),
+                        **({"loc": loc} if loc else {}),
                         **({"utc": utc + t0} if utc is not None else {}),
                         "sec": isinstance(d.get("sec0"), (int, float)),
                         "pts": [[round(t, 1), round(max(0.0, dd), 2)] for t, dd in pts],
@@ -302,7 +316,10 @@ def merge(old: list, new: list) -> list:
         if hit is None:
             out.append(d)
         elif (d["src"] == "fit" and out[hit]["src"] != "fit") or (d.get("utc") is not None and out[hit].get("utc") is None):
-            out[hit] = d                                  # FIT 우선 · UTC 있는 쪽 우선(같은 DTMD 백업을 새로 받으면 새 것)
+            loc = d.get("loc") or out[hit].get("loc")
+            out[hit] = {**d, **({"loc": loc} if loc else {})}   # FIT 우선 · UTC 있는 쪽 우선(같은 DTMD 백업을 새로 받으면 새 것)
+        elif d.get("loc") and not out[hit].get("loc"):
+            out[hit] = {**out[hit], "loc": d["loc"]}      # v0.16.91 지명은 DTMD 메모에만 → 남은 쪽에 붙임
     return sorted(out, key=lambda d: d["start"])
 
 

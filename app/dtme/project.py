@@ -628,6 +628,40 @@ def new_title_image(img: str, t0: float, t1: float, scale: float = 1.0) -> dict:
 ANIMS = ("fade", "right", "left", "up", "down")
 
 
+TYPE = "type"                 # v0.16.91 글자 들어올 때 = 한 글자씩 타이핑(글자만). 글자 사이 TYPE_SEC, 시작 = t0 + tdelay
+TYPE_SEC = 0.06
+
+
+def type_count(d: dict, t: float):
+    """타이핑 중이면 보이는 글자 수(줄바꿈 뺀 수), 다 쳤거나 타이핑이 아니면 None."""
+    if d.get("ain") != TYPE or d.get("kind", "text") != "text":
+        return None
+    n = len((d.get("text") or "").replace("\r", "").replace("\n", ""))
+    ts = float(d["t0"]) + float(d.get("tdelay", 0.0) or 0.0)
+    k = 0 if t < ts else int((t - ts) / TYPE_SEC + 1e-6) + 1
+    return None if k >= n else max(0, k)
+
+
+def type_lines(text: str, n) -> list:
+    """보이는 글자 수 n → 줄마다 보이는 앞부분(n None = 전부)."""
+    lines = (text or "").replace("\r\n", "\n").split("\n")
+    if n is None:
+        return lines
+    out = []
+    for ln in lines:
+        out.append(ln[:max(0, n)])
+        n -= len(ln)
+    return out
+
+
+def type_end(d: dict) -> float:
+    """타이핑이 끝나는 시각(타이핑 아님 = t0)."""
+    if d.get("ain") != TYPE:
+        return float(d["t0"])
+    n = len((d.get("text") or "").replace("\r", "").replace("\n", ""))
+    return float(d["t0"]) + float(d.get("tdelay", 0.0) or 0.0) + max(0, n - 1) * TYPE_SEC
+
+
 def title_anim(d: dict, t: float):
     """t(초)에서 → (알파, 'in'|'out'|None, 방향, 거리 비율 0~1)."""
     t0, t1 = float(d["t0"]), float(d["t1"])
@@ -637,6 +671,8 @@ def title_anim(d: dict, t: float):
     ain, aout = d.get("ain", "fade"), d.get("aout", "fade")
     if t < t0 + fd:
         u = max(0.0, min(1.0, (t - t0) / fd))
+        if ain == TYPE and d.get("kind", "text") == "text":
+            return 1.0, None, "", 0.0                 # 타이핑 = 페이드·밀기 없음(글자 수는 type_count)
         return (u, None, "", 0.0) if ain not in ANIMS[1:] else (1.0, "in", ain, (1 - u) ** 3)
     if t > t1 - fd:
         u = max(0.0, min(1.0, (t - (t1 - fd)) / fd))
@@ -994,8 +1030,11 @@ def follow_anchors(project) -> dict:
     spans = cut_spans(project)
     order = [c for c, _s, _l in spans]
     items = {}
+    total = max((s + ln for _c, s, ln in spans), default=0.0)
     for d in project.titles:
-        if d.get("follow"):
+        if d.get("card") == "end":                  # v0.16.91 끝 화면 = 영상 끝 기준
+            items[d["id"]] = ("title", ("END", float(d["t0"]) - total), float(d["t1"]) - float(d["t0"]))
+        elif d.get("follow"):
             items[d["id"]] = ("title", _anchor(spans, float(d["t0"])), float(d["t1"]) - float(d["t0"]))
     for m in project.music:
         if m.get("follow"):

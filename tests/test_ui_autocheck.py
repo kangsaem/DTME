@@ -58,6 +58,14 @@ assert ck() == [True, True, True, True, True], ck()
 # 한 번 클릭 = 그 줄만 바뀜
 QTest.mouseClick(vp, Qt.LeftButton, Qt.NoModifier, pt(4)); wait(0.2)
 assert ck() == [True, True, True, True, False]
+# v0.16.91 Shift+클릭 = 지난번 누른 줄(4번 = 끔)부터 여기(1번)까지 같은 상태
+QTest.mouseClick(vp, Qt.LeftButton, Qt.ShiftModifier, pt(1)); wait(0.2)
+assert ck() == [True, False, False, False, False], ck()
+QTest.mouseClick(vp, Qt.LeftButton, Qt.NoModifier, pt(1)); wait(0.2)      # 1번 켬(기준 = 켬)
+QTest.mouseClick(vp, Qt.LeftButton, Qt.ShiftModifier, pt(4)); wait(0.2)
+assert ck() == [True, True, True, True, True], ck()
+QTest.mouseClick(vp, Qt.LeftButton, Qt.NoModifier, pt(4)); wait(0.2)
+assert ck() == [True, True, True, True, False]
 # 이름 쪽 클릭 = 줄 선택(체크 그대로)
 r = dlg.list.visualItemRect(dlg.list.item(3))
 QTest.mouseClick(vp, Qt.LeftButton, Qt.NoModifier, QPoint(r.left() + 120, r.center().y())); wait(0.2)
