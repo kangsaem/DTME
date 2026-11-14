@@ -66,7 +66,27 @@ class MainWindow(QMainWindow):
         rp = self.edit.render_panel
         rp.runProgress.connect(self._render_progress)
         rp.runFinished.connect(self._render_finished)
+        rp.runStarted.connect(self._render_started)
         self._title()
+
+    def _render_started(self):
+        """v0.16.91 렌더 작업 창(A안): 재생·전환 미리보기 멈춤 → 편집 창 숨김 → 작업 창만."""
+        from . import solo
+        from .ui_renderwin import RenderWindow
+        e = self.edit
+        try:
+            e.player.pause()
+            e._music_stop()
+            e.trans_prev.stop()
+        except Exception:  # noqa: BLE001
+            pass
+        old = getattr(self, "_rwin", None)
+        if old is not None:
+            old.finish()
+        self._rwin = RenderWindow(e.render_panel, self)
+        self._rwin.move(self.geometry().center() - self._rwin.rect().center())
+        self._rwin.show()
+        solo.enter(self._rwin, self)
 
     def _title(self):
         f = Path(self.state.project.file).name if self.state.project.file else "새 프로젝트"
@@ -86,6 +106,10 @@ class MainWindow(QMainWindow):
         self._rtext = ""
         self._title()
         taskbar.clear(self)
+        rw = getattr(self, "_rwin", None)
+        if rw is not None:                            # v0.16.91 렌더 작업 창 닫고 편집 창으로
+            self._rwin = None
+            rw.finish()
         if not self.isVisible():                      # 시작 창 [보정+렌더](편집 화면 숨김) = 시작 창이 팝업
             return
         if self.edit.render_panel.cancelled:          # [렌더] 로 멈춤(v0.16.54) = 완료 팝업 없음

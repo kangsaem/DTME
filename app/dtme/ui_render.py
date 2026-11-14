@@ -451,12 +451,14 @@ class RenderPanel(QWidget):
     sourcesRequested = Signal()                   # ▼ = 선택한 소스를 렌더 리스트로(EditTab 이 처리)
     runProgress = Signal(float, str, bool)        # v0.16.31 전체 진행(0~1, '3/35 · 42%', 실패 있음) — 창 제목·작업 표시줄
     runFinished = Signal(int, int, float, str)    # 완료 수, 실패 수, 걸린 초, 출력 폴더
+    runStarted = Signal()                          # v0.16.91 [렌더] 버튼으로 시작 = 렌더 작업 창
 
     def __init__(self, state, parent=None):
         super().__init__(parent)
         self.state = state
         self.status: dict[str, str] = {}
         self.progress: dict[str, float] = {}
+        self.stage: dict[str, str] = {}               # v0.16.91 항목마다 지금 단계(렌더 작업 창)
         self.queue: list = []
         self.active: dict = {}           # 렌더 중인 항목 id → 출력 경로(코어 수만큼 동시, jobs.RENDER_N)
         self.jobs: dict = {}             # 렌더 중인 항목 id → Job(전체 취소용, v0.16.54)
@@ -595,6 +597,8 @@ class RenderPanel(QWidget):
         if not self._ask_folder():
             return
         self.render()
+        if self.running:
+            self.runStarted.emit()
 
     def _ask_folder(self) -> bool:
         """[렌더] 누를 때마다 저장폴더를 물어봄(지난 폴더를 처음 위치로). 취소 = False."""
@@ -738,8 +742,12 @@ class RenderPanel(QWidget):
             dive_draw.ensure_fonts()                   # 글꼴 등록 = 화면 스레드에서
             extras["dive"] = {"dives": list(p.dives), "off": float(dvi.get("off", 0.0))}
 
+        self.stage[it.id] = "대기"
+
         def work(prog, cancel, it=it, path=path):
+            prog(-1.0)                                 # v0.16.91 단계: 미리 읽기 → 준비(LOG 그림·글자) → 인코딩
             precache_item(p, it, cancel)               # v0.16.26: HDD 원본을 순서대로 한 번 읽어 메모리에(조각들이 거기서 읽음)
+            prog(-2.0)
             ff.render_video(p, it.segs, str(path), prog, cancel, it.orientation, it.audio, extras=extras)
         job = jobs.Job(work, with_progress=True)
         self.jobs[it.id] = job
@@ -747,7 +755,14 @@ class RenderPanel(QWidget):
             nxt = self.queue[0]
             jobs.submit(jobs.PRECACHE_POOL, jobs.Job(lambda nxt=nxt: precache_item(p, nxt)))
 
+        has_dive = "dive" in extras
+
         def prog(v, iid=it.id):
+            if v < 0:
+                self.stage[iid] = "미리 읽기" if v > -1.5 else ("LOG 그림·글자 준비" if has_dive else "준비")
+                self.itemProgress.emit(iid, self.progress.get(iid, 0.0), True)
+                return
+            self.stage[iid] = "인코딩"
             self.progress[iid] = v
             self._repaint()
             self.itemProgress.emit(iid, v, True)
