@@ -640,7 +640,6 @@ class RenderPanel(QWidget):
         """렌더 시작(폴더는 비어 있을 때만 물음 — AUTO·코드 경로). 버튼은 press(). only = 이 항목들만(v0.16.81 AUTO·전부 자동)."""
         if self.running:
             return
-        ff.set_browsing(False)                    # v0.16.91 화면 보는 중으로 멈춘 뒤 작업 = 렌더 전에 다시
         if not ensure_folder(self, self.state):
             return
         self.settings._load()

@@ -181,105 +181,6 @@ def set_prio(p: int) -> None:
     _ctx.prio = p
 
 
-# ------------------------------------------------------------------ v0.16.91 화면 보는 중(사용자 15:43 B·D)
-# B: 타임라인 끌기·멈춘 화면을 보는 동안 = 뒤 작업(분석 1 · 프록시 3 · 미리 읽기 4) ffmpeg 를 잠깐 멈춤(일시정지) → HDD·CPU 를 화면에.
-#    새 뒤 작업은 시작 전에 기다림. 화면 작업(0)은 그동안 저장장치 자리를 안 기다림(멈춘 작업이 자리를 잡고 있어도).
-# D: 새 화면 요청 = 지난 화면 ffmpeg 를 바로 끔.
-BG_PRIOS = (1, 3, 4)
-_browsing = threading.Event()
-_bg_procs: list = []                 # [(Popen, prio)] 뒤 작업 ffmpeg
-_suspended: list = []
-_pv_procs: list = []                 # [(Popen, gen)] 화면(미리보기) ffmpeg
-_killed: set = set()                 # 일부러 끈 pid → 실패가 아니라 Cancelled
-_bglock = threading.Lock()
-
-
-def _proc_pause(p, on: bool) -> None:
-    try:
-        if os.name == "nt":
-            import ctypes
-            h = int(p._handle)
-            (ctypes.windll.ntdll.NtSuspendProcess if on else ctypes.windll.ntdll.NtResumeProcess)(h)
-        else:
-            import signal
-            os.kill(p.pid, signal.SIGSTOP if on else signal.SIGCONT)
-    except Exception:  # noqa: BLE001 — 이미 끝난 것 등
-        pass
-
-
-def set_browsing(on: bool) -> None:
-    """화면 보는 중 켬/끔: 켬 = 뒤 작업 ffmpeg 일시정지, 끔 = 다시 계속."""
-    with _bglock:
-        if on and not _browsing.is_set():
-            _browsing.set()
-            for p, _pr in list(_bg_procs):
-                if p.poll() is None:
-                    _proc_pause(p, True)
-                    _suspended.append(p)
-        elif not on and _browsing.is_set():
-            _browsing.clear()
-            for p in _suspended:
-                _proc_pause(p, False)
-            _suspended.clear()
-
-
-def browsing() -> bool:
-    return _browsing.is_set()
-
-
-def _wait_not_browsing() -> None:
-    """뒤 작업: 화면 보는 동안 시작하지 않고 기다림(최대 60초 — 그 뒤엔 그냥 시작)."""
-    if getattr(_ctx, "prio", 0) not in BG_PRIOS:
-        return
-    t0 = _time.monotonic()
-    while _browsing.is_set() and not _closing.is_set() and _time.monotonic() - t0 < 60:
-        _time.sleep(0.1)
-
-
-class preview_job:
-    """화면(미리보기) 작업 표시: 이 안에서 띄운 ffmpeg = 세대 gen 으로 기억 → kill_previews 로 끔."""
-
-    def __init__(self, gen: int):
-        self.gen = gen
-
-    def __enter__(self):
-        _ctx.pv_gen = self.gen
-        return self
-
-    def __exit__(self, *a):
-        _ctx.pv_gen = None
-
-
-def kill_previews(keep_gen: int) -> int:
-    """keep_gen 보다 오래된 화면 ffmpeg 를 끔. 끈 수."""
-    n = 0
-    with _bglock:
-        for p, g in list(_pv_procs):
-            if g < keep_gen and p.poll() is None:
-                _killed.add(p.pid)
-                try:
-                    p.kill()
-                    n += 1
-                except OSError:
-                    pass
-        _pv_procs[:] = [(p, g) for p, g in _pv_procs if p.poll() is None]
-    return n
-
-
-def _register(p) -> None:
-    """_popen 이 부름: 뒤 작업·화면 작업 ffmpeg 기억(보는 중이면 뒤 작업은 바로 멈춤)."""
-    pr, gen = getattr(_ctx, "prio", 0), getattr(_ctx, "pv_gen", None)
-    with _bglock:
-        _bg_procs[:] = [(q, r) for q, r in _bg_procs if q.poll() is None]
-        if gen is not None:
-            _pv_procs.append((p, gen))
-        elif pr in BG_PRIOS and threading.current_thread() is not threading.main_thread():
-            _bg_procs.append((p, pr))
-            if _browsing.is_set():
-                _proc_pause(p, True)
-                _suspended.append(p)
-
-
 def waited() -> float:
     return getattr(_ctx, "waited", 0.0)
 
@@ -460,8 +361,6 @@ def precache(path: str, frac_a: float = 0.0, frac_b: float = 1.0, cancel=None) -
                     while pos < y:
                         if _closing.is_set() or (cancel is not None and cancel.is_set()):
                             raise Cancelled()
-                        while _browsing.is_set() and getattr(_ctx, "prio", 0) in BG_PRIOS and not _closing.is_set():
-                            _time.sleep(0.1)          # v0.16.91 화면 보는 중 = 미리 읽기 쉼(HDD 를 화면에)
                         n = f.readinto(memoryview(buf)[:min(len(buf), y - pos)])
                         if not n:
                             break
@@ -493,9 +392,6 @@ class _slots:
 
     def __enter__(self):
         prio = getattr(_ctx, "prio", 0)
-        _wait_not_browsing()
-        if _browsing.is_set() and getattr(_ctx, "pv_gen", None) is not None:      # 화면 = 저장장치 자리 안 기다림(멈춘 뒤 작업이 잡고 있어도)
-            self.gs = [g for g in self.gs if not g.name.startswith("disk:")]
         try:
             for g in self.gs:
                 g.acquire(prio)
@@ -529,7 +425,6 @@ def _popen(cmd, **kw):
                     _live.discard(q)          # 끝난 것 정리
                 _live.add(p)
             _attach(p)
-            _register(p)
             if _closing.is_set():            # 띄우는 사이 종료 시작
                 p.kill()
             return p
@@ -549,8 +444,7 @@ def run(cmd: list[str], cwd: str | None = None, data: bytes | None = None) -> by
             p = _popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             out, err = p.communicate()
     if p.returncode != 0:
-        if _closing.is_set() or p.pid in _killed:
-            _killed.discard(p.pid)
+        if _closing.is_set():
             raise Cancelled()
         raise FFError(err.decode("utf-8", "replace")[-2000:])
     return out
@@ -1298,7 +1192,7 @@ def find_preview(path: str) -> str | None:
 PREVIEW_DIFF = 10.0          # 색 판정: 가까운 쪽 차(화소 차 중앙값, 0~255) 상한
 PREVIEW_N = 8                # 판정 창 하나에 프리뷰 몇 장(v0.16.22: 15 → 8)
 PREVIEW_MIN_W_AUTO = 640     # AUTO 분석에 쓸 최소 폭(분석은 320 폭)
-PREVIEW_LONG = 960           # 멈춘 보정 화면의 긴 쪽(v0.16.91 1280 → 960, 사용자: 미리보기 속도 우선)
+PREVIEW_LONG = 1280          # 멈춘 보정 화면의 긴 쪽
 PREVIEW_MIN_W_STILL = 1280   # 멈춘 화면(먼저 보이기)에 쓸 최소 폭(보정 화면이 1280 폭)
 
 
@@ -1867,8 +1761,8 @@ def cached_frame(src: Source, frame: int, gpu: bool = False) -> CachedFrame:
                 return CachedFrame(data, lead, (w, h), "raw", key + "|r")
             pw, ph = _preview_size(src)
             data = run([paths.ffmpeg(), "-v", "error", "-ss", _seek(frame - lead, src.fps), "-i", _abs(src.path),
-                            "-frames:v", str(lead + 1), "-an", "-vf", f"scale={pw}:{ph}:flags=lanczos,format=yuv420p10le",
-                            "-c:v", "ffv1", "-f", "nut", "-"])
+                        "-frames:v", str(lead + 1), "-an", "-vf", f"scale={pw}:{ph}:flags=lanczos,format=yuv420p10le",
+                        "-c:v", "ffv1", "-f", "nut", "-"])
             c = CachedFrame(data, lead, (pw, ph), "nut", key)
             with _cache_lock:
                 _frame_cache[key] = c

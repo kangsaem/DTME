@@ -583,9 +583,6 @@ class EditTab(QWidget):
         self._pv_timer.setSingleShot(True)
         self._pv_timer.setInterval(350)
         self._pv_timer.timeout.connect(self.request_preview)
-        self._browse_timer = QTimer(self)        # v0.16.91 화면 보는 중 끝 → 뒤 작업 다시
-        self._browse_timer.setSingleShot(True)
-        self._browse_timer.timeout.connect(lambda: ff.set_browsing(False))
 
         state.changed.connect(self._on_state)
         state.sourceStatus.connect(self._on_source_status)
@@ -994,9 +991,6 @@ class EditTab(QWidget):
             return False
         self.pgen += 1
         gen, frame, tok = self.pgen, p.frame, p._token
-        ff.set_browsing(True)                     # v0.16.91 B: 화면 보는 동안 뒤 작업(분석·프록시·미리 읽기) 잠깐 멈춤
-        self._browse_timer.start(8000)            # 안전: 화면이 안 와도 8초 뒤엔 풀림
-        self._precache_cur(s)
         self._prefetch_range(s, frame)
         mode = self.grade.view_mode()
         full = self.state.project.grade_for_source(s.id, frame)
@@ -1017,9 +1011,6 @@ class EditTab(QWidget):
             return True
         fl = {"gen": gen, "tok": tok, "live": live}
         self._pv_flight[key] = fl
-        n_k = ff.kill_previews(gen)               # v0.16.91 D: 지난 화면 ffmpeg 바로 끔(실행 중이어도)
-        if n_k:
-            ff.dbg(f"지난 화면 작업 {n_k}개 끔 #{gen}")
 
         t_req = time.monotonic()
 
@@ -1028,8 +1019,7 @@ class EditTab(QWidget):
                 return None
             t0 = time.monotonic()                # v0.16.91 단계별 시간(사용자: 미리보기 느림 → 어디서 느린지)
             ready = ff.frame_ready(s, frame)
-            with ff.preview_job(fl["gen"]):
-                c = ff.cached_frame(s, frame)
+            c = ff.cached_frame(s, frame)
             t1 = time.monotonic()
             if mode == "split":                  # v0.16.58 반반 = 보정·원본 두 장을 같이 만듦(예전 = 차례로 → 반반이 유난히 느림)
                 import threading
@@ -1037,21 +1027,18 @@ class EditTab(QWidget):
 
                 def side():
                     try:
-                        with ff.preview_job(fl["gen"]):
-                            box["b"] = ff.render_preview(c, ff.lut_only(full))
+                        box["b"] = ff.render_preview(c, ff.lut_only(full))
                     except Exception as ex:  # noqa: BLE001
                         box["e"] = ex
                 th = threading.Thread(target=side, daemon=True)
                 th.start()
-                with ff.preview_job(fl["gen"]):
-                    out = ff.render_preview(c, grade)
+                out = ff.render_preview(c, grade)
                 th.join()
                 if "e" in box:
                     raise box["e"]
                 res = (out, box["b"])
             else:
-                with ff.preview_job(fl["gen"]):
-                    res = (ff.render_preview(c, grade), None)
+                res = (ff.render_preview(c, grade), None)
             t2 = time.monotonic()
             ff.dbg(f"미리보기 시간 #{fl['gen']} f={frame}: 대기 {t0 - t_req:.2f} · 원본 {t1 - t0:.2f}({'기억' if ready else '읽음'}) · 보정 {t2 - t1:.2f}"
                    f" · 합 {t2 - t_req:.2f}초 · 보기={mode} · {Path(s.path).name}")
@@ -1074,10 +1061,6 @@ class EditTab(QWidget):
 
         def fail(msg):
             self._pv_flight.pop(key, None)
-            if msg == "취소됨":                    # D: 새 화면 요청으로 끈 것 = 오류 아님
-                if fl["live"]:
-                    self._live_done()
-                return
             ff.log_error("미리보기", msg)
             self._say(f"미리보기 오류: {msg[-160:]}", C_WARN)
             if fl["live"]:
@@ -1085,7 +1068,9 @@ class EditTab(QWidget):
         job = jobs.Job(work)
         job.signals.done.connect(done)
         job.signals.error.connect(fail)
-        self._full_shown = None                  # v0.16.91 B: 빠른 미리보기(카메라 프리뷰 LRF) 끔 — HDD 를 원본 한 곳에
+        self._full_shown = None
+        if not live:
+            self._quick_preview(s, frame, gen, tok, mode, grade, full)
         jobs.submit(jobs.PREVIEW_POOL, job, priority=5)
         return True
 
@@ -1115,8 +1100,6 @@ class EditTab(QWidget):
         t_req = time.monotonic()
 
         def work():
-            if gen != self.pgen:                 # v0.16.91 다른 화면을 이미 요청함 = 안 만듦(예전 = 다 만들어서 줄이 밀림)
-                return None
             t0 = time.monotonic()
             c = ff.cached_frame_preview(s, frame, pv)
             t1 = time.monotonic()
@@ -1126,44 +1109,13 @@ class EditTab(QWidget):
             return out, before
 
         def done(data, g=gen, fr=frame, t=tok):
-            if data is None or self._full_shown == g:             # 건너뜀 · 원본이 이미 나옴
+            if self._full_shown == g:             # 원본이 이미 나옴
                 return
             self._on_preview(g, fr, t, data, quick=True)
         job = jobs.Job(work)
         job.signals.done.connect(done)
         job.signals.error.connect(lambda msg: ff.log_error("미리보기(프리뷰)", msg))
         jobs.submit(jobs.PREVIEW_POOL, job, priority=6)
-
-    def _precache_cur(self, s):
-        """v0.16.91 C: 보고 있는 클립 원본을 순서대로 한 번 읽어 메모리(OS 캐시)에 — 그 뒤 화면은 HDD 를 안 기다림.
-        (렌더 '미리 읽기'와 같은 함수, HDD·SD 만, 한도 = 설정 precache_gb.) 화면 보는 동안엔 쉼."""
-        if s is None or ff.is_precached(s.path):
-            return
-        q = self.__dict__.setdefault("_pre_q", set())
-        if s.path in q:
-            return
-        q.add(s.path)
-
-        def work(path=s.path):
-            try:
-                ff.precache(path)
-            finally:
-                q.discard(path)
-        jobs.submit(jobs.PRECACHE_POOL, jobs.Job(work), priority=-1)
-
-    def _precache_timeline(self):
-        """타임라인 컷 구간 원본도(뒤에서, 클립마다 컷이 있는 부분만)."""
-        p = self.state.project
-        by = {}
-        for g in p.segments:
-            s = p.source(g.src)
-            if s is not None and s.frames:
-                a, b = by.get(s.path, (1.0, 0.0))
-                by[s.path] = (min(a, g.fin / s.frames), max(b, g.fout / s.frames))
-        for path, (a, b) in by.items():
-            if ff.is_precached(path):
-                continue
-            jobs.submit(jobs.PRECACHE_POOL, jobs.Job(lambda path=path, a=a, b=b: ff.precache(path, a, b)), priority=-2)
 
     def _prefetch_range(self, s, frame):
         """멈춘 곳 앞뒤 1초 원본을 뒤에서 한 번에 디코딩(근처 프레임 보정 화면이 빨라짐). 미리보기보다 낮은 우선순위."""
@@ -1177,8 +1129,6 @@ class EditTab(QWidget):
         if gen != self.pgen or frame != p.frame or tok != p._token or p.is_busy():
             ff.dbg(f"표시 버림 #{gen}: 지금 #{self.pgen} f {frame}/{p.frame} 표 {int(tok == p._token)} 재생 {int(p.is_busy())} 빠른={int(quick)}")
             return
-        if not quick:
-            self._browse_timer.start(1500)       # 화면 나옴 → 1.5초 뒤 뒤 작업 다시(그사이 또 옮기면 계속 멈춤)
         ff.dbg(f"표시 #{gen} f={frame} 빠른={int(quick)} 보기={self.grade.view_mode()} 반반={int(bool(data[1]))} 선={p.mon.split_x:.2f}/{p.mon.split_y:.2f}")
         if not quick:
             self._full_shown = gen
@@ -2144,8 +2094,6 @@ class EditTab(QWidget):
                 self._update_tl_titles(self.tl_time)
 
     def _on_state(self, what):
-        if what in ("segments", "project"):
-            QTimer.singleShot(2000, self._precache_timeline)       # v0.16.91 C: 타임라인 컷 구간 원본을 메모리로(뒤에서)
         if what in ("segments", "titles", "grade", "undo", "project") and self._tp_cache:   # 바뀌면 만든 전환 영상은 버림
             self._tp_cache.clear()
         if what == "project" and self.state.auto_dive_off():      # v0.16.91 예전 프로젝트도 시간대 차이 자동

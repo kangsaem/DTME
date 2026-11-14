@@ -253,8 +253,6 @@ jobs:
           Write-Output $o_v1691
           if ($o_v1691 -notmatch "OK test_ui_v1691") { Write-Output "::warning::OK test_ui_v1691 실패(빌드는 계속 — 사용자 11/14 12:40: 되는 부분 먼저 빌드)" }
           $global:LASTEXITCODE = 0
-          python tests/test_browse.py
-          if ($LASTEXITCODE -ne 0) { exit 1 }
           $o_sa = python tests/test_ui_selectall.py selectall_test 2>&1 | Out-String
           Write-Output $o_sa
           if ($o_sa -notmatch "OK test_ui_selectall") { exit 1 }
