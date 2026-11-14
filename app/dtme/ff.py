@@ -1897,7 +1897,30 @@ def sharpness_around(src: Source, frame: int, radius: int = 5) -> list[tuple[int
 # ------------------------------------------------------------------ 화면 전환
 XFADE = {"dissolve": "fade", "wipeleft": "wipeleft", "wiperight": "wiperight", "wipeup": "wipeup",
          "wipedown": "wipedown", "zoomin": "fade", "zoomout": "fade", "rotzoomin": "fade", "rotzoomout": "fade",
-         "fadeblack": "fadeblack", "fadewhite": "fadewhite"}
+         "fadeblack": "fadeblack", "fadewhite": "fadewhite", "rippleout": "custom", "ripplein": "custom"}
+RIPPLE_BANDS, RIPPLE_BAND = 3, 0.12      # v0.16.91 사각 파동: 빈 사각형 띠 3개(굵기 = 화면 반폭의 12%, 간격 = 띠 굵기) → 마지막 꽉 찬 사각형
+
+
+def ripple_expr(kind: str) -> str:
+    """xfade custom 식: 가운데(→) 또는 가장자리(←)에서 빈 사각형 띠가 차례로 퍼지고 꽉 찬 사각형이 뒤따름. P = 1→0."""
+    b, n = RIPPLE_BAND, RIPPLE_BANDS
+    d = "max(abs(X-W/2)/(W/2),abs(Y-H/2)/(H/2))"
+    r = d if kind == "rippleout" else f"1-{d}"
+    rings = "+".join(f"between(ld(0),ld(1)-{(2 * k + 1) * b:.4f},ld(1)-{2 * k * b:.4f})" for k in range(n))
+    return (f"st(0,{r});st(1,(1-P)*{1 + 2 * n * b + 0.05:.4f});"
+            f"if({rings}+lte(ld(0),ld(1)-{2 * n * b:.4f}),B,A)")
+
+
+def ripple_mask(d, q: float, kind: str):
+    """미리보기(전환 고르는 창) 용 같은 계산: d = 사각 거리(numpy, 0 가운데~1 가장자리), q = 0→1. 1 = 뒤 컷."""
+    import numpy as _np
+    b, n = RIPPLE_BAND, RIPPLE_BANDS
+    r = d if kind == "rippleout" else 1 - d
+    lead = q * (1 + 2 * n * b + 0.05)
+    m = r <= lead - 2 * n * b
+    for k in range(n):
+        m = m | ((r >= lead - (2 * k + 1) * b) & (r <= lead - 2 * k * b))
+    return m.astype(_np.float32)
 
 
 def zoom_filter(kind: str, start: float, dur: float, head: bool) -> str:
@@ -2183,7 +2206,8 @@ def transition_graph(fparts: list, plan: list, lens: list, audio: bool, blur: in
             acc += eff[i] - d
         elif t:
             d = xdur[i]
-            fparts.append(f"{acc_v}{vl[i]}xfade=transition={XFADE[t[0]]}:duration={d:.5f}:offset={acc - d:.5f}{ov}")
+            ex = f":expr='{ripple_expr(t[0])}'" if XFADE[t[0]] == "custom" else ""
+            fparts.append(f"{acc_v}{vl[i]}xfade=transition={XFADE[t[0]]}:duration={d:.5f}:offset={acc - d:.5f}{ex}{ov}")
             if audio:
                 fparts.append(f"{acc_a}{al[i]}acrossfade=d={adur[i]:.5f}{oa}")
             acc += eff[i] - d
@@ -2449,8 +2473,22 @@ def post_graph(fparts: list, cmd: list, project: Project, extras: dict, total: f
         fparts.append(f"[dvb3][dvG]overlay=0:0:format=yuv420:eof_action=pass[dvb4]")
         fparts.append(f"[dvm][dvb4]overlay=0:{y0}:format=yuv420:eof_action=pass[dvo]")
         fparts.append(f"[{ii + 3}:v:0]fps={fr},format=yuva420p[dvT]")
-        fparts.append(f"[dvo][dvT]overlay=0:0:format=yuv420:eof_action=pass[dvx]")
-        cur, ii = "[dvx]", ii + 4
+        nin = 4
+        if lay.get("pulse"):                      # v0.16.91 빨간 점 둘레 깜빡임(작은 그림, 위치 = sendcmd)
+            cmd += ["-f", "concat", "-safe", "0", "-i", _abs(lay["pulse"])]
+            en = "+".join(f"between(t,{a:.3f},{b:.3f})" for a, b in lay["pulse_win"])
+            fparts.append(f"[{ii + 4}:v:0]fps={fr},format=yuva420p[dvP]")
+            ctext = open(lay["dotcmd"], encoding="utf-8").read()
+            cf = paths.cache_dir() / "lut" / f"dot_{hashlib.sha1(ctext.encode()).hexdigest()[:12]}.txt"   # LUT 작업 폴더(cwd) = 경로 이스케이프 없음
+            cf.parent.mkdir(parents=True, exist_ok=True)
+            cf.write_text(ctext, encoding="utf-8")
+            fparts.append(f"[dvo]sendcmd=f={cf.name}[dvo2]")
+            fparts.append(f"[dvo2][dvP]overlay@dot=x=-999:y=-999:format=yuv420:eof_action=pass:enable='{en}'[dvo3]")
+            fparts.append(f"[dvo3][dvT]overlay=0:0:format=yuv420:eof_action=pass[dvx]")
+            nin = 5
+        else:
+            fparts.append(f"[dvo][dvT]overlay=0:0:format=yuv420:eof_action=pass[dvx]")
+        cur, ii = "[dvx]", ii + nin
     for t in titles:
         nxt = f"[tv{k}]"
         if t.get("kind") == "text":
@@ -2713,6 +2751,10 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orien
         fparts[:] = [f.replace("[vo]", "[vm]").replace("[ao]", "[am]") for f in fparts]
         post_graph(fparts, cmd, project, extras, total, orientation, audio, len(segs) + len(img_inputs))
         cwd = cwd or str(paths.cache_dir() / "lut")
+    ef = float((extras or {}).get("end_fade", 0) or 0)
+    if ef > 0 and not fast and total > ef:        # v0.16.91 영상 끝 = 검정으로 페이드 아웃(자동 편집 마지막 컷 · 끝 화면)
+        fparts[:] = [f.replace("[vo]", "[vfe]") for f in fparts]
+        fparts.append(f"[vfe]fade=t=out:st={total - ef:.4f}:d={ef:.4f}:color=black[vo]")
     enc = eff_encoder(o.encoder)     # 설정한 인코더를 이 PC 에서 되는 것으로(v0.16.48)
     ten = is_10bit(enc) and not fast and not TEST_LOSSLESS
     if ten:                          # 10bit 출력(v0.16.41): 컷 끝·합성·전환 뒤 형식을 10bit 로(보정은 원래 16bit 계산)
@@ -2979,7 +3021,7 @@ def chunk_plan(project: Project, segs: list, orientation: str, extras: dict | No
     import dataclasses
     import math
     if fast or len(segs) != 1 or (extras and (extras.get("titles") or extras.get("music") or extras.get("lead")
-                                              or extras.get("dive"))):
+                                              or extras.get("dive") or extras.get("end_fade"))):
         return None
     from .music import seg_up
     if seg_up(segs[0]):               # v0.16.66 원본 키움 경사가 조각 경계마다 생기지 않게 = 통째로

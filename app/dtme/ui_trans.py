@@ -95,6 +95,22 @@ class TransTile(QWidget):
         p.end()
         return im
 
+    def _ripple_frame(self, q):
+        import numpy as np
+        from PySide6.QtGui import QImage
+        if not hasattr(self, "_rip"):
+            def arr(pm):
+                im = pm.toImage().scaled(W, H).convertToFormat(QImage.Format_RGB888)
+                return np.frombuffer(im.constBits(), np.uint8, im.bytesPerLine() * H).reshape(H, im.bytesPerLine())[:, :W * 3] \
+                    .reshape(H, W, 3).astype(np.float32)
+            yy, xx = np.mgrid[0:H, 0:W]
+            d = np.maximum(np.abs(xx + 0.5 - W / 2) / (W / 2), np.abs(yy + 0.5 - H / 2) / (H / 2))
+            self._rip = (arr(self.a), arr(self.b), d)
+        a, b, d = self._rip
+        m = ff.ripple_mask(d, q, self.kind)[..., None]
+        o = np.ascontiguousarray((a * (1 - m) + b * m).astype(np.uint8))
+        return QImage(o.data, W, H, 3 * W, QImage.Format_RGB888).copy()
+
     def paintEvent(self, _):
         from PySide6.QtGui import QColor, QPen
         p = QPainter(self)
@@ -147,6 +163,8 @@ class TransTile(QWidget):
             u = (1 - q) ** 2
             p.drawPixmap(full, a, QRectF(a.rect()))
             self._draw_zoom(p, b, 1 + 2 * u, 0, q)
+        elif k in ("rippleout", "ripplein"):        # v0.16.91 사각 파동(렌더와 같은 계산)
+            p.drawImage(full, self._ripple_frame(q))
         elif k in ("fadeblack", "fadewhite"):
             c = QColor("black" if k == "fadeblack" else "white")
             p.drawPixmap(full, a if q < 0.5 else b, QRectF(a.rect()))

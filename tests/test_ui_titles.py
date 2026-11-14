@@ -63,7 +63,9 @@ print("글자 끝 → 자석:", round(t["t1"], 3), "컷1 끝", round(tl.items[0]
 assert abs(t["t1"] - (tl.items[0][6] + tl.items[0][1])) < 1e-6
 # 우클릭 삭제 → 실행취소
 ri = next(rr for k, d, rr in tl._ov_rects() if d.get("kind") == "image")
+e.menu_hook = lambda m: next(a for a in m.actions() if a.text().startswith("삭제"))
 QTest.mouseClick(tl, Qt.RightButton, Qt.NoModifier, ri.center().toPoint()); wait(0.2)
+e.menu_hook = None
 print("이미지 우클릭 삭제 후:", [d["kind"] for d in st.project.titles]); assert len(st.project.titles) == 1
 w.undo(); wait(0.3); print("실행취소:", [d["kind"] for d in st.project.titles]); assert len(st.project.titles) == 2
 # 재생 위치 클릭

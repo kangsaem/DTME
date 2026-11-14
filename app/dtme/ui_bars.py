@@ -412,6 +412,8 @@ class SeqTimeline(QWidget):
     cutEdgeStart = Signal(str, str)   # v0.16.67 나비 아래 날개 끌기 시작 = (컷 id, 'in'|'out')
     cutEdgeDragged = Signal(str, str, float)   # 누른 곳부터 끈 거리(초, 타임라인)
     cutEdgeEnd = Signal()
+    logToggled = Signal(str)          # v0.16.91 컷 가운데 LOG 칩 클릭 = 그 컷 LOG 켜고 끄기
+    ovMenu = Signal(str, str, object)  # v0.16.91 글자·사각형 우클릭 = 메뉴(삭제·맨 위로·맨 아래로·따라감)
 
     WING = 9         # 전환 없는 경계·맨 앞·맨 뒤 날개 폭(px)
 
@@ -433,6 +435,8 @@ class SeqTimeline(QWidget):
         self.pads = (0.0, 0.0, 0.0)   # v0.16.71 (앞 검은 구간 끝, 영상 끝, 뒤 검은 구간 끝)
         self.music_info = {}          # v0.16.64 음악 파일 → 분석(music.analyze): 파형 · 박자 · 마디 첫 박
         self.ov_sel = ("", "")
+        self.ov_multi = set()             # v0.16.91 Shift+클릭으로 같이 고른 글자·사각형·이미지 id
+        self.log_state = {}               # v0.16.91 다이빙 컷 id → LOG 켬/끔(없는 컷 = 칩 없음)
         self.t = 0.0
         self._press = None            # 컷: (index, x)
         self._drag_x = None
@@ -467,6 +471,8 @@ class SeqTimeline(QWidget):
 
     def set_overlays(self, titles, music, sel):
         self.titles, self.music, self.ov_sel = titles, music, sel
+        ids = {t["id"] for t in titles}
+        self.ov_multi = {i for i in getattr(self, "ov_multi", set()) if i in ids}
         self._resize()
         self.update()
 
@@ -693,12 +699,32 @@ class SeqTimeline(QWidget):
             if sid == self.sel:
                 p.setPen(QPen(QColor("white"), 2))
                 p.drawRect(rr.adjusted(1, 1, -1, -1))
+            lg = self.log_state.get(sid)
+            lr = self._log_rect(rr) if lg is not None and not dragging else None
             if rr.width() > 40:
                 p.setPen(QColor("white"))
                 f.setBold(True)
                 p.setFont(f)
-                p.drawText(rr.adjusted(4, 2, -4, -2), Qt.AlignHCenter | Qt.AlignVCenter,
-                           f"{speed_text(sp)}\n{label}" if rr.width() > 90 else speed_text(sp))
+                if lr is not None:                    # v0.16.91 x1 · LOG 칩 · 이름 = 세 줄(칩 = 컷 가운데)
+                    p.drawText(QRectF(rr.left() + 4, rr.top() + 2, rr.width() - 8, lr.top() - rr.top() - 2),
+                               Qt.AlignHCenter | Qt.AlignBottom, speed_text(sp))
+                    if rr.width() > 90:
+                        p.drawText(QRectF(rr.left() + 4, lr.bottom() + 1, rr.width() - 8, rr.bottom() - lr.bottom() - 3),
+                                   Qt.AlignHCenter | Qt.AlignTop, label)
+                else:
+                    p.drawText(rr.adjusted(4, 2, -4, -2), Qt.AlignHCenter | Qt.AlignVCenter,
+                               f"{speed_text(sp)}\n{label}" if rr.width() > 90 else speed_text(sp))
+            if lr is not None:
+                p.setPen(QPen(QColor("#f0d27a" if lg else "#666666"), 1))
+                p.setBrush(QColor("#d9b24a" if lg else "#3a3a3a"))
+                p.drawRoundedRect(lr, 3, 3)
+                f2 = QFont(f)
+                f2.setPixelSize(9)
+                f2.setBold(True)
+                p.setFont(f2)
+                p.setPen(QColor("#1e1e1e" if lg else "#999999"))
+                p.drawText(lr, Qt.AlignCenter, "LOG")
+                p.setFont(f)
             tr = trs_now.get(sid)                          # v0.16.69 전환 나비가 있으면 C 표시는 나비 오른쪽 뒤로
             draw_tag(p, QRectF(tr.right() + 1, rr.top(), max(0.0, rr.right() - tr.right() - 1), rr.height()) if tr is not None and not dragging else rr, tag)
             ld = self.loud.get(sid)
@@ -775,7 +801,7 @@ class SeqTimeline(QWidget):
             p.fillRect(r, c)
             if kind == "music":
                 self._paint_music(p, d, r)
-            if (kind, d.get("id")) == self.ov_sel:
+            if (kind, d.get("id")) == self.ov_sel or (kind == "title" and d.get("id") in self.ov_multi):
                 p.setPen(QPen(QColor("white"), 2))
                 p.drawRect(r.adjusted(1, 1, -1, -1))
             fl = 14 if d.get("follow") else 4
@@ -921,8 +947,20 @@ class SeqTimeline(QWidget):
         return best if abs(best - v) <= tol else v
 
     # ---------------------------------------------------------------- 마우스
+    def _log_rect(self, rr):
+        """컷 가운데 LOG 칩 자리(컷이 좁으면 없음)."""
+        if rr.width() < 46 or rr.height() < 34:
+            return None
+        return QRectF(rr.center().x() - 17, rr.center().y() - 7, 34, 14)
+
     def mousePressEvent(self, e):
         pos = e.position()
+        if e.button() == Qt.LeftButton and self.log_state:          # v0.16.91 LOG 칩
+            for it, r in zip(self.items, self._rects()):
+                lr = self._log_rect(QRectF(r)) if it[0] in self.log_state else None
+                if lr is not None and lr.adjusted(-2, -2, 2, 2).contains(pos):
+                    self.logToggled.emit(it[0])
+                    return
         hd = self._handle_at(pos)
         if hd and hd[0] == "dur" and e.button() == Qt.RightButton:
             self.transRemove.emit(hd[1])
@@ -951,12 +989,29 @@ class SeqTimeline(QWidget):
         hit = self._ov_at(pos)
         if hit:
             kind, d, mode = hit
-            if e.button() == Qt.RightButton:
-                self.ovRemove.emit(kind, d["id"])
+            if e.button() == Qt.RightButton:          # v0.16.91 메뉴(삭제·맨 위로·맨 아래로·따라감)
+                if kind != "title" or d["id"] not in self.ov_multi:
+                    self.ov_multi = {d["id"]} if kind == "title" else set()
+                self.ov_sel = (kind, d["id"])
+                self.ovSelected.emit(kind, d["id"])
+                self.update()
+                self.ovMenu.emit(kind, d["id"], e.globalPosition().toPoint())
                 return
-            if e.modifiers() & Qt.ShiftModifier:    # v0.16.67 Shift+클릭 = 따라감 켜고 끄기
-                self.ovFollow.emit(kind, d["id"])
-                return
+            if kind == "title":                       # v0.16.91 Shift+클릭 = 같이 고르기(따라감은 우클릭 메뉴로)
+                if e.modifiers() & Qt.ShiftModifier:
+                    if self.ov_sel[0] == "title" and self.ov_sel[1]:
+                        self.ov_multi.add(self.ov_sel[1])
+                    if d["id"] in self.ov_multi and len(self.ov_multi) > 1:
+                        self.ov_multi.discard(d["id"])
+                        self.update()
+                        return
+                    self.ov_multi.add(d["id"])
+                elif d["id"] not in self.ov_multi:
+                    self.ov_multi = {d["id"]}
+            else:
+                self.ov_multi = set()
+            self._ov_group = [(t, dict(t)) for t in self.titles if t["id"] in self.ov_multi and t["id"] != d["id"]] \
+                if kind == "title" else []
             self.ov_sel = (kind, d["id"])
             self.ovSelected.emit(kind, d["id"])
             self.ovDragStart.emit(kind, d["id"])
@@ -1012,6 +1067,8 @@ class SeqTimeline(QWidget):
                     s0, s1 = self._snap(n0, tg), self._snap(n0 + (t1 - t0), tg) - (t1 - t0)
                     n0 = s0 if s0 != n0 else s1
                     d["t0"], d["t1"] = n0, n0 + (t1 - t0)
+                    for g, go in getattr(self, "_ov_group", []):        # 같이 고른 것 = 같은 만큼
+                        g["t0"], g["t1"] = float(go["t0"]) + (n0 - t0), float(go["t1"]) + (n0 - t0)
                 elif mode == "l":
                     d["t0"] = min(t1 - 0.2, self._snap(t0 + dt, tg))
                 else:

@@ -202,7 +202,8 @@ def fit_total(cuts: list[list[float]], total: float, n_trans: int) -> list[list[
     return [[float(np.clip(x * k, CUT_MIN, CUT_MAX)) if x >= CUT_MIN else x for x in c] for c in cuts]
 
 
-ROT_MAX = 2                         # v0.16.84 회전 줌 전환 최대 횟수(한 영상)
+ROT_MAX = 2                         # v0.16.84 회전 줌 전환 최대 횟수(한 영상) · v0.16.91 사각 파동도 같은 수
+FADE_IN_SEC, FADE_OUT_SEC = 1.0, 1.5   # v0.16.91 첫 컷 검정에서 · 마지막 컷 검정으로(영상 끝)
 DIVE_MIN = 15.0                     # v0.16.88 LOG 켠 자동 편집 컷 최소 길이(전환 겹침 포함, 사용자) = dive_draw.MIN_CUT
 
 
@@ -239,8 +240,9 @@ def build(project, picks: list[dict], minutes: int, seed: int = 0, titles: bool 
     cuts = fit_total(cuts, total, max(0, n - 1))
     cuts = [dive_lens(c, d) if c and dive_src(project, p["src"]) else c for c, d, p in zip(cuts, durs, picks)]
     rnd = random.Random(seed)
-    kinds = [k for k, _ in TRANSITIONS if k != "none"]       # v0.16.84 회전 줌 다시(보라색 = ◆ 이름 문제였음, v0.16.79)
-    calm = [k for k in kinds if not k.startswith("rotzoom")]
+    # v0.16.91 컷 사이 = 검정·흰색 페이드 안 씀(첫 컷 시작·마지막 컷 끝만, 사용자) · 회전 줌·사각 파동 = 각각 한 영상 2번까지, 연달아 안 씀
+    kinds = [k for k, _ in TRANSITIONS if k not in ("none", "fadeblack", "fadewhite")]
+    special = {"rot": [], "rip": []}
     rot_n, last_rot = 0, False
     segs, scene_of, firsts = [], {}, []
     for p, lens in zip(picks, cuts):
@@ -258,10 +260,18 @@ def build(project, picks: list[dict], minutes: int, seed: int = 0, titles: bool 
             fout = min(s.frames, fin + max(1, int(round(ln * fps))))
             g = Segment(s.id, fin, fout, 1.0)
             if segs:
-                k = rnd.choice(kinds if (rot_n < ROT_MAX and not last_rot) else calm)   # 회전 줌 = 한 영상 2번까지 · 연달아 안 씀
-                last_rot = k.startswith("rotzoom")
-                rot_n += last_rot
+                prev = (segs[-1].trans or {}).get("type", "")
+                ok = [k for k in kinds
+                      if not (k.startswith("rotzoom") and (len(special["rot"]) >= ROT_MAX or prev.startswith("rotzoom")))
+                      and not (k.startswith("ripple") and (len(special["rip"]) >= ROT_MAX or prev.startswith("ripple")))]
+                k = rnd.choice(ok)
+                if k.startswith("rotzoom"):
+                    special["rot"].append(k)
+                if k.startswith("ripple"):
+                    special["rip"].append(k)
                 g.trans = {"type": k, "dur": TRANS_SEC}
+            else:
+                g.trans = {"type": "fadeblack", "dur": FADE_IN_SEC}             # 첫 컷 = 검정에서 페이드 인
             if j == 0:
                 firsts.append((g.id, s))
             sf = p.get("surface")
@@ -290,7 +300,7 @@ def build(project, picks: list[dict], minutes: int, seed: int = 0, titles: bool 
                     continue
             t0 = start.get(cid, 0.0) + tdur.get(cid, 0.0) + TITLE_DELAY     # v0.16.72 디졸브 끝나고 1초 뒤(사용자)
             tts += title_pair(display_name(s.path), t0, wh)
-    return {"segs": segs, "titles": tts, "scenes": scene_of}
+    return {"segs": segs, "titles": tts, "scenes": scene_of, "end_fade": FADE_OUT_SEC}
 
 
 TITLE_SIZE = 52

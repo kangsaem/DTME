@@ -403,6 +403,7 @@ class Segment:
     aud: str = "auto"                            # v0.16.66 원본 소리: auto(판단대로) | up(키움) | keep(키우지 않음)
     loud: object = None                          # 자동 판단: True = 키움(말소리·수면 위) / False / None = 아직
     why: str = ""                                # 판단 이유: 말소리 | 호흡기 | 수면 위 | 물속
+    log: bool = True                             # v0.16.91 이 컷 LOG(수심 그래프) — 타임라인 컷 가운데 칩
 
     @property
     def frames(self) -> int:
@@ -411,7 +412,8 @@ class Segment:
     def copy(self) -> "Segment":
         return Segment(self.src, self.fin, self.fout, self.speed, layers=copy.deepcopy(self.layers),
                        trans=dict(self.trans), reframe=copy.deepcopy(self.reframe), gkeys=copy.deepcopy(self.gkeys),
-                       off=list(self.off), grade=copy.deepcopy(self.grade), aud=self.aud, loud=self.loud, why=self.why)
+                       off=list(self.off), grade=copy.deepcopy(self.grade), aud=self.aud, loud=self.loud, why=self.why,
+                       log=self.log)
 
 
 # 세로 크롭 위치 이동(리프레이밍). 4K 기준 ±540px(그 이상은 액션캠 가장자리 왜곡)
@@ -558,11 +560,11 @@ def reframe_at(keys: list, f: float) -> float:
 
 # 화면 전환: (종류, 이름). 첫 컷에는 페이드(검정·흰색)만 = 검정/흰 화면에서 들어옴
 # v0.16.34 이름 = 새 화면이 들어오는 방향(ffmpeg 시험: wipeleft = 오른쪽에서 들어옴)
-TRANSITIONS = [("none", "없음"), ("dissolve", "디졸브"),
+# v0.16.91 고르는 창 = 종류별로 한 줄(4개씩): 디졸브·페이드 / 와이프 / 줌 / 사각 파동
+TRANSITIONS = [("none", "없음"), ("dissolve", "디졸브"), ("fadeblack", "검정 페이드"), ("fadewhite", "흰색 페이드"),
                ("wipeleft", "우 → 좌"), ("wiperight", "좌 → 우"), ("wipeup", "아래 → 위"), ("wipedown", "위 → 아래"),
-               ("zoomin", "줌인"), ("zoomout", "줌아웃"),
-               ("rotzoomin", "회전 줌인"), ("rotzoomout", "회전 줌아웃"),
-               ("fadeblack", "검정 페이드"), ("fadewhite", "흰색 페이드")]
+               ("zoomin", "줌인"), ("zoomout", "줌아웃"), ("rotzoomin", "회전 줌인"), ("rotzoomout", "회전 줌아웃"),
+               ("rippleout", "사각 파동 →"), ("ripplein", "사각 파동 ←")]
 TRANS_NAME = dict(TRANSITIONS)
 FIRST_OK = {"fadeblack", "fadewhite"}
 TRANS_DEFAULT_SEC = 0.5
@@ -709,6 +711,7 @@ class RenderItem:
     mix: dict = field(default_factory=dict)
     done: str = ""                               # 렌더 끝난 파일 경로(프로젝트에 저장 → 다시 열어도 완료). "" = 대기
     lead: float = 0.0                            # v0.16.71 영상 앞 검은 구간(초, 타임라인 전체를 보낼 때 사본)
+    end_fade: float = 0.0                        # v0.16.91 영상 끝 검정 페이드 아웃(초) 사본
     dive: dict = field(default_factory=dict)     # v0.16.84 타임라인일 때 {"on", "off"} 사본(다이빙 기록은 프로젝트 것)
 
 
@@ -744,6 +747,7 @@ class Project:
     dives: list = field(default_factory=list)        # v0.16.84 다이빙 기록(FIT·DTMD) → 수심 그래프(divelog 형식)
     dive_on: bool = True                             # 수심 그래프 넣기
     dive_off: float = 0.0                            # 시각 맞춤(초): 카메라 시계 − 다이빙 컴퓨터 시계 차이 보정
+    end_fade: float = 0.0                            # v0.16.91 영상 끝 검정 페이드 아웃(초) — 자동 편집이 켬
 
     def tail_of(self, titles=None, video_end: float | None = None) -> float:
         """영상 끝 뒤 검은 구간(초) = 글자·사각형·이미지가 영상 끝을 넘은 만큼(음악은 안 늘림)."""
@@ -853,7 +857,7 @@ class Project:
             "titles": self.titles, "music": self.music, "mix": self.mix, "audios": self.audios,
             "grade": self.grade,
             "output": asdict(self.output), "lead": self.lead, "tl_out": self.tl_out, "loud_rev": 2,
-            "dives": self.dives, "dive_on": self.dive_on, "dive_off": self.dive_off,
+            "dives": self.dives, "dive_on": self.dive_on, "dive_off": self.dive_off, "end_fade": self.end_fade,
         }
 
     @classmethod
@@ -885,6 +889,7 @@ class Project:
         p.dives = [x for x in d.get("dives", []) if isinstance(x, dict) and x.get("pts")]
         p.dive_on = bool(d.get("dive_on", True))
         p.dive_off = float(d.get("dive_off", 0.0) or 0.0)
+        p.end_fade = float(d.get("end_fade", 0.0) or 0.0)
         g = dict(FACTORY_GRADE)
         g.update(upgrade_grade(dict(d.get("grade", {}))))
         p.grade = g

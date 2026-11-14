@@ -200,6 +200,37 @@ def paint_graph(p: QPainter, W: int, H: int, dive: dict, t: float):
     p.restore()
 
 
+PULSE_SEC, PULSE_FPS = 1.5, 12          # v0.16.91 빨간 점 둘레 은은한 깜빡임(1.5초 주기)
+
+
+def dot_xy(W: int, H: int, dive: dict, t: float):
+    px, py = _xy(dive, W, H)
+    tt = max(0.0, min(DL.dur(dive), t))
+    return px(tt), py(DL.depth_at(dive, tt))
+
+
+def paint_glow(p: QPainter, cx: float, cy: float, k: float, phase: float, alpha: float = 1.0):
+    """점 둘레 퍼지는 빨간 빛(phase 0~1): 반지름 11k → 30k, 진하기 0.55 → 0."""
+    from PySide6.QtGui import QRadialGradient
+    if alpha <= 0.002:
+        return
+    ph = phase % 1.0
+    r = (11 + 19 * ph) * k
+    a = 0.55 * (1 - ph) * alpha
+    g = QRadialGradient(QPointF(cx, cy), r)
+    c0, c1 = QColor(DOT), QColor(DOT)
+    c0.setAlphaF(a)
+    c1.setAlphaF(0.0)
+    g.setColorAt(0.45, c0)
+    g.setColorAt(1.0, c1)
+    p.save()
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setPen(Qt.NoPen)
+    p.setBrush(g)
+    p.drawEllipse(QPointF(cx, cy), r, r)
+    p.restore()
+
+
 def paint_text(p: QPainter, W: int, H: int, dive: dict, t: float, when: float):
     """좌상단 날짜 · 수심 · 시각(헬베티카 같은 글꼴, 부드러운 그림자)."""
     from .fonts import family_of_file
@@ -225,8 +256,11 @@ def paint_top(p: QPainter, W: int, H: int, dive: dict, t: float, when: float, te
     """미리보기: 그래프(드러남·알파) + 글자(알파)."""
     if ga > 0.002 and rv > 0.002:
         if rv >= 0.999:
+            import time as _t
             p.save()
             p.setOpacity(ga)
+            cx, cy = dot_xy(W, H, dive, t)
+            paint_glow(p, cx, cy, k_of(W, H), _t.monotonic() / PULSE_SEC)
             paint_graph(p, W, H, dive, t)
             p.restore()
         else:
@@ -458,7 +492,7 @@ def render_layers(project, dives: list, off: float, spans: list, total: float, W
         if src is None or not src.fps:
             return None
         if seg.id not in inside:
-            inside[seg.id] = cut_dive(dives, src, seg, off) is not None
+            inside[seg.id] = getattr(seg, "log", True) and cut_dive(dives, src, seg, off) is not None   # v0.16.91 컷 LOG 끔 = 없음
         if not inside[seg.id]:
             return None
         m_ = match(dives, src, seg.fin / float(src.fps) + (T - a) * float(seg.speed or 1.0), off)
@@ -543,10 +577,51 @@ def render_layers(project, dives: list, off: float, spans: list, total: float, W
             lambda a_=a_: to_qimage(fill_rgb(a_, "multiply")) if a_ is not None else to_qimage(np.full((fh, fw, 3), 255, np.uint8)), dur)
         put("add", fk if on and mode == "add" else "black",
             lambda a_=a_: to_qimage(fill_rgb(a_, "add")) if a_ is not None else to_qimage(np.zeros((fh, fw, 3), np.uint8)), dur)
+    # v0.16.91 점 깜빡임 = 작은 그림 따로(1.5초 주기 반복) + 위치는 0.5초마다(sendcmd) · 그래프가 다 보일 때만
+    k = k_of(W, H)
+    S = int(64 * k) // 2 * 2 + 2
+    nfr = int(PULSE_SEC * PULSE_FPS)
+    pulse = []
+    for j in range(nfr):
+        im = blank(S, S)
+        q = QPainter(im)
+        paint_glow(q, S / 2, S / 2, k, j / nfr)
+        q.end()
+        f = folder / f"pulse_{j:03d}.png"
+        futs.append(pool.submit(im.save, str(f), "PNG", 80))
+        pulse.append(f)
+    cmds, wins, on0 = [], [], None
+    for i, (T, st) in enumerate(times):
+        vis = False
+        if st is not None:
+            dive, t, w, seg, src, tc, L, tail = st
+            ta, rv, ga = anim(tc, L, tail)
+            vis = rv >= 0.999 and ga >= 0.999
+            if vis:
+                cx, cy = dot_xy(W, H, dive, t)
+                cmds.append(f"{T:.4f} [enter] overlay@dot x {int(round(cx - S / 2))}, overlay@dot y {int(round(cy - S / 2))};")
+        if vis and on0 is None:
+            on0 = T
+        if not vis and on0 is not None:
+            wins.append((on0, T))
+            on0 = None
+    if on0 is not None:
+        wins.append((on0, total))
     for f_ in futs:
         f_.result()
     pool.shutdown()
     out = {}
+    if wins:
+        txt = ["ffconcat version 1.0"]
+        n_loop = int(np.ceil(total / PULSE_SEC)) + 1
+        for _ in range(n_loop):
+            for f in pulse:
+                txt += [f"file '{f.as_posix()}'", f"duration {1 / PULSE_FPS:.6f}"]
+        txt.append(f"file '{pulse[-1].as_posix()}'")
+        (folder / "pulse.txt").write_text("\n".join(txt) + "\n", encoding="utf-8")
+        (folder / "dot.cmd").write_text("\n".join(cmds) + "\n", encoding="utf-8")
+        out["pulse"], out["dotcmd"] = str(folder / "pulse.txt"), str(folder / "dot.cmd")
+        out["pulse_win"] = wins
     for kind, items in lists.items():
         txt = ["ffconcat version 1.0"]
         for f, d in items:

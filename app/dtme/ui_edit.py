@@ -33,12 +33,12 @@ IMG_DISPLAY_MAX = 2048      # 모니터 표시용 이미지 최대 변(렌더는
 # Windows 물리 키(스캔코드) — 한/영 상태와 무관하게 동작
 SCAN = {0x11: "w", 0x32: "m", 0x39: "space", 0x24: "j", 0x26: "l", 0x17: "i", 0x18: "o", 0x1A: "i", 0x1B: "o", 0x1F: "s", 0x22: "g",
         0x30: "b", 0x02: "1", 0x03: "2", 0x04: "3", 0x53: "del", 0x0E: "del", 0x01: "esc",
-        0x4B: "left", 0x4D: "right", 0x50: "down", 0x1C: "enter", 0x2C: "z", 0x15: "y"}
+        0x4B: "left", 0x4D: "right", 0x50: "down", 0x1C: "enter", 0x2C: "z", 0x15: "y", 0x2E: "c", 0x2F: "v"}
 QKEY = {Qt.Key_W: "w", Qt.Key_M: "m", Qt.Key_Space: "space", Qt.Key_J: "j", Qt.Key_L: "l", Qt.Key_I: "i", Qt.Key_O: "o",
         Qt.Key_BracketLeft: "i", Qt.Key_BracketRight: "o", Qt.Key_S: "s", Qt.Key_G: "g", Qt.Key_B: "b",
         Qt.Key_1: "1", Qt.Key_2: "2", Qt.Key_3: "3", Qt.Key_Delete: "del", Qt.Key_Backspace: "del",
         Qt.Key_Escape: "esc", Qt.Key_Left: "left", Qt.Key_Right: "right", Qt.Key_Down: "down",
-        Qt.Key_Return: "enter", Qt.Key_Enter: "enter", Qt.Key_Z: "z", Qt.Key_Y: "y"}
+        Qt.Key_Return: "enter", Qt.Key_Enter: "enter", Qt.Key_Z: "z", Qt.Key_Y: "y", Qt.Key_C: "c", Qt.Key_V: "v"}
 TEXT_INPUTS = (QLineEdit, QAbstractSpinBox, QTextEdit, QPlainTextEdit)
 
 C_INFO, C_OK, C_WARN = "#cfd8e3", "#7fd18b", "#f2c94c"
@@ -417,7 +417,8 @@ class EditTab(QWidget):
         lbox.addWidget(self.tl_out)
         # v0.16.84 수심 그래프: [수심] 켜기/끄기 · 시각 맞춤 ±초 (다이빙 기록이 있을 때만 보임)
         from PySide6.QtWidgets import QSpinBox
-        self.b_dive = _btn("LOG", "다이빙 로그(수심 그래프) 넣기 — FIT·DTMD 기록", self._toggle_dive)
+        self.b_dive = _btn("LOG 전체", "다이빙 로그(수심 그래프) — 다이빙 컷 전부 켜기/끄기 · 컷마다 = 타임라인 컷 가운데 LOG 칩", self._toggle_dive)
+        self.b_dive.setFixedWidth(84)
         self.dive_off = QSpinBox()
         self.dive_off.setRange(-7200, 7200)
         self.dive_off.setSuffix("초")
@@ -476,6 +477,8 @@ class EditTab(QWidget):
         self.timeline.transActivated.connect(self.edit_transition)
         self.timeline.transDurStart.connect(lambda _cid: self.state.checkpoint())
         self.timeline.ovFollow.connect(self.toggle_follow)                 # v0.16.67
+        self.timeline.logToggled.connect(self._toggle_cut_log)              # v0.16.91
+        self.timeline.ovMenu.connect(self._ov_menu)
         self.timeline.ovDragEnd.connect(self._ov_drag_end)                # v0.16.71 앞 검은 구간
         self.timeline.audioDropped.connect(lambda t: self.mus_list.currentItem() is not None and
                                            self.add_music_at(self.mus_list.currentItem().data(Qt.UserRole), t))
@@ -644,8 +647,14 @@ class EditTab(QWidget):
             if name == "s":
                 self.window().save_project()
                 return True
+            if name == "c" and self.sel_ov[0] == "title":          # v0.16.91 글자·사각형 복사·붙이기
+                self.copy_titles()
+                return True
+            if name == "v" and getattr(self, "_title_clip", None):
+                self.paste_titles()
+                return True
             return False
-        if name in ("z", "y"):
+        if name in ("z", "y", "c", "v"):
             return False
         if e.isAutoRepeat() and name not in ("left", "right"):
             return True
@@ -674,6 +683,8 @@ class EditTab(QWidget):
                 self.remove_transition(self.sel_trans)
             elif t == "layer" and self.sel_layer:
                 self.remove_layer(self.sel_layer)
+            elif t == "ov" and self.sel_ov[0] == "title" and len(self.timeline.ov_multi) > 1:
+                self.remove_titles(list(self.timeline.ov_multi))
             elif t == "ov" and self.sel_ov[1]:
                 self.remove_ov(*self.sel_ov)
             elif t == "mus" and self.mus_list.currentItem() is not None:
@@ -1436,6 +1447,7 @@ class EditTab(QWidget):
         it.titles, it.music, it.mix = copy.deepcopy(p.titles), copy.deepcopy(p.music), dict(p.mix)
         it.lead = p.lead
         it.dive = {"on": bool(p.dive_on and p.dives), "off": float(p.dive_off)}
+        it.end_fade = float(getattr(p, "end_fade", 0.0) or 0.0)
         p.render_items.append(it)
         self.state.touch("render")
 
@@ -1857,12 +1869,129 @@ class EditTab(QWidget):
         jobs.submit(jobs.PREVIEW_POOL, job, priority=8)
 
     # ================================================================ 갱신
+    def _log_states(self, cuts) -> dict:
+        """v0.16.91 컷 id → LOG 켬/끔(다이빙 시간 안 · 입출수 안 걸친 컷만). LOG 전체가 꺼져 있으면 모두 끔으로 보임."""
+        p = self.state.project
+        if not p.dives:
+            return {}
+        from . import dive_draw
+        cache = getattr(self, "_cut_dive_cache", {})
+        out = {}
+        for g, _st, _ln in cuts:
+            src = p.source(g.src)
+            if src is None:
+                continue
+            key = (g.src, g.fin, g.fout, round(p.dive_off, 2), len(p.dives))
+            if key not in cache:
+                cache[key] = dive_draw.cut_dive(p.dives, src, g, p.dive_off) is not None
+            if cache[key]:
+                out[g.id] = bool(p.dive_on and g.log)
+        self._cut_dive_cache = cache if len(cache) < 4000 else {}
+        return out
+
+    def _toggle_cut_log(self, cid):
+        """컷 LOG 칩: LOG 전체가 꺼져 있었으면 = 이 컷만 켬(나머지 다이빙 컷은 끔)."""
+        p = self.state.project
+        g = next((x for x in p.segments if x.id == cid), None)
+        if g is None:
+            return
+        self.state.checkpoint(label="LOG")
+        if not p.dive_on:
+            p.dive_on = True
+            for x in p.segments:
+                x.log = x.id == cid
+        else:
+            g.log = not g.log
+        self.state.touch("segments")
+        self.state.touch("dives")
+
+    def _ov_menu(self, kind, oid, pos):
+        """v0.16.91 글자·사각형·이미지·음악 우클릭 메뉴."""
+        from PySide6.QtWidgets import QMenu
+        m = QMenu(self)
+        d = self._ov(kind, oid)
+        if d is None:
+            return
+        ids = list(self.timeline.ov_multi) if kind == "title" and len(self.timeline.ov_multi) > 1 else [oid]
+        a_del = m.addAction(f"삭제 ({len(ids)}개)" if len(ids) > 1 else "삭제")
+        a_top = a_bot = a_fol = a_copy = None
+        if kind == "title":
+            a_top = m.addAction("맨 위로")
+            a_bot = m.addAction("맨 아래로")
+            a_copy = m.addAction("복사  Ctrl+C")
+        a_fol = m.addAction("따라감 끄기" if d.get("follow") else "따라감 켜기")
+        hook = getattr(self, "menu_hook", None)       # 테스트: 메뉴를 띄우지 않고 항목 고르기
+        a = hook(m) if hook else m.exec(pos)
+        if a is None:
+            return
+        if a is a_del:
+            self.remove_titles(ids) if kind == "title" else self.remove_ov(kind, oid)
+        elif a in (a_top, a_bot):
+            p = self.state.project
+            self.state.checkpoint(label="순서")
+            moving = [t for t in p.titles if t["id"] in ids]
+            rest = [t for t in p.titles if t["id"] not in ids]
+            p.titles = (rest + moving) if a is a_top else (moving + rest)      # 목록 뒤 = 위(나중에 그림)
+            self.state.touch("titles")
+        elif a is a_copy:
+            self.copy_titles()
+        elif a is a_fol:
+            self.toggle_follow(kind, oid)
+
+    def remove_titles(self, ids):
+        p = self.state.project
+        self.state.checkpoint(label="삭제")
+        p.titles = [d for d in p.titles if d["id"] not in set(ids)]
+        self.sel_ov = ("", "")
+        self.timeline.ov_multi = set()
+        self.state.touch("titles")
+
+    def copy_titles(self):
+        """v0.16.91 Ctrl+C: 고른 글자·사각형·이미지(여러 개면 간격 그대로)."""
+        import copy as _copy
+        p = self.state.project
+        ids = set(self.timeline.ov_multi) | ({self.sel_ov[1]} if self.sel_ov[0] == "title" and self.sel_ov[1] else set())
+        sel = [t for t in p.titles if t["id"] in ids]
+        if not sel:
+            return
+        self._title_clip = _copy.deepcopy(sel)
+        self._say(f"복사 {len(sel)}개 — Ctrl+V = 재생 위치에 붙이기", C_INFO)
+
+    def paste_titles(self):
+        """v0.16.91 Ctrl+V: 재생 위치에(맨 앞 것 기준, 서로 간격 그대로). 붙인 것을 고른 상태로."""
+        import copy as _copy
+        from .project import _id
+        clip = getattr(self, "_title_clip", None)
+        if not clip:
+            return
+        p = self.state.project
+        self.state.checkpoint(label="붙이기")
+        t0 = min(float(t["t0"]) for t in clip)
+        at = float(self.tl_time) if self.mode == "timeline" else t0
+        new = []
+        for t in clip:
+            n = _copy.deepcopy(t)
+            n["id"] = _id()
+            n.pop("auto_edit", None)
+            n["follow"] = False
+            n["t0"], n["t1"] = float(t["t0"]) - t0 + at, float(t["t1"]) - t0 + at
+            new.append(n)
+        p.titles += new
+        self.timeline.ov_multi = {n["id"] for n in new}
+        self.sel_ov = ("title", new[-1]["id"])
+        self._del_target = "ov"
+        self.state.touch("titles")
+        self._say(f"붙이기 {len(new)}개", C_OK)
+
     def _refresh_dive_ui(self):
         p = self.state.project
         has = bool(p.dives)
         self.b_dive.setVisible(has)
         self.dive_off.setVisible(has and p.dive_on)
-        ui_style.tone(self.b_dive, "key_on" if p.dive_on else "")
+        st = self._log_states(getattr(self, "_tl_cuts", [])) if has else {}
+        part = p.dive_on and st and not all(st.values()) and any(st.values())
+        ui_style.tone(self.b_dive, "key_on" if p.dive_on and not part else "")
+        self.b_dive.setStyleSheet("QPushButton{border:1px solid #d9b24a;}" if part else "")   # 일부만 켬 = 테두리만 노랑
         self.dive_off.blockSignals(True)
         self.dive_off.setValue(int(round(p.dive_off)))
         self.dive_off.blockSignals(False)
@@ -1873,9 +2002,19 @@ class EditTab(QWidget):
             self.b_dive.setToolTip("다이빙 로그(수심 그래프) 넣기 · 다이빙 기록\n" + "\n".join(lines))
 
     def _toggle_dive(self):
+        """[LOG 전체]: 다이빙 컷이 다 켜져 있으면 = 전부 끔, 아니면(일부·전부 꺼짐) = 전부 켬."""
         p = self.state.project
-        self.state.checkpoint()
-        p.dive_on = not p.dive_on
+        self.state.checkpoint(label="LOG")
+        st = self._log_states(getattr(self, "_tl_cuts", []))
+        if p.dive_on and st and all(st.values()):
+            p.dive_on = False
+        elif p.dive_on and not st:
+            p.dive_on = False
+        else:
+            p.dive_on = True
+            for g in p.segments:
+                g.log = True
+        self.state.touch("segments")
         self.state.touch("dives")
 
     def _dive_off_changed(self, v):
@@ -2304,7 +2443,7 @@ class EditTab(QWidget):
         if src is None:
             return None
         from . import dive_draw
-        if dive_draw.cut_dive(p.dives, src, seg, p.dive_off) is None:      # 입수·출수 클립(컷 중간에 시작·끝) = 안 보임
+        if not getattr(seg, "log", True) or dive_draw.cut_dive(p.dives, src, seg, p.dive_off) is None:   # 컷 LOG 끔 · 입출수 = 안 보임
             return None
         s = dive_draw.match(p.dives, src, seg.fin / float(src.fps) + (t - st) * float(seg.speed or 1.0), p.dive_off)
         if not s:
@@ -2781,6 +2920,7 @@ class EditTab(QWidget):
                 plan = autoedit.build(p, picks, st["minutes"], seed=seed, titles=st.get("title", True), cut_max=cmax)
                 p.segments = plan["segs"]
             p.titles = [t for t in p.titles if not t.get("auto_edit")] + plan["titles"]
+            p.end_fade = float(plan.get("end_fade", 0.0))
             snapped = 0
             if auds:
                 items = music_for(plan)
@@ -3435,6 +3575,7 @@ class EditTab(QWidget):
         if self.sel_trans and not any(i[0] == self.sel_trans and i[5] for i in items):
             self.sel_trans = ""
         self.timeline.trans_sel = self.sel_trans
+        self.timeline.log_state = self._log_states(cuts)
         self.timeline.set_items(items, self.sel_cut)
         if self.sel_ov[1] and not any(d["id"] == self.sel_ov[1] for d in p.titles + p.music):
             self.sel_ov = ("", "")

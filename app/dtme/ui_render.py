@@ -711,7 +711,8 @@ class RenderPanel(QWidget):
         self.status[it.id] = "진행"
         self.progress[it.id] = 0.0
         self.refresh()
-        extras = {"titles": it.titles, "music": it.music, "mix": it.mix, "lead": getattr(it, "lead", 0.0)}
+        extras = {"titles": it.titles, "music": it.music, "mix": it.mix, "lead": getattr(it, "lead", 0.0),
+                  "end_fade": float(getattr(it, "end_fade", 0.0) or 0.0)}
         dvi = getattr(it, "dive", None) or {}
         if dvi.get("on") and p.dives:                  # v0.16.84 수심 그래프(타임라인 항목만)
             from . import dive_draw

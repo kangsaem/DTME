@@ -39,7 +39,7 @@ assert wait(60, lambda: len(st.project.sources) == 2 and all(st.status.get(s.id)
 p = st.project
 print("다이빙", len(p.dives), "상태줄", e.status.text())
 assert len(p.dives) == 1 and e.b_dive.isVisible() and e.dive_off.isVisible() and "다이빙 기록 1개" in e.status.text()
-assert e.b_dive.text() == "LOG" and not e.tl_out.isVisible()
+assert e.b_dive.text() == "LOG 전체" and not e.tl_out.isVisible()
 s1, s2 = sorted(p.sources, key=lambda s: s.path)
 assert autoedit.dive_src(p, s1) and not autoedit.dive_src(p, s2)
 # 미리보기: 타임라인에 다이빙 컷 → 모니터에 그래프(멈춤 = 다 보임)

@@ -127,8 +127,10 @@ w.undo(); wait(0.3); p = st.project
 # 5) Shift+클릭 = 따라감 끄고 켜기, 고리 표시
 tl.set_overlays(p.titles, p.music, ("", "")); wait(0.1)
 kind, dd, rr = next((k, x, r) for k, x, r in tl._ov_rects() if x.get("text") == "제자리")
-mouse(QMouseEvent.Type.MouseButtonPress, rr.center() + QPointF(10, 0), Qt.ShiftModifier)
-mouse(QMouseEvent.Type.MouseButtonRelease, rr.center() + QPointF(10, 0), Qt.ShiftModifier); wait(0.2)
+e.menu_hook = lambda m: next(a for a in m.actions() if a.text().startswith("따라감"))      # v0.16.91 우클릭 메뉴
+mouse(QMouseEvent.Type.MouseButtonPress, rr.center() + QPointF(10, 0), Qt.NoModifier, Qt.RightButton)
+mouse(QMouseEvent.Type.MouseButtonRelease, rr.center() + QPointF(10, 0), Qt.NoModifier, Qt.RightButton); wait(0.2)
+e.menu_hook = None
 assert next(x for x in st.project.titles if x.get("text") == "제자리").get("follow") is True
 w.grab().save(os.path.join(out_dir, "v1667_timeline.png"))
 tl.grab().save(os.path.join(out_dir, "v1667_tl_only.png"))
