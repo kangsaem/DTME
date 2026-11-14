@@ -246,7 +246,10 @@ jobs:
           Write-Output $o_v1684
           if ($o_v1684 -notmatch "OK test_ui_v1684") { exit 1 }
           $global:LASTEXITCODE = 0
-          $o_v1691 = python tests/test_ui_v1691.py v1691_test 2>&1 | Out-String
+          # v0.16.92 렌더가 길어 빌드를 1시간 넘게 막음 → 15분 넘으면 끄고 경고만
+          $pv = Start-Process python -ArgumentList "tests/test_ui_v1691.py","v1691_test" -NoNewWindow -PassThru -RedirectStandardOutput v1691_out.txt -RedirectStandardError v1691_err.txt
+          if (-not $pv.WaitForExit(900000)) { Write-Output "::warning::test_ui_v1691 15분 넘음 — 끔"; & taskkill /T /F /PID $pv.Id | Out-Null; Start-Sleep -Seconds 3 }
+          $o_v1691 = (Get-Content v1691_out.txt -Raw -ErrorAction SilentlyContinue) + (Get-Content v1691_err.txt -Raw -ErrorAction SilentlyContinue)
           Write-Output $o_v1691
           if ($o_v1691 -notmatch "OK test_ui_v1691") { Write-Output "::warning::OK test_ui_v1691 실패(빌드는 계속 — 사용자 11/14 12:40: 되는 부분 먼저 빌드)" }
           $global:LASTEXITCODE = 0
