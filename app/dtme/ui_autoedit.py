@@ -139,10 +139,16 @@ class AutoEditDialog(DragMove, QDialog):
         len_row.addWidget(self.len_v)
         self.title_on = QCheckBox("날짜 바")
         self.title_on.setChecked(True)
-        n_def = 0 if p.audios else len(state.default_music())   # v0.16.91 곡이 없으면 기본 음악(CC0)
+        user_auds = [a for a in p.audios if not a.get("builtin")]
+        n_all = len(state.default_music())
+        n_def = 0 if user_auds else n_all                    # v0.16.91 올린 곡이 없으면 기본 음악(CC0)
         self.music_on = QCheckBox("음악 자동" + (f" (기본 음악 {n_def}곡)" if n_def else ""))   # 켜면 컷을 마디에 맞추는 것까지
-        self.music_on.setChecked(bool(p.audios) or bool(n_def))
-        self.music_on.setEnabled(bool(p.audios) or bool(n_def))
+        self.music_on.setChecked(bool(user_auds) or bool(n_def))
+        self.music_on.setEnabled(bool(user_auds) or bool(n_def))
+        self.mix_default = QCheckBox(f"기본 음악도 같이 쓰기 ({n_all}곡)")   # 올린 곡이 있을 때만 · 기본 끔(사용자 14:44)
+        self.mix_default.setChecked(False)
+        self._mix_ok = bool(user_auds) and bool(n_all)
+        self.mix_default.setVisible(self._mix_ok)
         self.grade_on = QCheckBox("보정 안 된 소스는 AUTO 먼저")   # AUTO 했거나 손으로 보정한 소스는 건너뜀
         self.grade_on.setChecked(True)
         self.full = full                                   # v0.16.81 [전부 자동] 팝업: 보정은 AUTO 창 값 → 보정 칸 대신 프로젝트 저장
@@ -163,7 +169,7 @@ class AutoEditDialog(DragMove, QDialog):
         right.setContentsMargins(9, 4, 9, 9)
         right.addLayout(labeled("전체 길이", len_row))
         right.addWidget(line())
-        for cb in (self.title_on, self.music_on, self.dive_on, self.save_on if full else self.grade_on):
+        for cb in (self.title_on, self.music_on, self.mix_default, self.dive_on, self.save_on if full else self.grade_on):
             right.addLayout(labeled("", cb))
         right.addWidget(line())
         # v0.16.91 시작·끝 화면 [자동 | 스틸 고르기 | 없음] · 지명 · 끝 문구 (설명 글 없음)
@@ -326,7 +332,7 @@ class AutoEditDialog(DragMove, QDialog):
 
     def settings(self) -> dict:
         return {"sids": self.chosen(), "minutes": int(self.length.value()), "title": self.title_on.isChecked(),
-                "music": self.music_on.isChecked(), "grade": self.grade_on.isChecked() and not self.full,
+                "music": self.music_on.isChecked(), "mix_default": self._mix_ok and self.mix_default.isChecked(), "grade": self.grade_on.isChecked() and not self.full,
                 "save": self.full and self.save_on.isChecked(),
                 "dive": self.dive_on.isChecked() and bool(self.state.project.dives),
                 "start": self.card["start"]["mode"], "start_img": self.card["start"]["img"],
@@ -357,8 +363,8 @@ class AutoEditDialog(DragMove, QDialog):
     def set_running(self, on: bool):
         self.b_start.setEnabled(not on)
         self.list.setEnabled(not on)
-        for w in (self.length, self.title_on, self.music_on, self.grade_on, self.save_on, self.dive_on, self.place, self.end_text):
-            w.setEnabled(not on and (w is not self.music_on or bool(self.state.project.audios) or bool(self.state.default_music())))
+        for w in (self.length, self.title_on, self.music_on, self.mix_default, self.grade_on, self.save_on, self.dive_on, self.place, self.end_text):
+            w.setEnabled(not on and (w is not self.music_on or any(not a.get("builtin") for a in self.state.project.audios) or bool(self.state.default_music())))
         for c in self.card.values():
             for b in c["grp"].buttons():
                 b.setEnabled(not on)

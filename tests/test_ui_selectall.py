@@ -70,4 +70,15 @@ d = AutoEditDialog(st, set(), w)
 assert d.chosen() == []
 d.check_all()
 assert len(d.chosen()) == 2
+# v0.16.91 기본 음악: 올린 곡이 있으면 '기본 음악도 같이 쓰기' 칸(기본 끔) · 넣으면 [기본] 표시 + 목록 맨 아래
+import shutil  # noqa: E402
+mine = os.path.join(W, "my song.mp3")
+shutil.copy(st.default_music()[0], mine)
+st.import_audios([mine]); wait(3, lambda: all(a.get("dur") for a in st.project.audios))
+d2 = AutoEditDialog(st, set(), w)
+assert d2._mix_ok and not d2.mix_default.isChecked() and not d2.settings()["mix_default"] and "기본 음악" not in d2.music_on.text()
+n = st.add_default_music(); wait(0.3)
+names = [e.mus_list.item(i).text() for i in range(e.mus_list.count())]
+print("음악 목록:", names[:2], "…", names[-1], "· 기본", n)
+assert names[0] == "my song" and all(x.startswith("[기본] ") for x in names[1:]) and n == len(st.default_music())
 print("OK test_ui_selectall", flush=True); os._exit(0)

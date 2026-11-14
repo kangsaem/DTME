@@ -2798,8 +2798,11 @@ class EditTab(QWidget):
 
     def _refresh_audios(self):
         self.mus_list.clear()
-        for a in self.state.project.audios:
-            it = QListWidgetItem(Path(a["path"]).stem)
+        auds = sorted(self.state.project.audios, key=lambda a: bool(a.get("builtin")))    # v0.16.91 기본 음악 = 맨 아래
+        for a in auds:
+            it = QListWidgetItem(("[기본] " if a.get("builtin") else "") + Path(a["path"]).stem)
+            if a.get("builtin"):
+                it.setForeground(QColor("#8a8a8a"))
             it.setData(Qt.UserRole, a["id"])
             it.setToolTip(f"{a['path']}\n" + (f"{a['dur']:.1f}초" if a.get("dur") else "읽는 중"))
             self.mus_list.addItem(it)
@@ -2955,9 +2958,11 @@ class EditTab(QWidget):
             return
         if p.segments and not st.get("replace_ok") and ui_style.confirm(dlg, "타임라인을 바꿀까요?", [("cancel", "취소", 72, None), ("ok", "바꾸기", 80, "red")]) != "ok":
             return
-        if st.get("music") and not p.audios:            # v0.16.91 곡이 없으면 기본 음악(CC0) 을 목록에 넣고 씀
+        user_auds = [a for a in p.audios if not a.get("builtin")]
+        if st.get("music") and (not user_auds or st.get("mix_default")):   # v0.16.91 올린 곡 없음 · '기본 음악도 같이' = 기본 음악(CC0)
             self.state.add_default_music()
-        auds = [a for a in p.audios if Path(a["path"]).exists()] if st.get("music") else []
+        use_builtin = not user_auds or st.get("mix_default")
+        auds = [a for a in p.audios if Path(a["path"]).exists() and (use_builtin or not a.get("builtin"))] if st.get("music") else []
         need_auto = [s for s in srcs if st.get("grade") and not (s.auto or {}).get("preset") and is_plain(s)]
         bases = {}
         for s in need_auto:

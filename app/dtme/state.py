@@ -436,13 +436,14 @@ class AppState(QObject):
         return sorted(str(f) for f in d.glob("*.mp3")) if d.is_dir() else []
 
     def add_default_music(self) -> int:
-        """프로젝트에 곡이 없으면 기본 음악을 음악 목록에 넣음(길이 바로 읽음). 넣은 수."""
-        if self.project.audios:
-            return 0
+        """기본 음악을 음악 목록에 넣음(이미 있는 곡 빼고, 길이 바로 읽음, 'builtin' 표시 = 목록 맨 아래 [기본]). 넣은 수."""
+        known = {Path(a["path"]).resolve() for a in self.project.audios}
         new = []
         for f in self.default_music():
+            if Path(f).resolve() in known:
+                continue
             try:
-                new.append({"id": _id(), "path": str(Path(f).resolve()), "dur": float(ff.probe_audio(f))})
+                new.append({"id": _id(), "path": str(Path(f).resolve()), "dur": float(ff.probe_audio(f)), "builtin": True})
             except Exception as ex:  # noqa: BLE001
                 ff.log_error(f"기본 음악 {f}", str(ex))
         if new:
