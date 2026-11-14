@@ -350,13 +350,23 @@ def dark_mode(frame_rgb: np.ndarray, W: int, H: int) -> str:
     return "add" if float((lum < 63.75).mean()) >= 0.2 else "multiply"
 
 
+_FILL: dict = {}
+
+
 def paint_fill(p: QPainter, rect: QRectF, W: int, H: int, dive: dict, t: float, mode: str, rv: float = 1.0, ga: float = 1.0):
     """미리보기: 출력 화면 rect 위에 직접 멀티플라이/애드(그림 크기 = rect 크기)."""
     if rv <= 0.002 or ga <= 0.002:
         return
     w, h = max(2, int(rect.width())), max(2, int(rect.height()))
-    a, y0 = fill_alpha(w, h, dive, t, rv, ga)
-    img = to_qimage(fill_rgb(a, mode))
+    px, _py = _xy(dive, w, h)
+    key = (w, h, dive["id"], round(px(max(0.0, min(DL.dur(dive), t)))), mode, round(rv * 100), round(ga * 50))
+    hit = _FILL.get("k") == key
+    if hit:                                            # v0.16.91 같은 그림 = 다시 안 계산(재생 중 매 장면 numpy 계산이 무거움)
+        img, y0 = _FILL["v"]
+    else:
+        a, y0 = fill_alpha(w, h, dive, t, rv, ga)
+        img = to_qimage(fill_rgb(a, mode))
+        _FILL["k"], _FILL["v"] = key, (img, y0)
     p.save()
     p.setCompositionMode(QPainter.CompositionMode_Plus if mode == "add" else QPainter.CompositionMode_Multiply)
     p.drawImage(QRectF(rect.left(), rect.top() + y0 * rect.height() / h, rect.width(), img.height() * rect.height() / h), img)
@@ -444,6 +454,8 @@ def guess_off(dives: list, sources: list) -> float:
 def cut_dive(dives: list, src, seg, off: float = 0.0):
     """v0.16.88 컷 전체(처음·끝)가 같은 다이빙 안일 때만 그 다이빙(입수·출수 클립 = 표시 안 함, 사용자 11/13)."""
     if not dives or not src.fps:
+        return None
+    if getattr(seg, "why", "") == "수면 위":         # v0.16.91 컷 소리·장면 판단 = 물 밖(배 위) → LOG 안 보임(기록 시각이 분 단위라 입수 직전이 다이빙 안으로 잡힘)
         return None
     a = match(dives, src, seg.fin / float(src.fps), off)
     b = match(dives, src, max(seg.fin, seg.fout - 1) / float(src.fps), off)

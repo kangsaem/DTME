@@ -45,8 +45,12 @@ ta = dict(t, ain="type", tdelay=0.2)
 full, typed = grab(ff.text_filter(t, 1920, 1080), 2.0), grab(ff.text_filter(ta, 1920, 1080), 2.0)
 diff = np.abs(full.astype(int) - typed).mean()
 mid, before = grab(ff.text_filter(ta, 1920, 1080), 0.45), grab(ff.text_filter(ta, 1920, 1080), 0.1)
-print("타이핑: 다 친 화면 차이", round(diff, 2), "중간 픽셀", int((mid > 128).sum()), "/", int((typed > 128).sum()))
-assert diff < 2.5 and (before > 128).sum() == 0 and 0 < (mid > 128).sum() < 0.6 * (typed > 128).sum()
+def _bb(x):
+    ys, xs = np.nonzero(x.max(2) > 128)
+    return np.array([xs.min(), ys.min(), xs.max(), ys.max()])
+shift = np.abs(_bb(full) - _bb(typed)).max()
+print("타이핑: 다 친 화면 차이", round(diff, 2), "상자 어긋남 px", int(shift), "중간 픽셀", int((mid > 128).sum()), "/", int((typed > 128).sum()))
+assert shift <= 6 and (before > 128).sum() == 0 and 0 < (mid > 128).sum() < 0.6 * (typed > 128).sum()
 
 from dtme.ui_titles import RectDialog, TextDialog  # noqa: E402
 td = TextDialog(dict(t))
@@ -249,6 +253,20 @@ assert len(st.project.titles) == n0 + 2
 w.undo(); wait(0.2); w.undo(); wait(0.3)
 p = st.project
 assert len(p.titles) == n0, len(p.titles)
+
+# ---------------------------------------------------------------- 6b) 재생 중 전환 구간 = 만든 전환 영상 덮기
+from PySide6.QtGui import QImage as _QI  # noqa: E402
+fr = [_QI(64, 36, _QI.Format_RGB888) for _ in range(60)]
+e._tp_cache = {"x": (fr, 9.0, 10.0, 0.5)}
+_ip = e.player.is_playing
+e.player.is_playing = lambda: True
+e._trans_overlay(10.2)
+assert e.trans_prev.isVisible() and e.trans_prev.sync and e.trans_prev.i == round(1.2 * 29.97)
+e._trans_overlay(10.6)
+assert not e.trans_prev.isVisible()
+e.player.is_playing = _ip
+st.touch("segments"); wait(0.1)
+assert not e._tp_cache
 
 # ---------------------------------------------------------------- 7) 렌더: 시작 = 검정에서 · 끝 = 검정으로 · 시작 화면 = 흰빛 + 남색 글자
 e.timeline_to_render(); it = p.render_items[-1]

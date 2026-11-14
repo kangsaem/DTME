@@ -321,10 +321,29 @@ def show_done_popup(parent, ok: int, bad: int, sec: float, folder: str, on_close
     d.b_ok.clicked.disconnect()
     d.b_ok.clicked.connect(lambda: close(False))
     d.rejected_.connect(lambda: close(False))            # Esc
+    d.setWindowFlag(Qt.WindowStaysOnTopHint, True)      # v0.16.91 다른 프로그램 창 위에(윈도우는 '앞으로 가져오기'는 막아서 = 항상 위)
     d.center_on(parent)
     d.show()
     d.raise_()
+    done_sound()
     return d
+
+
+def done_sound():
+    """v0.16.91 렌더 끝 알림음(설정 '끝 알림음' 켬일 때): Windows 알림음, 그 밖 = Qt 삑."""
+    from .project import get_setting
+    if str(get_setting("done_sound", 1)) in ("0", "False", "false", ""):
+        return
+    try:
+        import os as _os
+        if _os.name == "nt":
+            import winsound
+            winsound.MessageBeep(winsound.MB_ICONASTERISK)
+            return
+        from PySide6.QtWidgets import QApplication
+        QApplication.beep()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def precache_item(p, it, cancel=None):
@@ -811,6 +830,10 @@ class RenderSettings(QWidget):
         f.addRow("프리뷰 파일", self.use_pv)
         f.addRow("동시 분석", self.jobs_a)
         f.addRow("동시 렌더", self.jobs_r)
+        self.sound = QComboBox()                                     # v0.16.91 렌더 끝 알림음
+        self.sound.addItem("켬", 1)
+        self.sound.addItem("끔", 0)
+        f.addRow("끝 알림음", self.sound)
         frow = QHBoxLayout()
         self.folder = QLineEdit()
         b = QPushButton("선택…")
@@ -832,6 +855,7 @@ class RenderSettings(QWidget):
         self.gpu.setChecked(o.gpu_decode)
         self.still.setCurrentIndex(1 if str(get_setting("still_bits", 8)) == "16" else 0)
         self.use_pv.setCurrentIndex(0 if str(get_setting("use_preview", 1)) not in ("0", "False", "false", "") else 1)
+        self.sound.setCurrentIndex(0 if str(get_setting("done_sound", 1)) not in ("0", "False", "false", "") else 1)
         from . import jobs as J
         for cb, key, cur in ((self.jobs_a, "auto_jobs", J.AUTO_N), (self.jobs_r, "render_jobs", J.RENDER_N)):
             try:
@@ -857,6 +881,7 @@ class RenderSettings(QWidget):
                                             "gpu_decode": o.gpu_decode})
             set_setting("still_bits", self.still.currentData())
             set_setting("use_preview", self.use_pv.currentData())
+            set_setting("done_sound", self.sound.currentData())
             set_setting("auto_jobs", self.jobs_a.currentData())
             set_setting("render_jobs", self.jobs_r.currentData())
             self.state.retune()

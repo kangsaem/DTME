@@ -273,7 +273,25 @@ class TransPreview(QWidget):
         self.raise_()
         self._timer.start()
 
+    def show_frame(self, frames, i):
+        """v0.16.91 타임라인 재생 중 전환 구간: 만들어 둔 전환 영상의 i 번째 장면을 덮음(타이머 없음, 재생 위치에 맞춤)."""
+        self._timer.stop()
+        self.frames, self.i = frames, max(0, min(len(frames) - 1, i))
+        self.sync = True
+        if not self.isVisible():
+            self.setGeometry(self.parentWidget().rect())
+            self.show()
+            self.raise_()
+        self.update()
+
+    def hide_sync(self):
+        if getattr(self, "sync", False):
+            self.sync = False
+            self.frames = []
+            self.hide()
+
     def stop(self):
+        self.sync = False
         if not self.isVisible():
             return
         self._timer.stop()
@@ -297,8 +315,9 @@ class TransPreview(QWidget):
             w, h = im.width() * sc, im.height() * sc
             p.setRenderHint(QPainter.SmoothPixmapTransform)
             p.drawImage(QRectF(r.center().x() - w / 2, r.center().y() - h / 2, w, h), im)
-            p.fillRect(QRectF(0, r.height() - 3, r.width() * min(self.i, len(self.frames)) / len(self.frames), 3),
-                       QColor("#4a8fe0"))
+            if not getattr(self, "sync", False):
+                p.fillRect(QRectF(0, r.height() - 3, r.width() * min(self.i, len(self.frames)) / len(self.frames), 3),
+                           QColor("#4a8fe0"))
         p.end()
 
     def mousePressEvent(self, _):

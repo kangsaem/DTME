@@ -497,6 +497,7 @@ class EditTab(QWidget):
         self.sel_trans = ""
         self._tp_job = None
         self._tp_key = None
+        self._tp_cache = {}               # v0.16.91 만든 전환 영상 {컷 id: (프레임들, 영상 시작 초, 전환 시작 초, 길이)} — 재생 중 그 구간에 덮음
         self._tp_frames = []
         self.tl_scroll = QScrollArea()
         self.tl_scroll.setWidget(self.timeline)
@@ -1007,10 +1008,15 @@ class EditTab(QWidget):
         fl = {"gen": gen, "tok": tok, "live": live}
         self._pv_flight[key] = fl
 
+        t_req = time.monotonic()
+
         def work():
             if fl["gen"] != self.pgen:           # 기다리는 사이 다른 화면을 요청함 = 안 만듦(ffmpeg 를 헛돌리지 않음, v0.16.40)
                 return None
+            t0 = time.monotonic()                # v0.16.91 단계별 시간(사용자: 미리보기 느림 → 어디서 느린지)
+            ready = ff.frame_ready(s, frame)
             c = ff.cached_frame(s, frame)
+            t1 = time.monotonic()
             if mode == "split":                  # v0.16.58 반반 = 보정·원본 두 장을 같이 만듦(예전 = 차례로 → 반반이 유난히 느림)
                 import threading
                 box = {}
@@ -1029,6 +1035,9 @@ class EditTab(QWidget):
                 res = (out, box["b"])
             else:
                 res = (ff.render_preview(c, grade), None)
+            t2 = time.monotonic()
+            ff.dbg(f"미리보기 시간 #{fl['gen']} f={frame}: 대기 {t0 - t_req:.2f} · 원본 {t1 - t0:.2f}({'기억' if ready else '읽음'}) · 보정 {t2 - t1:.2f}"
+                   f" · 합 {t2 - t_req:.2f}초 · 보기={mode} · {Path(s.path).name}")
             with PREVIEW_LOCK:                   # 작업 스레드 여러 개가 같이 씀
                 PREVIEW_LRU[key] = res
                 while len(PREVIEW_LRU) > PREVIEW_LRU_MAX:
@@ -1084,10 +1093,15 @@ class EditTab(QWidget):
             pv = {"path": s.proxy, "w": pw, "h": ph, "fps_num": s.fps_num, "fps_den": s.fps_den, "frames": s.frames,
                   "shift": 0, "ratio": 1, "color": "raw"}
 
+        t_req = time.monotonic()
+
         def work():
+            t0 = time.monotonic()
             c = ff.cached_frame_preview(s, frame, pv)
+            t1 = time.monotonic()
             out = ff.render_preview(c, ff.preview_grade(grade, pv))
             before = ff.render_preview(c, ff.preview_grade(ff.lut_only(full), pv)) if mode == "split" else None
+            ff.dbg(f"미리보기 시간(프리뷰) #{gen} f={frame}: 대기 {t0 - t_req:.2f} · 읽기 {t1 - t0:.2f} · 보정 {time.monotonic() - t1:.2f}초")
             return out, before
 
         def done(data, g=gen, fr=frame, t=tok):
@@ -1633,11 +1647,16 @@ class EditTab(QWidget):
         self._tp_job = job
         job.signals.progress.connect(lambda v: self._say(f"전환 미리보기 {int(v * 100)}%"))
 
-        def done(frames, job=job, key=key, cid=cid):
+        def done(frames, job=job, key=key, cid=cid, w0=w0, a=starts[i], d=d):
             if job is not self._tp_job:
                 return
             self._tp_job = None
             self._tp_key, self._tp_frames = key, frames
+            if frames and i > 0:                          # v0.16.91 재생 때 쓰려고 기억(최근 4개 — 540p 3초 ≈ 140MB 씩)
+                self._tp_cache.pop(cid, None)
+                self._tp_cache[cid] = (frames, w0, a, d)
+                while len(self._tp_cache) > 4:
+                    self._tp_cache.pop(next(iter(self._tp_cache)))
             self._say("")
             if self.sel_trans == cid and frames:
                 self.trans_prev.play(frames)
@@ -1882,7 +1901,7 @@ class EditTab(QWidget):
             src = p.source(g.src)
             if src is None:
                 continue
-            key = (g.src, g.fin, g.fout, round(p.dive_off, 2), len(p.dives))
+            key = (g.src, g.fin, g.fout, round(p.dive_off, 2), len(p.dives), g.why)
             if key not in cache:
                 cache[key] = dive_draw.cut_dive(p.dives, src, g, p.dive_off) is not None
             if cache[key]:
@@ -2034,6 +2053,8 @@ class EditTab(QWidget):
                 self._update_tl_titles(self.tl_time)
 
     def _on_state(self, what):
+        if what in ("segments", "titles", "grade", "undo", "project") and self._tp_cache:   # 바뀌면 만든 전환 영상은 버림
+            self._tp_cache.clear()
         if what == "project" and self.state.auto_dive_off():      # v0.16.91 예전 프로젝트도 시간대 차이 자동
             self.state.dirty = True
         if what in ("project", "undo", "dives"):
@@ -2343,6 +2364,19 @@ class EditTab(QWidget):
         f = seg.fin + (min(t, st + ln) - st) * float(src.fps) * seg.speed
         return seg, st, int(max(seg.fin, min(seg.fout - 1, round(f))))
 
+    def _trans_overlay(self, t):
+        """v0.16.91 재생 중 전환 구간(겹침) = 만들어 둔 전환 영상을 덮어 보여줌(안 만든 전환 = 예전처럼 컷만)."""
+        hit = None
+        if self.player.is_playing() and self._tp_cache:
+            for frames, w0, a, d in self._tp_cache.values():
+                if a <= t < a + d:
+                    hit = (frames, int(round((t - w0) * 29.97)))
+                    break
+        if hit:
+            self.trans_prev.show_frame(*hit)
+        elif getattr(self.trans_prev, "sync", False):
+            self.trans_prev.hide_sync()
+
     def show_timeline(self, t, play=False):
         """그 시점의 컷 소스를 열어 해당 프레임으로(보정 화면은 평소처럼), 글자·이미지는 모니터에 그림."""
         loc = self._tl_locate(t)
@@ -2393,6 +2427,7 @@ class EditTab(QWidget):
         self.tl_time = t
         self.timeline.set_time(t)
         self._update_tl_titles(t)
+        self._trans_overlay(t)
         if self.player.is_playing() and getattr(self, "_vol_seg", None) is not seg:      # 컷이 바뀜 = 볼륨(원본 키움)
             self._vol_seg = seg
             self._apply_tl_volumes()
