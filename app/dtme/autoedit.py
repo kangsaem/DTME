@@ -565,7 +565,12 @@ START_SEC, END_SEC = 4.0, 5.0       # 시작 화면 = 첫 컷 앞 검은 구간 
 CARD_X = 0.5                        # 겹침(디졸브) 초 = 화면이 컷 위로 넘어가는 만큼
 CARD_FADE = 1.0
 CARD_COLOR = "#1b2a4e"              # 남색
-CARD_FONT = "Pretendard"
+CARD_FONT = "TeX Gyre Heros"        # v0.16.91 사용자 13:22: 날짜 바·LOG 와 같은 글꼴, 굵게(가늘어 보임)
+CARD_FONT_KO = "Pretendard"          # 한글이 있는 줄(지명) = TeX Gyre Heros 에 한글이 없어서
+
+
+def card_font(text: str) -> str:
+    return CARD_FONT if all(ord(c) < 0x2E80 for c in text) else CARD_FONT_KO
 CARD_WHITE = 0.5
 
 
@@ -684,7 +689,7 @@ def card_titles(img_id: str, lines: list[tuple[str, int, bool]], t0: float, t1: 
     d = type_at - t0
     for (text, size, bold), h in zip(lines, hs):
         tx = new_text(t0, t1, text)
-        tx.update(font=CARD_FONT, size=size, bold=bold, color=CARD_COLOR, bg="none", ain="type", aout="fade", fade=0.5,
+        tx.update(font=card_font(text), size=size, bold=True, color=CARD_COLOR, bg="none", ain="type", aout="fade", fade=0.5,
                   tdelay=round(d, 3), cx=0.5, cy=round(y + h / 2, 4), auto_edit=True, card=which)
         out.append(tx)
         y += h + gap * 0.5
@@ -694,7 +699,7 @@ def card_titles(img_id: str, lines: list[tuple[str, int, bool]], t0: float, t1: 
 
 def start_card(img_id: str, place: str, period: str, lead: float) -> list[dict]:
     """시작 화면: 0 ~ lead + 0.5(첫 컷으로 디졸브). 지명(크게) + 기간."""
-    return card_titles(img_id, [(place, 76, True), (period, 40, False)], 0.0, lead + CARD_X, CARD_FADE, "start")
+    return card_titles(img_id, [(place, 76, True), (period, 40, True)], 0.0, lead + CARD_X, CARD_FADE, "start")
 
 
 def end_card(img_id: str, video_end: float, lines: list[tuple[str, int, bool]]) -> list[dict]:
@@ -706,7 +711,7 @@ def end_lines(log: bool, dives: list, place: str, period: str, text: str = "") -
     """끝 문구: 직접 쓴 문구(줄바꿈 = 줄) · LOG = 다이빙 요약 + 지명 · 날짜 · 아니면 'See You Underwater' / 'DTME'."""
     if text.strip():
         ls = [x.strip() for x in text.strip().split("\n") if x.strip()]
-        return [(ls[0], 64, True)] + [(x, 40, False) for x in ls[1:]]
+        return [(ls[0], 64, True)] + [(x, 40, True) for x in ls[1:]]
     if log and dives:
-        return [(dive_line(dives), 52, True), (" · ".join(x for x in (place, period) if x), 36, False)]
+        return [(dive_line(dives), 52, True), (" · ".join(x for x in (place, period) if x), 36, True)]
     return [("See You Underwater", 72, True), ("DTME", 40, True)]
