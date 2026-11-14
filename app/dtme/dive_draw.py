@@ -75,6 +75,7 @@ def wipe_mask(W: int, rv: float) -> np.ndarray:
 
 BLUE = (14, 140, 230)          # DTMD 그래프 아래 색
 DOT = "#E31B3F"
+DOT_FLASH = "#FF6FB5"         # v0.16.93 소나가 퍼지기 시작하는 첫 그림(1/12초)만 밝은 분홍(사용자)
 RATE = 2                       # 렌더 그림 바꾸는 횟수(초당) — 점은 1초에 1px 도 안 움직임
 FADE_MIN = 220                 # 점 앞 색이 사라지는 최소 길이(1080 기준 px) — 다이빙 초반에도 색이 보이게
 
@@ -94,8 +95,14 @@ G_TOP, G_BOTTOM = 270, 73                 # v0.16.89 그래프 세로를 늘림(
 #                                           최대 수심 = 화면 아래에서 73k 위 — 다이빙마다 최대 수심이 10m 든 40m 든 같은 높이로
 
 
+V_TOP, V_BOTTOM = 0.5, 0.1               # v0.16.93 세로 영상(사용자): 수면 = 화면 높이 1/2 · 최대 수심 = 아래 끝에서 1/10 위
+
+
 def geo(W: int, H: int):
     k = k_of(W, H)
+    if H > W:
+        top = H * V_TOP
+        return k, top, max(10.0, H * (1 - V_BOTTOM) - top)
     top = G_TOP * k
     return k, top, max(10.0, H - G_BOTTOM * k - top)          # k, 수면 y, 최대 수심까지 높이
 
@@ -202,9 +209,28 @@ def paint_graph(p: QPainter, W: int, H: int, dive: dict, t: float):
     p.drawPath(path)
     tt = max(0.0, min(DL.dur(dive), t))
     c = QPointF(px(tt), py(DL.depth_at(dive, tt)))
+    _dot(p, c, k, DOT)
+    p.restore()
+
+
+def _dot(p: QPainter, c: QPointF, k: float, color: str):
     p.setPen(QPen(QColor("#ffffff"), 3 * k))
-    p.setBrush(QColor(DOT))
+    p.setBrush(QColor(color))
     p.drawEllipse(c, 11 * k, 11 * k)
+
+
+def is_flash(phase: float) -> bool:
+    """소나 주기의 첫 그림(1/PULSE_FPS 초) = 점 분홍."""
+    return (phase % 1.0) < 1.0 / (PULSE_SEC * PULSE_FPS)
+
+
+def paint_flash(p: QPainter, cx: float, cy: float, k: float, phase: float):
+    """v0.16.93 첫 그림이면 점 위에 분홍 점(그래프 점과 같은 크기·흰 테두리)."""
+    if not is_flash(phase):
+        return
+    p.save()
+    p.setRenderHint(QPainter.Antialiasing)
+    _dot(p, QPointF(cx, cy), k, DOT_FLASH)
     p.restore()
 
 
@@ -269,8 +295,10 @@ def paint_top(p: QPainter, W: int, H: int, dive: dict, t: float, when: float, te
             p.save()
             p.setOpacity(ga)
             cx, cy = dot_xy(W, H, dive, t)
-            paint_glow(p, cx, cy, k_of(W, H), _t.monotonic() / PULSE_SEC)
+            ph = _t.monotonic() / PULSE_SEC
+            paint_glow(p, cx, cy, k_of(W, H), ph)
             paint_graph(p, W, H, dive, t)
+            paint_flash(p, cx, cy, k_of(W, H), ph)
             p.restore()
         else:
             y0 = band_top(W, H)
@@ -631,6 +659,7 @@ def render_layers(project, dives: list, off: float, spans: list, total: float, W
         im = blank(S, S)
         q = QPainter(im)
         paint_glow(q, S / 2, S / 2, k, j / nfr)
+        paint_flash(q, S / 2, S / 2, k, j / nfr)          # 렌더: 깜빡임 그림이 그래프 위라 점을 덮음
         q.end()
         f = folder / f"pulse_{j:03d}.png"
         futs.append(pool.submit(im.save, str(f), "PNG", 80))

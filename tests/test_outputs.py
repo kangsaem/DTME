@@ -69,6 +69,7 @@ assert got == {1920: "horizontal", 2688: "horizontal1440", 3840: "horizontal2160
 # AUTO 창
 d = e.make_auto_dialog(); d.show(); wait(0.3)
 byw = {p.source(r.sid).width: i for i, r in enumerate(d.rows)}
+d._picked = True                                       # v0.16.93 소스를 직접 누른 것으로
 d.list.clearSelection(); d.list.item(byw[1920]).setSelected(True); d.list.setCurrentRow(byw[1920]); wait(0.2)
 vis = [k for k, b in d.out.btns.items() if b.isVisible()]
 print("AUTO 1080 줄 버튼:", vis)

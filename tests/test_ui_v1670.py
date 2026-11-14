@@ -45,7 +45,7 @@ assert out_label("vertical", sl, short=True) == "인스타" and out_label("verti
 print("단계: AUTO 창", flush=True)
 dlg = e.make_auto_dialog(); dlg.show(); wait(0.3)
 assert dlg.out.btns["vertical"].text() == "인스타" and "릴스" in dlg.out.btns["vertical"].toolTip()
-dlg.list.clearSelection()
+assert dlg.list.currentRow() == 0 and not getattr(dlg, "_picked", False)   # v0.16.93 창이 열리며 첫 줄이 잡혀 있어도
 dlg._out("horizontal2160"); wait(0.1)
 outs = {r.sid: r.out for r in dlg.rows}
 assert outs == {sl.id: "horizontal2160", sv.id: "vertical2160"}, outs
@@ -54,6 +54,11 @@ assert {r.sid: r.out for r in dlg.rows} == {sl.id: "horizontal1440", sv.id: "ver
 dlg._out("vertical"); wait(0.1)                       # 인스타 = 가로 촬영 → 1080×1920, 세로 촬영 → 세로 1080
 assert {r.sid: r.out for r in dlg.rows} == {sl.id: "vertical", sv.id: "vertical"}
 # 세로 촬영 줄만 고르면 인스타 버튼 숨김, 1440·4K 버튼은 보임
+from PySide6.QtCore import Qt as _Qt
+from PySide6.QtTest import QTest
+_rc = dlg.list.visualItemRect(dlg.list.item(0))
+QTest.mouseClick(dlg.list.viewport(), _Qt.LeftButton, _Qt.NoModifier, _rc.center()); wait(0.1)
+assert dlg._picked                                    # v0.16.93 소스를 직접 누른 뒤 = 고른 줄만
 i_v = next(i for i, r in enumerate(dlg.rows) if r.sid == sv.id)
 dlg.list.setCurrentRow(i_v); dlg.list.item(i_v).setSelected(True); wait(0.1)
 dlg._out_options()

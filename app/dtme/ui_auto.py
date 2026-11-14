@@ -814,7 +814,7 @@ class AutoDialog(DragMove, QDialog):
         """v0.16.32: 고른 줄(없으면 전체)의 원본 중 하나라도 낼 수 있는 출력만 보임."""
         p = self.state.project
         ok = set()
-        for r in self._targets():
+        for r in self._out_targets():
             s = p.source(r.sid)
             for k in outputs_for(source_out_h(s), source_vw(s)):
                 if is_portrait(s):                      # v0.16.70 세로 촬영: 세로 크기 = 같은 크기 버튼, 인스타 = 숨김(세로 1080 과 같음)
@@ -851,6 +851,10 @@ class AutoDialog(DragMove, QDialog):
     def _targets(self):
         return self._sel_rows() or self.rows
 
+    def _out_targets(self):
+        """v0.16.93 출력 크기: 목록에서 소스를 직접 누르기 전 = 전체(창이 열리며 첫 줄이 잡혀 있어도) · 누른 뒤 = 고른 소스."""
+        return self._targets() if getattr(self, "_picked", False) else self.rows
+
     def _choose(self, key):
         rows = self.rows if key == "auto" else self._targets()
         for r in rows:
@@ -867,7 +871,7 @@ class AutoDialog(DragMove, QDialog):
 
     def _out(self, k):
         p = self.state.project
-        for r in self._targets():
+        for r in self._out_targets():
             s = p.source(r.sid)
             key = ROT.get(k, k) if is_portrait(s) else k            # v0.16.70 세로 촬영 = 고른 크기를 90도 돌린 세로
             r.out = clamp_src(key, s)     # 원본보다 크면 그 원본의 가장 큰 값
@@ -929,6 +933,8 @@ class AutoDialog(DragMove, QDialog):
         # 창이 닫히며 목록이 먼저 지워져도 안전하게(목록 위젯을 다시 부르지 않음: 저장해 둔 viewport 와 비교만)
         if obj is getattr(self, "_vp", None) and e.type() in (QEvent.MouseButtonPress, QEvent.MouseMove,
                                                                 QEvent.MouseButtonRelease, QEvent.MouseButtonDblClick):
+            if e.type() == QEvent.MouseButtonPress:
+                self._picked = True             # v0.16.93 소스를 직접 누름 → 출력 크기 = 고른 소스만
             try:
                 if self._check_drag(e):
                     return True

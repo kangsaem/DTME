@@ -60,7 +60,7 @@ for r in dlg.rows[:3]:
     print("  인식:", r.rec, "→", r.result["preset"], "키", len(r.result["gkeys"].get("r_gain", [])), dlg.row_text(r))
 assert dlg.rows[0].result["scene"] == "shallow" and dlg.rows[1].result["scene"] == "deep" and dlg.rows[2].result["gkeys"]
 # 2번째 줄 선택 → 깊은 수심 · 거북이 직접 지정, 출력 세로
-dlg.list.setCurrentRow(1); wait(0.1)
+dlg._picked = True; dlg.list.setCurrentRow(1); wait(0.1)
 dlg.grid.btns["night"].click(); dlg.out.btns["vertical"].click(); wait(0.1)
 lab, fixed, sub = dlg.row_text(dlg.rows[1])
 print("직접 지정:", lab, fixed, sub, dlg.rows[1].out)

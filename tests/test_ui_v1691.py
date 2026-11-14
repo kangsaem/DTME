@@ -79,7 +79,7 @@ f_ = {"id": "y", "src": "fit", "start": 1010.0, "pts": [[0, 0], [600, 10]], "max
 mg = divelog.merge([a_], [f_])
 assert len(mg) == 1 and mg[0]["src"] == "fit" and mg[0]["loc"] == "보홀주, 필리핀"
 t0 = divelog._naive(2026, 10, 27, 9, 0)
-assert autoedit.period_text(t0, t0 + 3600) == "2026.10.27" and autoedit.period_text(t0, t0 + 6 * 86400) == "2026.10.27 – 11.02"
+assert autoedit.period_text(t0, t0 + 3600) == "2026.10.27" and autoedit.period_text(t0, t0 + 6 * 86400) == "2026.10.27 ~ 11.02"
 assert autoedit.end_lines(False, [], "", "")[0][0] == "See You Underwater"
 # 클립이 너무 많음(1분에 20개): 가능한 많이(13개 = 4.5초씩) · 흐림·흔들림 먼저 뺌
 from dtme.project import Project, Source  # noqa: E402

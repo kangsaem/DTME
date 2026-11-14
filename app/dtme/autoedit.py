@@ -628,14 +628,14 @@ def _ymd(t: float):
 
 
 def period_text(a: float | None, b: float | None) -> str:
-    """기간: 같은 날 = '2026.10.30' · 같은 해 = '2026.10.27 – 11.02' · 아니면 둘 다 연도."""
+    """기간: 같은 날 = '2026.10.30' · 같은 해 = '2026.10.27 ~ 11.02' · 아니면 둘 다 연도."""
     if a is None:
         return ""
     x, y = _ymd(a), _ymd(b if b is not None else a)
     s = f"{x.year}.{x.month:02d}.{x.day:02d}"
     if (x.year, x.month, x.day) == (y.year, y.month, y.day):
         return s
-    return s + (f" – {y.month:02d}.{y.day:02d}" if x.year == y.year else f" – {y.year}.{y.month:02d}.{y.day:02d}")
+    return s + (f" ~ {y.month:02d}.{y.day:02d}" if x.year == y.year else f" ~ {y.year}.{y.month:02d}.{y.day:02d}")
 
 
 def period_dives(dives: list, a: float | None, b: float | None) -> list:
