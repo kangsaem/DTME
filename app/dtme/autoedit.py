@@ -564,7 +564,7 @@ def snap_to_bars(project, music_info: dict, tol_bar: float = 0.5) -> int:
 START_SEC, END_SEC = 10.0, 10.0     # 시작 화면 = 첫 컷 앞 구간 · 끝 화면 = 영상 끝 뒤 구간(사용자 13:50 10초씩)
 TYPE_TOTAL = 2.0                    # 시작 화면 글자 = 2초에 다 침(사용자 13:53)
 WHITE_SEC = 1.0                     # 끝: 마지막 컷 → 흰색(1초) → 흰색에서 끝 화면(1초)
-CARD_X = 0.5                        # 겹침(디졸브) 초 = 화면이 컷 위로 넘어가는 만큼
+CARD_X = 1.0  # v0.16.92 시작 화면이 첫 컷 위에서만 디졸브(=CARD_FADE) — 0.5면 앞 0.5초가 검은 바탕 위에서 어두워지다 첫 컷에서 탁 밝아짐(사용자)
 CARD_FADE = 1.0
 CARD_COLOR = "#1b2a4e"              # 남색
 CARD_FONT = "TeX Gyre Heros"        # v0.16.91 사용자 13:22: 날짜 바·LOG 와 같은 글꼴, 굵게(가늘어 보임)
@@ -726,7 +726,8 @@ def end_card(img_id: str, video_end: float, lines: list[tuple[str, int, bool]]) 
 def end_lines(log: bool, dives: list, place: str, period: str, text: str = "") -> list[tuple[str, int, bool]]:
     """끝 문구: 직접 쓴 문구(줄바꿈 = 줄) · LOG = 다이빙 요약 + 지명 · 날짜 · 아니면 'See You Underwater' / 'DTME'."""
     if text.strip():
-        ls = [x.strip() for x in text.strip().split("\n") if x.strip()]
+        import re as _re
+        ls = [x.strip() for x in _re.split(r"\n| / ", text.strip()) if x.strip()]     # 한 줄 칸 = ' / ' 가 줄바꿈
         return [(ls[0], 64, True)] + [(x, 40, True) for x in ls[1:]]
     if log and dives:
         return [(dive_line(dives), 52, True), (" · ".join(x for x in (place, period) if x), 36, True)]

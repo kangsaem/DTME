@@ -181,8 +181,9 @@ class AutoEditDialog(DragMove, QDialog):
         self.place.textEdited.connect(lambda _t: setattr(self, "_place_auto", False))
         self._place_auto = True
         right.addLayout(labeled("지명", self.place))
-        self.end_text = QLineEdit()
-        self.end_text.setPlaceholderText("")
+        self.end_text = QLineEdit()                        # v0.16.91 사용자 15:42: 자동 글을 실제 글로 → 커서로 바로 고침(한 줄, ' / ' = 줄바꿈)
+        self.end_text.textEdited.connect(lambda _t: setattr(self, "_end_auto", False))
+        self._end_auto = True
         right.addLayout(labeled("끝 문구", self.end_text))
         self.dive_on.toggled.connect(lambda _v: self._end_hint())
         right.addStretch(1)
@@ -297,7 +298,8 @@ class AutoEditDialog(DragMove, QDialog):
         if hasattr(self, "end_text"):
             ds = autoedit.period_dives(p.dives, a, b) if self.dive_on.isChecked() else []
             ls = autoedit.end_lines(bool(ds), ds, self.place.text().strip(), autoedit.period_text(a, b))
-            self.end_text.setPlaceholderText(" / ".join(x[0] for x in ls))
+            if self._end_auto:
+                self.end_text.setText(" / ".join(x[0] for x in ls))
 
     def check_all(self):
         for i in range(self.list.count()):
@@ -337,7 +339,7 @@ class AutoEditDialog(DragMove, QDialog):
                 "dive": self.dive_on.isChecked() and bool(self.state.project.dives),
                 "start": self.card["start"]["mode"], "start_img": self.card["start"]["img"],
                 "end": self.card["end"]["mode"], "end_img": self.card["end"]["img"],
-                "place": self.place.text().strip(), "end_text": self.end_text.text().strip()}
+                "place": self.place.text().strip(), "end_text": "" if self._end_auto else self.end_text.text().strip()}
 
     def _dive_label(self):
         n = len(self.state.project.dives)

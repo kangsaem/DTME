@@ -144,6 +144,19 @@ def main(work):
     assert d4[0].get("utc") == naive(2026, 10, 28, 0, 15, 0) and d4[0]["start"] == naive(2026, 10, 28, 9, 15, 0)
     m2 = DL.merge(DL.read_dives(str(js)), d4)                             # 예전 백업(UTC 없음) 위에 새 백업 = 새 것(UTC)
     assert any(x.get("utc") == naive(2026, 10, 28, 0, 15, 0) for x in m2) and len(m2) == 2
+    # v0.16.92 렌더 시간 걸음이 페이드 구간을 건너뛰지 않음(사용자 렌더: LOG 글자가 컷으로 들어오고 나감)
+    for start in (10.0, 24.5, 0.0, 3.3):
+        for L, tail in ((15.0, 0.5), (14.75, 1.0), (21.12, 0.5), (30.0, 0.0)):
+            T, seen = start + 0.0, []
+            while T < start + L:
+                tc = T - start
+                seen.append(dive_draw.anim(tc, L, tail)[0])
+                if dive_draw.anim_busy(tc, L, tail):
+                    T += 1 / dive_draw.ANIM_FPS
+                else:
+                    T += max(1 / dive_draw.ANIM_FPS, min(0.5, dive_draw.until_busy(tc, L, tail)))
+            mids = [a for a in seen if 0.05 < a < 0.95]
+            assert len(mids) >= 4, (start, L, tail, len(mids))       # 들어올 때 + 나갈 때 중간 단계
     print("DIVE OK")
 
 

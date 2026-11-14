@@ -181,6 +181,105 @@ def set_prio(p: int) -> None:
     _ctx.prio = p
 
 
+# ------------------------------------------------------------------ v0.16.91 화면 보는 중(사용자 15:43 B·D)
+# B: 타임라인 끌기·멈춘 화면을 보는 동안 = 뒤 작업(분석 1 · 프록시 3 · 미리 읽기 4) ffmpeg 를 잠깐 멈춤(일시정지) → HDD·CPU 를 화면에.
+#    새 뒤 작업은 시작 전에 기다림. 화면 작업(0)은 그동안 저장장치 자리를 안 기다림(멈춘 작업이 자리를 잡고 있어도).
+# D: 새 화면 요청 = 지난 화면 ffmpeg 를 바로 끔.
+BG_PRIOS = (1, 3, 4)
+_browsing = threading.Event()
+_bg_procs: list = []                 # [(Popen, prio)] 뒤 작업 ffmpeg
+_suspended: list = []
+_pv_procs: list = []                 # [(Popen, gen)] 화면(미리보기) ffmpeg
+_killed: set = set()                 # 일부러 끈 pid → 실패가 아니라 Cancelled
+_bglock = threading.Lock()
+
+
+def _proc_pause(p, on: bool) -> None:
+    try:
+        if os.name == "nt":
+            import ctypes
+            h = int(p._handle)
+            (ctypes.windll.ntdll.NtSuspendProcess if on else ctypes.windll.ntdll.NtResumeProcess)(h)
+        else:
+            import signal
+            os.kill(p.pid, signal.SIGSTOP if on else signal.SIGCONT)
+    except Exception:  # noqa: BLE001 — 이미 끝난 것 등
+        pass
+
+
+def set_browsing(on: bool) -> None:
+    """화면 보는 중 켬/끔: 켬 = 뒤 작업 ffmpeg 일시정지, 끔 = 다시 계속."""
+    with _bglock:
+        if on and not _browsing.is_set():
+            _browsing.set()
+            for p, _pr in list(_bg_procs):
+                if p.poll() is None:
+                    _proc_pause(p, True)
+                    _suspended.append(p)
+        elif not on and _browsing.is_set():
+            _browsing.clear()
+            for p in _suspended:
+                _proc_pause(p, False)
+            _suspended.clear()
+
+
+def browsing() -> bool:
+    return _browsing.is_set()
+
+
+def _wait_not_browsing() -> None:
+    """뒤 작업: 화면 보는 동안 시작하지 않고 기다림(최대 60초 — 그 뒤엔 그냥 시작)."""
+    if getattr(_ctx, "prio", 0) not in BG_PRIOS:
+        return
+    t0 = _time.monotonic()
+    while _browsing.is_set() and not _closing.is_set() and _time.monotonic() - t0 < 60:
+        _time.sleep(0.1)
+
+
+class preview_job:
+    """화면(미리보기) 작업 표시: 이 안에서 띄운 ffmpeg = 세대 gen 으로 기억 → kill_previews 로 끔."""
+
+    def __init__(self, gen: int):
+        self.gen = gen
+
+    def __enter__(self):
+        _ctx.pv_gen = self.gen
+        return self
+
+    def __exit__(self, *a):
+        _ctx.pv_gen = None
+
+
+def kill_previews(keep_gen: int) -> int:
+    """keep_gen 보다 오래된 화면 ffmpeg 를 끔. 끈 수."""
+    n = 0
+    with _bglock:
+        for p, g in list(_pv_procs):
+            if g < keep_gen and p.poll() is None:
+                _killed.add(p.pid)
+                try:
+                    p.kill()
+                    n += 1
+                except OSError:
+                    pass
+        _pv_procs[:] = [(p, g) for p, g in _pv_procs if p.poll() is None]
+    return n
+
+
+def _register(p) -> None:
+    """_popen 이 부름: 뒤 작업·화면 작업 ffmpeg 기억(보는 중이면 뒤 작업은 바로 멈춤)."""
+    pr, gen = getattr(_ctx, "prio", 0), getattr(_ctx, "pv_gen", None)
+    with _bglock:
+        _bg_procs[:] = [(q, r) for q, r in _bg_procs if q.poll() is None]
+        if gen is not None:
+            _pv_procs.append((p, gen))
+        elif pr in BG_PRIOS and threading.current_thread() is not threading.main_thread():
+            _bg_procs.append((p, pr))
+            if _browsing.is_set():
+                _proc_pause(p, True)
+                _suspended.append(p)
+
+
 def waited() -> float:
     return getattr(_ctx, "waited", 0.0)
 
@@ -361,6 +460,8 @@ def precache(path: str, frac_a: float = 0.0, frac_b: float = 1.0, cancel=None) -
                     while pos < y:
                         if _closing.is_set() or (cancel is not None and cancel.is_set()):
                             raise Cancelled()
+                        while _browsing.is_set() and getattr(_ctx, "prio", 0) in BG_PRIOS and not _closing.is_set():
+                            _time.sleep(0.1)          # v0.16.91 화면 보는 중 = 미리 읽기 쉼(HDD 를 화면에)
                         n = f.readinto(memoryview(buf)[:min(len(buf), y - pos)])
                         if not n:
                             break
@@ -392,6 +493,9 @@ class _slots:
 
     def __enter__(self):
         prio = getattr(_ctx, "prio", 0)
+        _wait_not_browsing()
+        if _browsing.is_set() and getattr(_ctx, "pv_gen", None) is not None:      # 화면 = 저장장치 자리 안 기다림(멈춘 뒤 작업이 잡고 있어도)
+            self.gs = [g for g in self.gs if not g.name.startswith("disk:")]
         try:
             for g in self.gs:
                 g.acquire(prio)
@@ -425,6 +529,7 @@ def _popen(cmd, **kw):
                     _live.discard(q)          # 끝난 것 정리
                 _live.add(p)
             _attach(p)
+            _register(p)
             if _closing.is_set():            # 띄우는 사이 종료 시작
                 p.kill()
             return p
@@ -444,7 +549,8 @@ def run(cmd: list[str], cwd: str | None = None, data: bytes | None = None) -> by
             p = _popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             out, err = p.communicate()
     if p.returncode != 0:
-        if _closing.is_set():
+        if _closing.is_set() or p.pid in _killed:
+            _killed.discard(p.pid)
             raise Cancelled()
         raise FFError(err.decode("utf-8", "replace")[-2000:])
     return out
@@ -1704,8 +1810,6 @@ def range_lookup(path: str, lo: int, hi: int):
 def prefetch_range(src: Source, center: int, gpu: bool = False) -> bool:
     """center 앞뒤 RANGE_HALF 프레임을 한 번에 디코딩해 둠(이미 덮여 있거나 만드는 중이면 건너뜀). 작업 스레드에서 부름."""
     path = os.path.abspath(src.path)
-    if mezz_has(src, max(0, center - PREVIEW_LEAD - 8), center) and mezz_has(src, center, min((src.frames or center + 9) - 1, center + 8)):
-        return False                                   # v0.16.91 중간 파일이 있으면 원본 4K 를 미리 풀 필요 없음
     a = max(0, center - RANGE_HALF)
     b = min(src.frames or center + RANGE_HALF, center + RANGE_HALF)
     if b - a < 2 or range_lookup(path, max(0, center - PREVIEW_LEAD - 8), min(b - 1, center + 8)) is not None:
@@ -1745,117 +1849,6 @@ _frame_locks: dict[str, threading.Lock] = {}
 _cache_lock = threading.Lock()
 
 
-# ------------------------------------------------------------------ v0.16.91 보정용 중간 파일(SSD, 조각)
-# 멈춘 보정 화면 입력 = 원본 4K(HDD, 키프레임부터 풀어야 함) 대신 10초 조각 중간 파일(긴 쪽 960, 10bit, 모든 장 키프레임).
-# 멈춘 곳 · 타임라인 컷 구간만 뒤에서 만듦(소스 통째로 아님). 상한(설정 mezz_gb, 기본 10GB) 넘으면 오래 안 쓴 조각부터 지움.
-# 렌더·스틸은 원본 그대로.
-MEZZ_SEC = 10.0
-MEZZ_CRF = 18
-_mezz_busy: set = set()
-_mezz_lock = threading.Lock()
-
-
-def mezz_dir() -> Path:
-    d = paths.cache_dir() / "mezz"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def _mezz_n(src: Source) -> int:
-    return max(1, int(round(MEZZ_SEC * float(src.fps))))
-
-
-def mezz_path(src: Source, k: int) -> Path:
-    try:
-        st = os.stat(src.path)
-        tag = f"{os.path.abspath(src.path)}|{st.st_size}|{int(st.st_mtime)}|{PREVIEW_LONG}|{MEZZ_CRF}"
-    except OSError:
-        tag = f"{os.path.abspath(src.path)}|{PREVIEW_LONG}"
-    return mezz_dir() / f"{hashlib.sha1(tag.encode()).hexdigest()[:16]}_{k:05d}.mkv"
-
-
-def mezz_has(src: Source, lo: int, hi: int) -> bool:
-    """[lo, hi] 프레임이 모두 중간 파일(한 조각)에 있나."""
-    n = _mezz_n(src)
-    return lo // n == hi // n and mezz_path(src, lo // n).exists()
-
-
-def mezz_make(src: Source, k: int, cancel=None) -> bool:
-    """조각 k(원본 프레임 k·N ~ (k+1)·N) 만들기. 이미 있거나 만드는 중이면 False."""
-    if not src.frames:
-        return False
-    n = _mezz_n(src)
-    a = k * n
-    if a >= src.frames:
-        return False
-    f = mezz_path(src, k)
-    if f.exists():
-        return False
-    with _mezz_lock:
-        if f in _mezz_busy:
-            return False
-        _mezz_busy.add(f)
-    try:
-        if cancel is not None and cancel.is_set():
-            return False
-        pw, ph = _preview_size(src)
-        tmp = f.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp.mkv")
-        run([paths.ffmpeg(), "-v", "error", "-y", "-ss", _seek(a, src.fps), "-i", _abs(src.path),
-             "-frames:v", str(min(n, src.frames - a)), "-an", "-vf", f"scale={pw}:{ph}:flags=lanczos,format=yuv420p10le",
-             "-c:v", "libx264", "-preset", "veryfast", "-g", "1", "-crf", str(MEZZ_CRF), "-pix_fmt", "yuv420p10le",
-             "-threads", "4", str(tmp)])
-        os.replace(tmp, f)
-        mezz_trim()
-        return True
-    except FFError as ex:
-        log_error("중간 파일", f"{src.path} #{k}: {str(ex)[-200:]}")
-        return False
-    finally:
-        with _mezz_lock:
-            _mezz_busy.discard(f)
-
-
-def mezz_trim():
-    """상한(GB) 넘으면 오래 안 쓴(수정 시각 오래된) 조각부터 지움."""
-    from .project import get_setting
-    try:
-        cap = float(get_setting("mezz_gb", 10) or 10) * 1024 ** 3
-    except (TypeError, ValueError):
-        cap = 10 * 1024 ** 3
-    fs = []
-    for x in mezz_dir().glob("*.mkv"):
-        try:
-            st = x.stat()
-            fs.append((st.st_mtime, st.st_size, x))
-        except OSError:
-            pass
-    tot = sum(sz for _m, sz, _x in fs)
-    for _m, sz, x in sorted(fs):
-        if tot <= cap:
-            break
-        try:
-            x.unlink()
-            tot -= sz
-        except OSError:
-            pass
-
-
-def _mezz_frame(src: Source, frame: int, lead: int):
-    """중간 파일에서 (앞 프레임 + 그 프레임) → ffv1 nut 바이트. 없으면 None."""
-    n = _mezz_n(src)
-    k = frame // n
-    if not mezz_has(src, frame - lead, frame):
-        return None
-    f = mezz_path(src, k)
-    try:
-        os.utime(f, None)                          # 최근 사용(오래 안 쓴 것부터 지울 때)
-    except OSError:
-        pass
-    loc = frame - lead - k * n
-    return run([paths.ffmpeg(), "-v", "error", "-ss", _seek(loc, src.fps), "-i", str(f), "-frames:v", str(lead + 1), "-an",
-                "-vf", "format=yuv420p10le", "-c:v", "ffv1", "-f", "nut", "-"])
-
-
 def cached_frame(src: Source, frame: int, gpu: bool = False) -> CachedFrame:
     """원본의 (앞 프레임 + 해당 프레임)을 1280 폭 10bit 무손실(ffv1, nut)로 메모리에 보관."""
     key = f"{os.path.abspath(src.path)}|{frame}"
@@ -1873,13 +1866,7 @@ def cached_frame(src: Source, frame: int, gpu: bool = False) -> CachedFrame:
                 data, w, h = hit
                 return CachedFrame(data, lead, (w, h), "raw", key + "|r")
             pw, ph = _preview_size(src)
-            data = None
-            try:
-                data = _mezz_frame(src, frame, lead)       # v0.16.91 SSD 중간 파일이 있으면 그걸로(원본 4K 를 안 읽음)
-            except FFError as ex:
-                log_error("중간 파일 읽기", str(ex)[-200:])
-            if data is None:
-                data = run([paths.ffmpeg(), "-v", "error", "-ss", _seek(frame - lead, src.fps), "-i", _abs(src.path),
+            data = run([paths.ffmpeg(), "-v", "error", "-ss", _seek(frame - lead, src.fps), "-i", _abs(src.path),
                             "-frames:v", str(lead + 1), "-an", "-vf", f"scale={pw}:{ph}:flags=lanczos,format=yuv420p10le",
                             "-c:v", "ffv1", "-f", "nut", "-"])
             c = CachedFrame(data, lead, (pw, ph), "nut", key)
@@ -1900,8 +1887,7 @@ def frame_ready(src: Source, frame: int) -> bool:
     with _cache_lock:
         if key in _frame_cache:
             return True
-    lo = frame - min(PREVIEW_LEAD, frame)
-    return range_lookup(src.path, lo, frame) is not None or mezz_has(src, lo, frame)
+    return range_lookup(src.path, frame - min(PREVIEW_LEAD, frame), frame) is not None
 
 
 def cached_frame_preview(src: Source, frame: int, pv: dict) -> CachedFrame:

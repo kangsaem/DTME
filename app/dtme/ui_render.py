@@ -640,6 +640,7 @@ class RenderPanel(QWidget):
         """렌더 시작(폴더는 비어 있을 때만 물음 — AUTO·코드 경로). 버튼은 press(). only = 이 항목들만(v0.16.81 AUTO·전부 자동)."""
         if self.running:
             return
+        ff.set_browsing(False)                    # v0.16.91 화면 보는 중으로 멈춘 뒤 작업 = 렌더 전에 다시
         if not ensure_folder(self, self.state):
             return
         self.settings._load()
@@ -845,12 +846,6 @@ class RenderSettings(QWidget):
         f.addRow("프리뷰 파일", self.use_pv)
         f.addRow("동시 분석", self.jobs_a)
         f.addRow("동시 렌더", self.jobs_r)
-        self.mezz = QComboBox()                                      # v0.16.91 보정용 중간 파일(SSD) 상한
-        for gb in (5, 10, 20, 50):
-            self.mezz.addItem(f"{gb}GB", gb)
-        self.mezz.addItem("안 씀", 0)
-        self.mezz.setToolTip("멈춘 보정 화면을 빠르게: 멈춘 곳·타임라인 컷 구간을 작은 중간 파일(cache/mezz)로 만들어 둠. 넘으면 오래 안 쓴 것부터 지움")
-        f.addRow("중간 파일", self.mezz)
         self.sound = QComboBox()                                     # v0.16.91 렌더 끝 알림음
         self.sound.addItem("켬", 1)
         self.sound.addItem("끔", 0)
@@ -877,11 +872,6 @@ class RenderSettings(QWidget):
         self.still.setCurrentIndex(1 if str(get_setting("still_bits", 8)) == "16" else 0)
         self.use_pv.setCurrentIndex(0 if str(get_setting("use_preview", 1)) not in ("0", "False", "false", "") else 1)
         self.sound.setCurrentIndex(0 if str(get_setting("done_sound", 1)) not in ("0", "False", "false", "") else 1)
-        try:
-            mg = int(float(get_setting("mezz_gb", 10) or 0))
-        except (TypeError, ValueError):
-            mg = 10
-        self.mezz.setCurrentIndex(max(0, self.mezz.findData(mg)))
         from . import jobs as J
         for cb, key, cur in ((self.jobs_a, "auto_jobs", J.AUTO_N), (self.jobs_r, "render_jobs", J.RENDER_N)):
             try:
@@ -908,7 +898,6 @@ class RenderSettings(QWidget):
             set_setting("still_bits", self.still.currentData())
             set_setting("use_preview", self.use_pv.currentData())
             set_setting("done_sound", self.sound.currentData())
-            set_setting("mezz_gb", self.mezz.currentData())
             set_setting("auto_jobs", self.jobs_a.currentData())
             set_setting("render_jobs", self.jobs_r.currentData())
             self.state.retune()

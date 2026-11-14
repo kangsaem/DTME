@@ -29,6 +29,7 @@ def purge_frame_cache():
     import shutil
     from dtme import paths
     shutil.rmtree(paths.cache_dir() / "frames", ignore_errors=True)
+    shutil.rmtree(paths.cache_dir() / "mezz", ignore_errors=True)     # v0.16.91 중간 파일 기능 뺌(사용자 15:42) — 만든 조각 지움
 
 
 _fault_file = None

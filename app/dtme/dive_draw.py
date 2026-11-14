@@ -53,13 +53,14 @@ def anim(tc: float, L: float, tail: float = 0.0) -> tuple[float, float, float]:
 def anim_busy(tc: float, L: float, tail: float = 0.0) -> bool:
     """이 순간 애니메이션 중인가(렌더 그림을 자주 바꿔야 하나)."""
     w, _to, _go = _wins(L, tail)
-    return any(a - 0.1 <= tc <= b + 0.1 for a, b in w)
+    return any(a - 0.1 - 1e-6 <= tc <= b + 0.1 for a, b in w)
 
 
 def until_busy(tc: float, L: float, tail: float = 0.0) -> float:
     """v0.16.91 다음 애니메이션 구간 시작까지 남은 초(없으면 큰 값) — 0.5초 걸음이 페이드 앞부분을 건너뛰지 않게."""
     w, _to, _go = _wins(L, tail)
-    ahead = [a - 0.1 - tc for a, _b in w if a - 0.1 > tc + 1e-6]
+    # v0.16.92 구간 시작(a) 바로 그 시점에 떨어지게 — a-0.1 경계에 걸리면 소수점 오차로 busy 를 놓치고 0.5초 건너뛰었음(페이드 사라짐)
+    ahead = [a - tc for a, _b in w if a > tc + 1e-6]
     return min(ahead) if ahead else 1e9
 
 

@@ -119,8 +119,14 @@ assert dive_draw.guess_off(p.dives, sh) == 3600.0              # 카메라 필�
 p.output.folder = os.path.join(W, "out"); p.output.encoder = "x264"; p.output.gpu_decode = False
 from dtme.ui_autoedit import AutoEditDialog  # noqa: E402
 dlg = AutoEditDialog(st, {s.id for s in p.sources}, w)
-print("지명:", dlg.place.text(), "| 끝 문구 자리:", dlg.end_text.placeholderText())
-assert dlg.place.text() == "보홀주, 필리핀" and dlg.end_text.placeholderText().startswith("1 DIVE · MAX 22.0m · 40m")
+print("지명:", dlg.place.text(), "| 끝 문구:", dlg.end_text.text())
+assert dlg.place.text() == "보홀주, 필리핀" and dlg.end_text.text().startswith("1 DIVE · MAX 22.0m · 40m")   # 실제 글(커서로 고침)
+assert dlg.settings()["end_text"] == ""                       # 안 고침 = 자동(글자 크기 등 자동 그대로)
+from PySide6.QtTest import QTest as _QT  # noqa: E402
+dlg.end_text.setFocus(); dlg.end_text.end(False); _QT.keyClicks(dlg.end_text, "!")
+assert dlg.settings()["end_text"].endswith("2026.10.27!")
+assert [x[0] for x in autoedit.end_lines(True, [], "", "", dlg.settings()["end_text"])][1].endswith("!")
+dlg._end_auto = True; dlg._end_hint()
 from PySide6.QtWidgets import QApplication as _QA  # noqa: E402
 _orig_mods = _QA.keyboardModifiers
 dlg._toggle(dlg.list.item(0)); dlg._toggle(dlg.list.item(0))      # 끔 → 켬(기준 = 0번 켬)
@@ -134,7 +140,7 @@ for i in range(3):
     dlg._toggle(dlg.list.item(i))
 assert len(dlg.chosen()) == 3
 print("음악 칸:", dlg.music_on.text())
-assert "기본 음악" in dlg.music_on.text() and dlg.music_on.isChecked() and len(st.default_music()) >= 15   # v0.16.91 곡 없음 = 기본 음악(CC0)
+assert "기본 음악" in dlg.music_on.text() and dlg.music_on.isChecked() and len(st.default_music()) == 2   # v0.16.91 곡 없음 = 기본 음악(CC0)
 dlg.length.setValue(1); dlg.music_on.setChecked(False)
 sset = dlg.settings()
 assert sset["start"] == "auto" and sset["end"] == "auto" and sset["place"] == "보홀주, 필리핀"
