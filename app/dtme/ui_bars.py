@@ -437,6 +437,7 @@ class SeqTimeline(QWidget):
         self.music_info = {}          # v0.16.64 음악 파일 → 분석(music.analyze): 파형 · 박자 · 마디 첫 박
         self.ov_sel = ("", "")
         self.ov_multi = set()             # v0.16.91 Shift+클릭으로 같이 고른 글자·사각형·이미지 id
+        self.mus_multi = set()            # v0.16.92 같이 고른 음악 id(Ctrl+A · Shift 범위 · Ctrl 하나씩)
         self.all_cuts = False             # v0.16.91 Ctrl+A = 컷 전부(끌면 전체 밀기)
         self._shift = None                # (시작 x, 지금 x)
         self.log_state = {}               # v0.16.91 다이빙 컷 id → LOG 켬/끔(없는 컷 = 칩 없음)
@@ -476,6 +477,8 @@ class SeqTimeline(QWidget):
         self.titles, self.music, self.ov_sel = titles, music, sel
         ids = {t["id"] for t in titles}
         self.ov_multi = {i for i in getattr(self, "ov_multi", set()) if i in ids}
+        mids = {m["id"] for m in music}
+        self.mus_multi = {i for i in getattr(self, "mus_multi", set()) if i in mids}
         self._resize()
         self.update()
 
@@ -817,7 +820,7 @@ class SeqTimeline(QWidget):
             p.fillRect(r, c)
             if kind == "music":
                 self._paint_music(p, d, r)
-            if (kind, d.get("id")) == self.ov_sel or (kind == "title" and d.get("id") in self.ov_multi):
+            if (kind, d.get("id")) == self.ov_sel or d.get("id") in (self.ov_multi if kind == "title" else self.mus_multi):
                 p.setPen(QPen(QColor("white"), 2))
                 p.drawRect(r.adjusted(1, 1, -1, -1))
             fl = 14 if d.get("follow") else 4
@@ -966,7 +969,11 @@ class SeqTimeline(QWidget):
     def select_all(self):
         self.all_cuts = True
         self.ov_multi = {t["id"] for t in self.titles}
+        self.mus_multi = {m["id"] for m in self.music}      # v0.16.92 음악 줄도
         self.update()
+
+    def multi_count(self) -> int:
+        return len(self.ov_multi) + len(self.mus_multi)
 
     def _log_rect(self, rr):
         """컷 가운데 LOG 칩 자리(컷이 좁으면 없음). 줄이 낮으면(34px 아래) 조금 작은 칩 = 한 줄 'x1 [LOG] 이름'."""
@@ -1013,35 +1020,41 @@ class SeqTimeline(QWidget):
         if hit:
             kind, d, mode = hit
             if e.button() == Qt.RightButton:          # v0.16.91 메뉴(삭제·맨 위로·맨 아래로·따라감)
-                if kind != "title" or d["id"] not in self.ov_multi:
+                if d["id"] not in (self.ov_multi if kind == "title" else self.mus_multi):
                     self.ov_multi = {d["id"]} if kind == "title" else set()
+                    self.mus_multi = {d["id"]} if kind == "music" else set()
                 self.ov_sel = (kind, d["id"])
                 self.ovSelected.emit(kind, d["id"])
                 self.update()
                 self.ovMenu.emit(kind, d["id"], e.globalPosition().toPoint())
                 return
-            if kind == "title":                       # v0.16.91 Ctrl+클릭 = 하나씩 더하기·빼기 · Shift+클릭 = 고른 것부터 여기까지(시간 순)
-                anc = next((t for t in self.titles if self.ov_sel[0] == "title" and t["id"] == self.ov_sel[1]), None)
-                if e.modifiers() & Qt.ShiftModifier and anc is not None:
-                    a, b = sorted((float(anc["t0"]), float(d["t0"])))
-                    self.ov_multi = {t["id"] for t in self.titles if a - 1e-6 <= float(t["t0"]) <= b + 1e-6}
-                    self.ov_sel = ("title", anc["id"])
+            # v0.16.91 Ctrl+클릭 = 하나씩 더하기·빼기 · Shift+클릭 = 고른 것부터 여기까지(시간 순, 같은 줄)
+            # v0.16.92 음악 줄도 같음 · Ctrl 은 글자와 음악을 섞어 고를 수 있음
+            mine = self.ov_multi if kind == "title" else self.mus_multi
+            pool = self.titles if kind == "title" else self.music
+            anc = next((t for t in pool if self.ov_sel[0] == kind and t["id"] == self.ov_sel[1]), None)
+            if e.modifiers() & Qt.ShiftModifier and anc is not None:
+                a, b = sorted((float(anc["t0"]), float(d["t0"])))
+                mine.clear()
+                mine.update(t["id"] for t in pool if a - 1e-6 <= float(t["t0"]) <= b + 1e-6)
+                self.update()
+                return
+            if e.modifiers() & Qt.ControlModifier:
+                if self.ov_sel[1]:
+                    (self.ov_multi if self.ov_sel[0] == "title" else self.mus_multi).add(self.ov_sel[1])
+                if d["id"] in mine and self.multi_count() > 1:
+                    mine.discard(d["id"])
+                    if self.ov_sel == (kind, d["id"]):            # 기준 = 남은 것 하나
+                        k2, rest = ("title", self.ov_multi) if self.ov_multi else ("music", self.mus_multi)
+                        self.ov_sel = (k2, next(iter(rest))) if rest else ("", "")
                     self.update()
                     return
-                if e.modifiers() & Qt.ControlModifier:
-                    if self.ov_sel[0] == "title" and self.ov_sel[1]:
-                        self.ov_multi.add(self.ov_sel[1])
-                    if d["id"] in self.ov_multi and len(self.ov_multi) > 1:
-                        self.ov_multi.discard(d["id"])
-                        self.update()
-                        return
-                    self.ov_multi.add(d["id"])
-                elif d["id"] not in self.ov_multi:
-                    self.ov_multi = {d["id"]}
-            else:
-                self.ov_multi = set()
-            self._ov_group = [(t, dict(t)) for t in self.titles if t["id"] in self.ov_multi and t["id"] != d["id"]] \
-                if kind == "title" else []
+                mine.add(d["id"])
+            elif d["id"] not in mine:
+                self.ov_multi = {d["id"]} if kind == "title" else set()
+                self.mus_multi = {d["id"]} if kind == "music" else set()
+            self._ov_group = [(t, dict(t)) for t in self.titles if t["id"] in self.ov_multi and t["id"] != d["id"]] + \
+                [(m, dict(m)) for m in self.music if m["id"] in self.mus_multi and m["id"] != d["id"]]
             self.ov_sel = (kind, d["id"])
             self.ovSelected.emit(kind, d["id"])
             self.ovDragStart.emit(kind, d["id"])
@@ -1059,6 +1072,7 @@ class SeqTimeline(QWidget):
         if self.all_cuts and not (e.modifiers() & Qt.ControlModifier):
             self.all_cuts = False
             self.ov_multi = set()
+            self.mus_multi = set()
         if i >= 0 and vid.top() <= pos.y() <= vid.bottom():
             self._press = (i, pos.x())
             self._drag_x = None
@@ -1107,8 +1121,7 @@ class SeqTimeline(QWidget):
                     s0, s1 = self._snap(n0, tg), self._snap(n0 + (t1 - t0), tg) - (t1 - t0)
                     n0 = s0 if s0 != n0 else s1
                     d["t0"], d["t1"] = n0, n0 + (t1 - t0)
-                    for g, go in getattr(self, "_ov_group", []):        # 같이 고른 것 = 같은 만큼
-                        g["t0"], g["t1"] = float(go["t0"]) + (n0 - t0), float(go["t1"]) + (n0 - t0)
+                    self._move_group(n0 - t0)
                 elif mode == "l":
                     d["t0"] = min(t1 - 0.2, self._snap(t0 + dt, tg))
                 else:
@@ -1121,6 +1134,7 @@ class SeqTimeline(QWidget):
                     sb = self._bar_snap(d, n0)
                     cands = [x for x in (s0, s1, sb) if x is not None and abs(x - n0) > 1e-6]    # (n0+len)-len 소수 오차 = 안 붙은 것
                     d["t0"] = min(cands, key=lambda x: abs(x - n0)) if cands else n0
+                    self._move_group(float(d["t0"]) - t0)
                 elif mode == "l":       # 앞을 자름: 파일 안 시작도 같이
                     n0 = self._snap(t0 + dt, tg)
                     n0 = max(t0 - off, min(t0 + ln - 0.2, n0))
@@ -1148,6 +1162,13 @@ class SeqTimeline(QWidget):
             self.t = self._t(pos.x())
             self.timeChanged.emit(self.t)
             self.update()
+
+    def _move_group(self, dt: float):
+        """같이 고른 것(글자·사각형·이미지·음악) = 같은 만큼."""
+        for g, go in getattr(self, "_ov_group", []):
+            g["t0"] = float(go["t0"]) + dt
+            if "t1" in go:
+                g["t1"] = float(go["t1"]) + dt
 
     def mouseReleaseEvent(self, e):
         if self._shift is not None:

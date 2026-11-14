@@ -64,6 +64,48 @@ assert abs(st.project.lead - 2.0) < 0.1
 # 빈 곳 클릭 = 전부 고름 풀림
 QTest.mouseClick(tl, Qt.LeftButton, Qt.NoModifier, QPoint(tl.width() - 5, tl.height() - 5)); wait(0.1)
 assert not tl.all_cuts
+# v0.16.92 음악 줄: Ctrl+A 에 포함 · Shift = 범위 · Ctrl = 하나씩 · Delete = 섞어 고른 것 같이
+from dtme.project import new_music  # noqa: E402
+mp = st.default_music()[0]
+st.project.music = [new_music(mp, t, 1.5) for t in (0.5, 3.0, 6.0)]
+st.touch("titles"); wait(0.3)
+e._set_target("cut"); e.select_all(); wait(0.1)
+assert tl.mus_multi == {m["id"] for m in st.project.music}, tl.mus_multi
+QTest.mouseClick(tl, Qt.LeftButton, Qt.NoModifier, QPoint(tl.width() - 5, tl.height() - 5)); wait(0.1)
+assert not tl.mus_multi
+
+
+def ov_pt(kind, oid):
+    r = next(r for k, d, r in tl._ov_rects() if k == kind and d["id"] == oid)
+    return QPoint(int(r.center().x()), int(r.center().y()))
+
+
+ms = [m["id"] for m in st.project.music]
+QTest.mouseClick(tl, Qt.LeftButton, Qt.NoModifier, ov_pt("music", ms[0])); wait(0.1)
+assert tl.mus_multi == {ms[0]}
+QTest.mouseClick(tl, Qt.LeftButton, Qt.ShiftModifier, ov_pt("music", ms[2])); wait(0.1)
+assert tl.mus_multi == set(ms), tl.mus_multi
+QTest.mouseClick(tl, Qt.LeftButton, Qt.ControlModifier, ov_pt("music", ms[1])); wait(0.1)
+assert tl.mus_multi == {ms[0], ms[2]}
+tid = st.project.titles[0]["id"]
+QTest.mouseClick(tl, Qt.LeftButton, Qt.ControlModifier, ov_pt("title", tid)); wait(0.1)
+assert tl.ov_multi == {tid} and tl.mus_multi == {ms[0], ms[2]} and tl.multi_count() == 3
+# 같이 고른 채 음악 하나 끌기 = 다 같이 1초
+t_before = {m["id"]: m["t0"] for m in st.project.music} | {tid: st.project.titles[0]["t0"]}
+a = ov_pt("music", ms[0]); dx = int(round(1.0 * tl.pps))
+QTest.mousePress(tl, Qt.LeftButton, Qt.NoModifier, a); wait(0.05)
+QTest.mouseMove(tl, QPoint(a.x() + dx // 2, a.y())); wait(0.05)
+QTest.mouseMove(tl, QPoint(a.x() + dx, a.y())); wait(0.05)
+QTest.mouseRelease(tl, Qt.LeftButton, Qt.NoModifier, QPoint(a.x() + dx, a.y())); wait(0.2)
+mv = {m["id"]: m["t0"] - t_before[m["id"]] for m in st.project.music} | {tid: st.project.titles[0]["t0"] - t_before[tid]}
+print("같이 끌기:", {k[:4]: round(v, 2) for k, v in mv.items()})
+rel = mv[ms[0]] - mv[ms[1]]                     # (놓은 뒤 앞 검은 구간 맞춤 = 전체가 같이 움직일 수 있음 → 안 고른 곡 기준)
+assert abs(mv[ms[0]] - mv[ms[2]]) < 1e-6 and abs(mv[ms[0]] - mv[tid]) < 1e-6 and rel > 0.5, rel
+e._del_target = "ov"; e._key("del"); wait(0.2)
+print("삭제 뒤 음악:", len(st.project.music), "글자:", len(st.project.titles))
+assert [m["id"] for m in st.project.music] == [ms[1]] and tid not in {t["id"] for t in st.project.titles}
+w.undo(); wait(0.2)
+assert len(st.project.music) == 3
 # 자동 편집 창 Ctrl+A
 from dtme.ui_autoedit import AutoEditDialog  # noqa: E402
 d = AutoEditDialog(st, set(), w)

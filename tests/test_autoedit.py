@@ -101,6 +101,9 @@ for s, k in zip(p.sources, ["bluewater", "shallow", "", "bluewater"]):
         s.auto = {"preset": k, "by": "user"}
 p.audios = [{"id": "a1", "path": f_epic, "dur": ie["dur"]}, {"id": "a2", "path": f_calm, "dur": ic["dur"]}]
 p.segments = [__import__("dtme.project", fromlist=["Segment"]).Segment(p.sources[0].id, 0, 90)]
+from dtme.project import new_music as _nm, new_text as _nt  # noqa: E402
+_mine_t = _nt(0.5, 2.0, "직접 쓴 글자"); _mine_m = _nm(f_calm, 0.0, 3.0)     # v0.16.92 자동 편집 = 직접 놓은 것도 싹 지움
+p.titles = [_mine_t]; p.music = [_mine_m]
 st.touch("segments"); wait(0.2)
 
 for s in p.sources:
@@ -126,6 +129,7 @@ lens = [p.seg_out_seconds(g, p.source(g.src).fps) for g in segs]
 tot = p.out_seconds()
 print("컷", len(segs), [round(x, 2) for x in lens], "결과", round(tot, 2), "음악", [(os.path.basename(m["path"]), m["t0"], m["len"]) for m in p.music], flush=True)
 assert len(st._undo) == nu + 1                       # 실행취소 1번
+assert _mine_t["id"] not in {x["id"] for x in p.titles} and _mine_m["id"] not in {m["id"] for m in p.music}
 assert len(segs) >= 4 and all(autoedit.CUT_MIN - 0.05 <= x <= autoedit.CUT_MAX + 0.05 for x in lens)
 assert abs(tot - 60) < 3.0, tot
 names = [os.path.basename(p.source(g.src).path) for g in segs]

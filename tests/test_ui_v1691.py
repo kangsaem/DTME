@@ -153,25 +153,28 @@ p = st.project
 segs = p.segments
 names = [os.path.basename(p.source(g.src).path)[:18] for g in segs]
 print("컷:", list(zip(names, [round((g.fout - g.fin) / 30, 1) for g in segs])), "앞", p.lead, "끝 페이드", p.end_fade)
-assert p.lead == autoedit.START_SEC and not segs[0].trans and p.end_fade == 0.0       # 끝 화면 = 페이드 없이 끝
+assert p.lead == autoedit.START_SEC == 6.0 and (segs[0].trans or {}).get("type") == "fadeblack" and p.end_fade == 0.0   # v0.16.92 첫 컷 = 검정에서 · 끝 = 페이드 없이
 cards = {k: [x for x in p.titles if x.get("card") == k] for k in ("start", "end")}
 print("시작 화면:", [(x["kind"], x.get("text")) for x in cards["start"]])
 print("끝 화면:", [(x["kind"], x.get("text")) for x in cards["end"]])
-assert [x["kind"] for x in cards["start"]] == ["image", "text", "text"] and cards["start"][1]["text"] == "보홀주, 필리핀"
+assert [x["kind"] for x in cards["start"]] == ["rect", "text", "text"] and cards["start"][1]["text"] == "보홀주, 필리핀"   # v0.16.92 스틸 없음
 assert cards["start"][2]["text"] == "2026.10.27"
 assert cards["end"][1]["text"].startswith("1 DIVE · MAX 22.0m") and cards["end"][2]["text"] == "보홀주, 필리핀 · 2026.10.27"
-for x in (cards["start"][0], cards["end"][0]):
-    m = p.image(x["img"])
-    assert m and os.path.exists(m.path) and (m.width, m.height) == (1920, 1080)
+assert not [m for m in p.images if os.path.basename(m.path).startswith("DTME_")]
+assert [x["kind"] for x in cards["end"]] == ["rect", "text", "text"]
 vend = max(tt + ln for _c, tt, ln in cut_spans(p))
-assert abs(cards["end"][0]["t0"] - vend) < 1e-3 and abs(p.tail_of() - autoedit.END_SEC) < 1e-3
-wr = cards["end"][-1]
-assert wr["kind"] == "rect" and wr["color"] == "#ffffff" and abs(wr["t0"] - (vend - 1.0)) < 1e-3 and abs(wr["t1"] - (vend + 1.0)) < 1e-3
+assert abs(p.tail_of() - autoedit.END_SEC) < 1e-3 and autoedit.END_SEC == 8.0
+sw = cards["start"][0]
+assert sw["color"] == "#ffffff" and (sw["t0"], sw["t1"], sw["ain"], sw["aout"], sw["fade"]) == (0.0, 6.0, "cut", "fade", 2.5)
+wr = cards["end"][0]
+assert wr["color"] == "#ffffff" and abs(wr["t0"] - (vend - 1.0)) < 1e-3 and abs(wr["t1"] - (vend + 8.0)) < 1e-3
+assert (wr["ain"], wr["aout"]) == ("fade", "cut")
 st_t = [x for x in cards["start"] if x["kind"] == "text"]
-assert cards["start"][0]["ain"] == "cut" and all(x["ain"] == "type" for x in st_t)
+assert all(x["ain"] == "type" and x["aout"] == "fade" and x["fade"] == 2.5 and x["t1"] == 6.0 for x in st_t)
 from dtme.project import type_end  # noqa: E402
 assert abs(max(type_end(x) for x in st_t) - (0.5 + 2.0 - st_t[-1]["tsec"])) < 0.02          # 2초에 다 침
-assert all(x["ain"] == "cut" for x in cards["end"] if x["kind"] == "text")
+assert all(x["ain"] == "fade" and x["aout"] == "cut" and abs(x["t0"] - (vend + 2.0)) < 1e-3 and x["fade"] == 1.0
+           for x in cards["end"] if x["kind"] == "text")
 bars = [x for x in p.titles if x.get("datebar") and x["kind"] == "text" and x["size"] == autoedit.DB_TIME]
 print("날짜 바 시각:", [x["text"] for x in bars])
 assert [x["text"] for x in bars] == ["12:00", "14:00"]          # 보정+편집 = 클립마다(다이빙 컷 = 없음)
@@ -297,6 +300,10 @@ print("길이", round(dur, 2), "기대", round(exp, 2))
 assert abs(dur - exp) < 0.2
 vend_r = p.lead + p.out_seconds()
 f0, f1, f2, fw, fz = (grab("null", x, src=out) for x in (0.05, 3.0, p.lead - 0.6, vend_r, dur - 0.05))
+fd, fe = (grab("null", x, src=out) for x in (p.lead - 0.05, vend_r + 1.5))
+navy_e = ((fe[..., 2].astype(int) - fe[..., 0] > 30) & (fe.mean(2) < 120)).sum()
+print("시작 끝(검게)", round(fd.mean(), 1), "끝 흰 화면(글자 전)", round(fe.mean(), 1), int(navy_e))
+assert fd.mean() < 25 and fe.mean() > 245 and navy_e < 50          # v0.16.92 시작 화면 = 검게 · 끝 = 흰 화면 2초 뒤 글자
 navy = ((f1[..., 2].astype(int) - f1[..., 0] > 30) & (f1.mean(2) < 120)).sum()
 print("밝기: 처음", round(f0.mean(), 1), "시작 화면", round(f1.mean(), 1), "남색 픽셀", int(navy), "흰색", round(fw.mean(), 1), "끝", round(fz.mean(), 1))
 assert f0.mean() > 140 and f1.mean() > 140 and navy > 500 and fw.mean() > 235 and fz.mean() > 140     # 처음 = 바로 · 끝 = 흰색 → 화면, 페이드 없음

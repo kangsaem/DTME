@@ -692,8 +692,8 @@ class EditTab(QWidget):
                 self.remove_transition(self.sel_trans)
             elif t == "layer" and self.sel_layer:
                 self.remove_layer(self.sel_layer)
-            elif t == "ov" and self.sel_ov[0] == "title" and len(self.timeline.ov_multi) > 1:
-                self.remove_titles(list(self.timeline.ov_multi))
+            elif t == "ov" and self.timeline.multi_count() > 1:          # v0.16.92 글자·음악 섞어 고른 것
+                self.remove_titles(list(self.timeline.ov_multi), list(self.timeline.mus_multi))
             elif t == "ov" and self.sel_ov[1]:
                 self.remove_ov(*self.sel_ov)
             elif t == "mus" and self.mus_list.currentItem() is not None:
@@ -1986,8 +1986,11 @@ class EditTab(QWidget):
         d = self._ov(kind, oid)
         if d is None:
             return
-        ids = list(self.timeline.ov_multi) if kind == "title" and len(self.timeline.ov_multi) > 1 else [oid]
-        a_del = m.addAction(f"삭제 ({len(ids)}개)" if len(ids) > 1 else "삭제")
+        many = self.timeline.multi_count() > 1
+        ids = list(self.timeline.ov_multi) if many else [oid] if kind == "title" else []
+        mids = list(self.timeline.mus_multi) if many else [oid] if kind == "music" else []
+        n = len(ids) + len(mids)
+        a_del = m.addAction(f"삭제 ({n}개)" if n > 1 else "삭제")
         a_top = a_bot = a_fol = a_copy = None
         if kind == "title":
             a_top = m.addAction("맨 위로")
@@ -1999,7 +2002,7 @@ class EditTab(QWidget):
         if a is None:
             return
         if a is a_del:
-            self.remove_titles(ids) if kind == "title" else self.remove_ov(kind, oid)
+            self.remove_titles(ids, mids) if n > 1 or kind == "title" else self.remove_ov(kind, oid)
         elif a in (a_top, a_bot):
             p = self.state.project
             self.state.checkpoint(label="순서")
@@ -2021,8 +2024,10 @@ class EditTab(QWidget):
             return
         self.timeline.select_all()
         self._del_target = "ov"
-        self.sel_ov = ("title", next(iter(self.timeline.ov_multi))) if self.timeline.ov_multi else ("", "")
-        self._say(f"타임라인 전부 고름(컷 {len(self.state.project.segments)} · 글자 등 {len(self.timeline.ov_multi)}) — 컷을 끌면 전체가 같이 밀림", C_INFO)
+        tl = self.timeline
+        self.sel_ov = ("title", next(iter(tl.ov_multi))) if tl.ov_multi else ("music", next(iter(tl.mus_multi))) if tl.mus_multi else ("", "")
+        self._say(f"타임라인 전부 고름(컷 {len(self.state.project.segments)} · 글자 등 {len(tl.ov_multi)} · 음악 {len(tl.mus_multi)})"
+                  " — 컷을 끌면 전체가 같이 밀림", C_INFO)
 
     def _shift_all(self, dt: float):
         """v0.16.91 전부 고른 채 컷을 끌어 놓음: 앞 검은 구간을 dt 만큼(0 아래로는 안 감) → 컷·글자·음악이 같이 밀림."""
@@ -2041,12 +2046,15 @@ class EditTab(QWidget):
         self.state.touch("titles")
         self._say(f"전체 {'뒤로' if d > 0 else '앞으로'} {abs(d):.1f}초 — 앞 검은 구간 {p.lead:.1f}초", C_OK)
 
-    def remove_titles(self, ids):
+    def remove_titles(self, ids, music_ids=()):
         p = self.state.project
         self.state.checkpoint(label="삭제")
         p.titles = [d for d in p.titles if d["id"] not in set(ids)]
+        if music_ids:                                       # v0.16.92 음악도 같이 고른 것
+            p.music = [m for m in p.music if m["id"] not in set(music_ids)]
         self.sel_ov = ("", "")
         self.timeline.ov_multi = set()
+        self.timeline.mus_multi = set()
         self.state.touch("titles")
 
     def copy_titles(self):
@@ -3024,45 +3032,9 @@ class EditTab(QWidget):
             infos = {a["path"]: music.get(a["path"]) for a in auds}
             if auds:
                 step("음악")
-            cards = make_cards(picks, res)
-            return res, picks, infos, cards
-        card_on = {k: st.get(k, "none") in ("auto", "pick") for k in ("start", "end")}
-
-        def make_cards(picks, res):
-            """v0.16.91 시작·끝 화면 그림(스틸 + 흰색 50%) — 자동 = 좋은 스틸(원본 프레임 보정), 고르기 = 그 그림."""
-            out = {}
-            if not any(card_on.values()) or not picks:
-                return out
-            o = p.out_of(picks[0]["src"])
-            W, H = ff.out_size(o)
-            wh = (1080, 1920) if W < H else (1920, 1080)
-            d = paths.cache_dir() / "cards"
-            d.mkdir(parents=True, exist_ok=True)
-            auto_st = autoedit.pick_stills(picks, 2) if any(st.get(k) == "auto" for k in ("start", "end")) else []
-            for j, key in enumerate(("start", "end")):
-                if not card_on[key]:
-                    continue
-                try:
-                    stamp = f"{key}_{int(time.time() * 1000) % 10**9}"
-                    if st.get(key) == "pick" and st.get(f"{key}_img") and os.path.exists(st[f"{key}_img"]):
-                        raw = st[f"{key}_img"]
-                    elif auto_st:
-                        s_, fr = auto_st[min(j, len(auto_st) - 1)]           # 시작 = 가장 좋은 스틸 · 끝 = 다음(다른 클립)
-                        rr = res.get(s_.id)
-                        if rr:
-                            g = dict(p.grade)
-                            g.update(rr["grade"])
-                        else:
-                            g = p.grade_for_source(s_.id, fr)
-                        raw = str(d / f"raw_{stamp}.png")
-                        ff.export_still(s_, fr, g, raw)
-                    else:
-                        continue
-                    png = str(d / f"DTME_{stamp}.png")
-                    out[key] = (png,) + autoedit.card_png(raw, png, wh)
-                except Exception as ex:  # noqa: BLE001 — 화면 하나 실패 = 그 화면만 없음
-                    ff.log_error(f"{key} 화면", str(ex))
-            return out
+            return res, picks, infos, (set(cards_on) if picks else set())
+        # v0.16.92 시작·끝 화면 = 흰 화면 + 글자(스틸 없음) · 켬 = 'auto'(예전 'pick' 도 켬)
+        cards_on = {k for k in ("start", "end") if st.get(k, "none") in ("auto", "pick", "on")}
         dlg_text = [""]
         job = jobs.Job(work, with_progress=True)
         dlg._job = job
@@ -3093,7 +3065,7 @@ class EditTab(QWidget):
             has_start, has_end = "start" in cards, "end" in cards       # v0.16.91 시작·끝 화면
             p.lead = autoedit.START_SEC if has_start else 0.0
             dm = "gap" if st.get("full") else "clip"
-            plan = autoedit.build(p, picks, st["minutes"], seed=seed, titles=st.get("title", True), date_mode=dm, first_fade=not has_start)
+            plan = autoedit.build(p, picks, st["minutes"], seed=seed, titles=st.get("title", True), date_mode=dm, first_fade=True)
             p.segments = plan["segs"]
 
             def music_for(plan):
@@ -3113,9 +3085,10 @@ class EditTab(QWidget):
                     x = next((x for x in items if t is not None and x["t0"] <= t < x["t0"] + x["len"]), items[0] if items else None)
                     cmax.append(autoedit.cut_len_for(infos.get(x["path"]) if x else None))
                 plan = autoedit.build(p, picks, st["minutes"], seed=seed, titles=st.get("title", True), cut_max=cmax, date_mode=dm,
-                                     first_fade=not has_start)
+                                     first_fade=True)       # v0.16.92 시작 화면 뒤에도 첫 컷 = 검정에서 1초
                 p.segments = plan["segs"]
-            p.titles = [t for t in p.titles if not t.get("auto_edit")] + plan["titles"]
+            p.titles = list(plan["titles"])                 # v0.16.92 자동 편집 = 타임라인 싹 지움(직접 놓은 글자·이미지·음악도)
+            p.music = []
             p.end_fade = float(plan.get("end_fade", 0.0))
             snapped = 0
             if auds:
@@ -3170,17 +3143,15 @@ class EditTab(QWidget):
         job.signals.error.connect(err)
         jobs.submit(jobs.AUTO_POOL, job)
 
-    def _put_cards(self, cards: dict, st: dict, picks: list):
-        """v0.16.91 시작·끝 화면 → 스틸 소스(예전 자동 화면 그림은 뺌) + 글자(남색 타이핑)."""
+    def _put_cards(self, cards: set, st: dict, picks: list):
+        """v0.16.92 시작·끝 화면 = 흰 화면 + 남색 글자(스틸 없음). 예전 자동 화면 그림(DTME_*.png)은 스틸 목록에서 뺌."""
         from . import autoedit
-        from .project import ImageSource, cut_spans
+        from .project import cut_spans
         p = self.state.project
         cdir = str(paths.cache_dir() / "cards")
         p.images = [m for m in p.images if not (os.path.dirname(m.path) == cdir and os.path.basename(m.path).startswith("DTME_"))]
-        if not cards:
-            return
         spans = cut_spans(p)
-        if not spans:
+        if not cards or not spans:
             return
         seg_of = {g.id: g for g in p.segments}
         g0, g1 = seg_of[spans[0][0]], seg_of[spans[-1][0]]
@@ -3190,19 +3161,14 @@ class EditTab(QWidget):
             b += spans[-1][2]
         place = st.get("place") or autoedit.place_of(p.dives, a, b)
         period = autoedit.period_text(a, b)
-        ids = {}
-        for key, (png, w, h) in cards.items():
-            m = ImageSource(png, w, h)
-            p.images.append(m)
-            ids[key] = m.id
-        if "start" in ids:
-            p.titles += autoedit.start_card(ids["start"], place, period, p.lead)
-        if "end" in ids:
+        if "start" in cards:
+            p.titles += autoedit.start_card(place, period, p.lead)
+        if "end" in cards:
             vend = max(t + ln for _c, t, ln in spans)
             ds = autoedit.period_dives(p.dives, a, b) if st.get("dive") and p.dives else []
-            p.titles += autoedit.end_card(ids["end"], vend, autoedit.end_lines(bool(ds), ds, place, period, st.get("end_text", "")))
-        p.end_fade = 0.0 if "end" in ids else max(float(p.end_fade or 0.0), autoedit.FADE_OUT_SEC)   # v0.16.91 끝 화면 = 페이드 없이 끝(사용자 13:50)
-        ff.log_info(f"시작·끝 화면: {list(ids)} · 지명 {place!r} · 기간 {period!r}")
+            p.titles += autoedit.end_card(vend, autoedit.end_lines(bool(ds), ds, place, period, st.get("end_text", "")))
+        p.end_fade = 0.0 if "end" in cards else max(float(p.end_fade or 0.0), autoedit.FADE_OUT_SEC)   # 끝 화면 = 페이드 없이 끝
+        ff.log_info(f"시작·끝 화면: {sorted(cards)} · 지명 {place!r} · 기간 {period!r}")
 
     def auto_music(self):
         """[음악 자동](v0.16.64): 타임라인 영상의 분위기(움직임·컷 빠르기·배속)를 재고, 넣은 음악 중 분위기가 가까운 곡으로

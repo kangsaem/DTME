@@ -5,7 +5,7 @@ import os
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QPainter
-from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QDialog, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget,
+from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget,
                                QListWidgetItem, QProgressBar, QPushButton, QSlider, QStyledItemDelegate, QVBoxLayout, QWidget)
 
 from .project import display_name
@@ -172,7 +172,7 @@ class AutoEditDialog(DragMove, QDialog):
         for cb in (self.title_on, self.music_on, self.mix_default, self.dive_on, self.save_on if full else self.grade_on):
             right.addLayout(labeled("", cb))
         right.addWidget(line())
-        # v0.16.91 시작·끝 화면 [자동 | 스틸 고르기 | 없음] · 지명 · 끝 문구 (설명 글 없음)
+        # v0.16.92 시작·끝 화면 [켬 | 없음](흰 화면 + 글자, 스틸 없음) · 지명 · 끝 문구
         self.card = {}
         for key, name in (("start", "시작 화면"), ("end", "끝 화면")):
             right.addLayout(labeled(name, self._card_row(key)))
@@ -240,7 +240,7 @@ class AutoEditDialog(DragMove, QDialog):
         h = QHBoxLayout()
         h.setSpacing(0)
         grp = QButtonGroup(self)
-        for j, (k, n) in enumerate((("auto", "자동"), ("pick", "스틸 고르기"), ("none", "없음"))):
+        for j, (k, n) in enumerate((("auto", "켬"), ("none", "없음"))):
             b = QPushButton(n)
             b.setCheckable(True)
             b.setFocusPolicy(Qt.NoFocus)
@@ -249,30 +249,19 @@ class AutoEditDialog(DragMove, QDialog):
             grp.addButton(b, j)
             h.addWidget(b, 1)
         grp.buttonClicked.connect(lambda b, key=key: self._card_click(key, b))
-        self.card[key] = {"grp": grp, "mode": "auto", "img": ""}
+        self.card[key] = {"grp": grp, "mode": "auto"}
         return h
 
     def _card_click(self, key, b):
-        c = self.card[key]
-        k = b.property("key")
-        if k == "pick":
-            f, _ = QFileDialog.getOpenFileName(self, "스틸 고르기", os.path.dirname(c["img"]) if c["img"] else "",
-                                               "그림 (*.png *.jpg *.jpeg *.tif *.tiff *.bmp)")
-            if not f:
-                for x in c["grp"].buttons():
-                    x.setChecked(x.property("key") == c["mode"])
-                return
-            c["img"] = f
-            b.setToolTip(f)
-        c["mode"] = k
+        self.card[key]["mode"] = b.property("key")
         self._end_hint()
 
     def card_mode(self, key, mode, img=""):
-        """(시험·밖에서) 시작·끝 화면 고르기."""
+        """(시험·밖에서) 시작·끝 화면 켬('auto')·없음('none')."""
         c = self.card[key]
-        c["mode"], c["img"] = mode, img or c["img"]
+        c["mode"] = "auto" if mode in ("auto", "pick", "on") else "none"
         for x in c["grp"].buttons():
-            x.setChecked(x.property("key") == mode)
+            x.setChecked(x.property("key") == c["mode"])
         self._end_hint()
 
     def _span(self):
@@ -337,8 +326,7 @@ class AutoEditDialog(DragMove, QDialog):
                 "music": self.music_on.isChecked(), "mix_default": self._mix_ok and self.mix_default.isChecked(), "grade": self.grade_on.isChecked() and not self.full,
                 "save": self.full and self.save_on.isChecked(),
                 "dive": self.dive_on.isChecked() and bool(self.state.project.dives),
-                "start": self.card["start"]["mode"], "start_img": self.card["start"]["img"],
-                "end": self.card["end"]["mode"], "end_img": self.card["end"]["img"],
+                "start": self.card["start"]["mode"], "end": self.card["end"]["mode"],
                 "place": self.place.text().strip(), "end_text": "" if self._end_auto else self.end_text.text().strip()}
 
     def _dive_label(self):
