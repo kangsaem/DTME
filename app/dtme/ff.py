@@ -1192,7 +1192,7 @@ def find_preview(path: str) -> str | None:
 PREVIEW_DIFF = 10.0          # 색 판정: 가까운 쪽 차(화소 차 중앙값, 0~255) 상한
 PREVIEW_N = 8                # 판정 창 하나에 프리뷰 몇 장(v0.16.22: 15 → 8)
 PREVIEW_MIN_W_AUTO = 640     # AUTO 분석에 쓸 최소 폭(분석은 320 폭)
-PREVIEW_LONG = 1280          # 멈춘 보정 화면의 긴 쪽
+PREVIEW_LONG = 960           # 멈춘 보정 화면의 긴 쪽(v0.16.91 1280 → 960, 사용자: 미리보기 속도 우선)
 PREVIEW_MIN_W_STILL = 1280   # 멈춘 화면(먼저 보이기)에 쓸 최소 폭(보정 화면이 1280 폭)
 
 
@@ -1704,6 +1704,8 @@ def range_lookup(path: str, lo: int, hi: int):
 def prefetch_range(src: Source, center: int, gpu: bool = False) -> bool:
     """center 앞뒤 RANGE_HALF 프레임을 한 번에 디코딩해 둠(이미 덮여 있거나 만드는 중이면 건너뜀). 작업 스레드에서 부름."""
     path = os.path.abspath(src.path)
+    if mezz_has(src, max(0, center - PREVIEW_LEAD - 8), center) and mezz_has(src, center, min((src.frames or center + 9) - 1, center + 8)):
+        return False                                   # v0.16.91 중간 파일이 있으면 원본 4K 를 미리 풀 필요 없음
     a = max(0, center - RANGE_HALF)
     b = min(src.frames or center + RANGE_HALF, center + RANGE_HALF)
     if b - a < 2 or range_lookup(path, max(0, center - PREVIEW_LEAD - 8), min(b - 1, center + 8)) is not None:
@@ -1743,6 +1745,117 @@ _frame_locks: dict[str, threading.Lock] = {}
 _cache_lock = threading.Lock()
 
 
+# ------------------------------------------------------------------ v0.16.91 보정용 중간 파일(SSD, 조각)
+# 멈춘 보정 화면 입력 = 원본 4K(HDD, 키프레임부터 풀어야 함) 대신 10초 조각 중간 파일(긴 쪽 960, 10bit, 모든 장 키프레임).
+# 멈춘 곳 · 타임라인 컷 구간만 뒤에서 만듦(소스 통째로 아님). 상한(설정 mezz_gb, 기본 10GB) 넘으면 오래 안 쓴 조각부터 지움.
+# 렌더·스틸은 원본 그대로.
+MEZZ_SEC = 10.0
+MEZZ_CRF = 18
+_mezz_busy: set = set()
+_mezz_lock = threading.Lock()
+
+
+def mezz_dir() -> Path:
+    d = paths.cache_dir() / "mezz"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _mezz_n(src: Source) -> int:
+    return max(1, int(round(MEZZ_SEC * float(src.fps))))
+
+
+def mezz_path(src: Source, k: int) -> Path:
+    try:
+        st = os.stat(src.path)
+        tag = f"{os.path.abspath(src.path)}|{st.st_size}|{int(st.st_mtime)}|{PREVIEW_LONG}|{MEZZ_CRF}"
+    except OSError:
+        tag = f"{os.path.abspath(src.path)}|{PREVIEW_LONG}"
+    return mezz_dir() / f"{hashlib.sha1(tag.encode()).hexdigest()[:16]}_{k:05d}.mkv"
+
+
+def mezz_has(src: Source, lo: int, hi: int) -> bool:
+    """[lo, hi] 프레임이 모두 중간 파일(한 조각)에 있나."""
+    n = _mezz_n(src)
+    return lo // n == hi // n and mezz_path(src, lo // n).exists()
+
+
+def mezz_make(src: Source, k: int, cancel=None) -> bool:
+    """조각 k(원본 프레임 k·N ~ (k+1)·N) 만들기. 이미 있거나 만드는 중이면 False."""
+    if not src.frames:
+        return False
+    n = _mezz_n(src)
+    a = k * n
+    if a >= src.frames:
+        return False
+    f = mezz_path(src, k)
+    if f.exists():
+        return False
+    with _mezz_lock:
+        if f in _mezz_busy:
+            return False
+        _mezz_busy.add(f)
+    try:
+        if cancel is not None and cancel.is_set():
+            return False
+        pw, ph = _preview_size(src)
+        tmp = f.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp.mkv")
+        run([paths.ffmpeg(), "-v", "error", "-y", "-ss", _seek(a, src.fps), "-i", _abs(src.path),
+             "-frames:v", str(min(n, src.frames - a)), "-an", "-vf", f"scale={pw}:{ph}:flags=lanczos,format=yuv420p10le",
+             "-c:v", "libx264", "-preset", "veryfast", "-g", "1", "-crf", str(MEZZ_CRF), "-pix_fmt", "yuv420p10le",
+             "-threads", "4", str(tmp)])
+        os.replace(tmp, f)
+        mezz_trim()
+        return True
+    except FFError as ex:
+        log_error("중간 파일", f"{src.path} #{k}: {str(ex)[-200:]}")
+        return False
+    finally:
+        with _mezz_lock:
+            _mezz_busy.discard(f)
+
+
+def mezz_trim():
+    """상한(GB) 넘으면 오래 안 쓴(수정 시각 오래된) 조각부터 지움."""
+    from .project import get_setting
+    try:
+        cap = float(get_setting("mezz_gb", 10) or 10) * 1024 ** 3
+    except (TypeError, ValueError):
+        cap = 10 * 1024 ** 3
+    fs = []
+    for x in mezz_dir().glob("*.mkv"):
+        try:
+            st = x.stat()
+            fs.append((st.st_mtime, st.st_size, x))
+        except OSError:
+            pass
+    tot = sum(sz for _m, sz, _x in fs)
+    for _m, sz, x in sorted(fs):
+        if tot <= cap:
+            break
+        try:
+            x.unlink()
+            tot -= sz
+        except OSError:
+            pass
+
+
+def _mezz_frame(src: Source, frame: int, lead: int):
+    """중간 파일에서 (앞 프레임 + 그 프레임) → ffv1 nut 바이트. 없으면 None."""
+    n = _mezz_n(src)
+    k = frame // n
+    if not mezz_has(src, frame - lead, frame):
+        return None
+    f = mezz_path(src, k)
+    try:
+        os.utime(f, None)                          # 최근 사용(오래 안 쓴 것부터 지울 때)
+    except OSError:
+        pass
+    loc = frame - lead - k * n
+    return run([paths.ffmpeg(), "-v", "error", "-ss", _seek(loc, src.fps), "-i", str(f), "-frames:v", str(lead + 1), "-an",
+                "-vf", "format=yuv420p10le", "-c:v", "ffv1", "-f", "nut", "-"])
+
+
 def cached_frame(src: Source, frame: int, gpu: bool = False) -> CachedFrame:
     """원본의 (앞 프레임 + 해당 프레임)을 1280 폭 10bit 무손실(ffv1, nut)로 메모리에 보관."""
     key = f"{os.path.abspath(src.path)}|{frame}"
@@ -1760,9 +1873,15 @@ def cached_frame(src: Source, frame: int, gpu: bool = False) -> CachedFrame:
                 data, w, h = hit
                 return CachedFrame(data, lead, (w, h), "raw", key + "|r")
             pw, ph = _preview_size(src)
-            data = run([paths.ffmpeg(), "-v", "error", "-ss", _seek(frame - lead, src.fps), "-i", _abs(src.path),
-                        "-frames:v", str(lead + 1), "-an", "-vf", f"scale={pw}:{ph}:flags=lanczos,format=yuv420p10le",
-                        "-c:v", "ffv1", "-f", "nut", "-"])
+            data = None
+            try:
+                data = _mezz_frame(src, frame, lead)       # v0.16.91 SSD 중간 파일이 있으면 그걸로(원본 4K 를 안 읽음)
+            except FFError as ex:
+                log_error("중간 파일 읽기", str(ex)[-200:])
+            if data is None:
+                data = run([paths.ffmpeg(), "-v", "error", "-ss", _seek(frame - lead, src.fps), "-i", _abs(src.path),
+                            "-frames:v", str(lead + 1), "-an", "-vf", f"scale={pw}:{ph}:flags=lanczos,format=yuv420p10le",
+                            "-c:v", "ffv1", "-f", "nut", "-"])
             c = CachedFrame(data, lead, (pw, ph), "nut", key)
             with _cache_lock:
                 _frame_cache[key] = c
@@ -1781,7 +1900,8 @@ def frame_ready(src: Source, frame: int) -> bool:
     with _cache_lock:
         if key in _frame_cache:
             return True
-    return range_lookup(src.path, frame - min(PREVIEW_LEAD, frame), frame) is not None
+    lo = frame - min(PREVIEW_LEAD, frame)
+    return range_lookup(src.path, lo, frame) is not None or mezz_has(src, lo, frame)
 
 
 def cached_frame_preview(src: Source, frame: int, pv: dict) -> CachedFrame:
@@ -1898,29 +2018,37 @@ def sharpness_around(src: Source, frame: int, radius: int = 5) -> list[tuple[int
 XFADE = {"dissolve": "fade", "wipeleft": "wipeleft", "wiperight": "wiperight", "wipeup": "wipeup",
          "wipedown": "wipedown", "zoomin": "fade", "zoomout": "fade", "rotzoomin": "fade", "rotzoomout": "fade",
          "fadeblack": "fadeblack", "fadewhite": "fadewhite", "rippleout": "custom", "ripplein": "custom"}
-RIPPLE_BANDS, RIPPLE_BAND = 3, 0.12      # v0.16.91 사각 파동: 빈 사각형 띠 3개(굵기 = 화면 반폭의 12%, 간격 = 띠 굵기) → 마지막 꽉 찬 사각형
+RIPPLE_BANDS, RIPPLE_BAND = 2, 0.12      # v0.16.91 사각 파동: 빈 사각형 띠 2개(사용자 13:53 3 → 2, 굵기 = 화면 반폭의 12%, 간격 = 띠 굵기) → 꽉 찬 사각형
+RIPPLE_FEATHER = 0.02                     # 띠 경계 부드럽게(반폭의 2% ≈ 1080p 19px) — 예전 = 딱 잘라서 번쩍이며 지직거림
+RIPPLE_SEC = 1.0                          # 사각 파동 기본 길이(0.5초는 띠가 한 장마다 띠 굵기만큼 건너뜀)
 
 
 def ripple_expr(kind: str) -> str:
-    """xfade custom 식: 가운데(→) 또는 가장자리(←)에서 빈 사각형 띠가 차례로 퍼지고 꽉 찬 사각형이 뒤따름. P = 1→0."""
-    b, n = RIPPLE_BAND, RIPPLE_BANDS
+    """xfade custom 식: 가운데(→) 또는 가장자리(←)에서 빈 사각형 띠가 차례로 퍼지고 꽉 찬 사각형이 뒤따름. P = 1→0.
+    경계 = RIPPLE_FEATHER 만큼 섞음(결과 = A·(1−m) + B·m).
+    st()/ld() 를 쓰지 않음: xfade 는 화면을 여러 스레드로 나눠 같은 식 변수를 같이 써서 값이 섞임 → 가로 줄 지직거림(v0.16.91 실측, 예전 식도 같은 원인)."""
+    b, n, f = RIPPLE_BAND, RIPPLE_BANDS, RIPPLE_FEATHER
     d = "max(abs(X-W/2)/(W/2),abs(Y-H/2)/(H/2))"
-    r = d if kind == "rippleout" else f"1-{d}"
-    rings = "+".join(f"between(ld(0),ld(1)-{(2 * k + 1) * b:.4f},ld(1)-{2 * k * b:.4f})" for k in range(n))
-    return (f"st(0,{r});st(1,(1-P)*{1 + 2 * n * b + 0.05:.4f});"
-            f"if({rings}+lte(ld(0),ld(1)-{2 * n * b:.4f}),B,A)")
+    r = f"({d})" if kind == "rippleout" else f"(1-{d})"
+    lead = f"((1-P)*{1 + 2 * n * b + 0.05 + f:.4f})"
+    band = lambda lo, hi: f"clip(({r}-({lo}))/{f},0,1)*clip((({hi})-{r})/{f},0,1)"   # noqa: E731
+    rings = "+".join(band(f"{lead}-{(2 * k + 1) * b:.4f}", f"{lead}-{2 * k * b:.4f}") for k in range(n))
+    full = f"clip(({lead}-{2 * n * b:.4f}-{r})/{f},0,1)"
+    m = f"clip({rings}+{full},0,1)"
+    return f"A*(1-{m})+B*{m}"
 
 
 def ripple_mask(d, q: float, kind: str):
     """미리보기(전환 고르는 창) 용 같은 계산: d = 사각 거리(numpy, 0 가운데~1 가장자리), q = 0→1. 1 = 뒤 컷."""
     import numpy as _np
-    b, n = RIPPLE_BAND, RIPPLE_BANDS
+    b, n, f = RIPPLE_BAND, RIPPLE_BANDS, RIPPLE_FEATHER
     r = d if kind == "rippleout" else 1 - d
-    lead = q * (1 + 2 * n * b + 0.05)
-    m = r <= lead - 2 * n * b
+    lead = q * (1 + 2 * n * b + 0.05 + f)
+    m = _np.clip((lead - 2 * n * b - r) / f, 0, 1)
     for k in range(n):
-        m = m | ((r >= lead - (2 * k + 1) * b) & (r <= lead - 2 * k * b))
-    return m.astype(_np.float32)
+        lo, hi = lead - (2 * k + 1) * b, lead - 2 * k * b
+        m = m + _np.clip((r - lo) / f, 0, 1) * _np.clip((hi - r) / f, 0, 1)
+    return _np.clip(m, 0, 1).astype(_np.float32)
 
 
 def zoom_filter(kind: str, start: float, dur: float, head: bool) -> str:
@@ -2268,14 +2396,15 @@ def _anim_sides(t: dict) -> tuple[str, str, float]:
     t0, t1 = float(t["t0"]), float(t["t1"])
     fd = min(float(t.get("fade", 0.5)), (t1 - t0) / 2)
     ain, aout = t.get("ain", "fade"), t.get("aout", "fade")
-    return (ain if ain in ANIMS[1:] else "fade"), (aout if aout in ANIMS[1:] else "fade"), fd
+    k = lambda x: x if x in ANIMS[1:] or x == "cut" else "fade"     # noqa: E731  v0.16.91 cut = 페이드 없이 바로
+    return k(ain), k(aout), fd
 
 
 def _slide_xy(t: dict, x0: str, y0: str, w: str, h: str, ow: int, oh: int, pad: float) -> tuple[str, str]:
     """밀려 들어오기/나가기(v0.16.57) → overlay·drawtext 의 x, y 식(t = 초). project.title_anim/anim_offset 과 같은 계산.
     x0·y0·w·h = 제자리 위치·크기(숫자 또는 text_w 같은 식)."""
     ain, aout, fd = _anim_sides(t)
-    if fd <= 0.01 or (ain == "fade" and aout == "fade"):
+    if fd <= 0.01 or (ain in ("fade", "cut") and aout in ("fade", "cut")):
         return x0, y0
     t0, t1 = float(t["t0"]), float(t["t1"])
     away = {"right": (f"({ow}-({x0})+{pad:.1f})", ""), "left": (f"(-(({x0})+({w})+{pad:.1f}))", ""),
@@ -2286,9 +2415,9 @@ def _slide_xy(t: dict, x0: str, y0: str, w: str, h: str, ow: int, oh: int, pad: 
     out = []
     for axis, base in ((0, x0), (1, y0)):
         e = f"({base})"
-        if ain != "fade" and away[opp[ain]][axis]:
+        if ain not in ("fade", "cut") and away[opp[ain]][axis]:
             e += f"+if(lt(t,{t0 + fd:.4f}),{away[opp[ain]][axis]}*{fin},0)"
-        if aout != "fade" and away[aout][axis]:
+        if aout not in ("fade", "cut") and away[aout][axis]:
             e += f"+if(gt(t,{t1 - fd:.4f}),{away[aout][axis]}*{fout},0)"
         out.append(e)
     return out[0], out[1]
@@ -2406,6 +2535,7 @@ def type_layout_ff(t: dict, ow: int, oh: int, base: list):
 def _type_filters(t: dict, ow: int, oh: int, base: list, col: str) -> str:
     """타이핑: 줄마다 · 글자 수마다 drawtext 하나(앞부분, 보이는 구간만). 자리 = 다 친 줄(왼쪽부터 채움)."""
     from .project import TYPE_SEC
+    TYPE_SEC = float(t.get("tsec", TYPE_SEC) or TYPE_SEC)       # noqa: N806  v0.16.91 글자마다 간격(시작 화면 = 2초에 다 침)
     t0, t1 = float(t["t0"]), float(t["t1"])
     ts = t0 + float(t.get("tdelay", 0.0) or 0.0)
     m = type_layout_ff(t, ow, oh, base)
@@ -2835,7 +2965,7 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orien
         fparts[:] = [f.replace("[vo]", "[vpad]").replace("[ao]", "[apad]") for f in fparts]
         fparts.append(f"[vpad]tpad=start_duration={lead:.4f}:stop_duration={tail:.4f}:start_mode=add:stop_mode=add:color=black[vo]")
         if audio:
-            fparts.append(f"[apad]adelay=delays={int(round(lead * 1000))}:all=1,apad=pad_dur={tail:.4f}[ao]")
+            fparts.append(f"[apad]adelay=delays={int(round(lead * 1000))}:all=1,apad=pad_dur={tail:.4f},asetpts=N/SR/TB[ao]")  # v0.16.91 apad 뒤 시각 없는 마지막 묶음 = 렌더 실패(끝 화면) → 시각 다시
         total += lead + tail
     if audio:                                     # v0.16.66 원본을 키울 컷(말소리·수면 위)의 결과 영상 구간
         from .music import EDGE_MUSIC, loud_spans
@@ -2969,7 +3099,10 @@ def est_mb(quality: str, secs: float, orientation: str = "horizontal", audio: bo
     """예상 크기(MB) = 평균 목표 × 길이(+ 소리 192k). 화면이 자잘하면 더 큼."""
     q = QUALITY.get(quality, QUALITY["normal"])
     mbps = q["mbps"] * res_factor(orientation) + (0.192 if audio else 0)
-    return mbps * secs / 8
+    return mbps * secs / 8 * EST_SAFE
+
+
+EST_SAFE = 1.2                   # v0.16.91 사용자 실측: 실제가 예상보다 5~20% 큼 → 넉넉하게 1.2배로 보여 줌
 
 
 _hevc_ok: list = []

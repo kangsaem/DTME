@@ -535,6 +535,8 @@ class AutoDialog(DragMove, QDialog):
             self.list.addItem(it)
         self.list.itemSelectionChanged.connect(self._sel_changed)
         self._cdrag = None                 # v0.16.37 체크 쓸기: (시작 줄, 새 상태, 원래 상태들)
+        from PySide6.QtGui import QKeySequence, QShortcut
+        QShortcut(QKeySequence.SelectAll, self, activated=self.check_all)      # v0.16.91 Ctrl+A = 전부 체크·고르기
         self._vp = self.list.viewport()          # 필터는 보이는 동안만(showEvent/hideEvent) — 종료 때 지워진 창 호출 방지
         # 오른쪽
         self.grid = PresetGrid()
@@ -991,6 +993,15 @@ class AutoDialog(DragMove, QDialog):
         for k, r in enumerate(self.rows):
             r.checked = v if a <= k <= b else orig[k]
         self.list.viewport().update()
+
+    def check_all(self):
+        old = [r.checked for r in self.rows]
+        for r in self.rows:
+            r.checked = True
+        self.list.selectAll()
+        self.list.viewport().update()
+        if old != [r.checked for r in self.rows]:
+            self._row_changed()
 
     def _row_changed(self):
         self._name_preview()

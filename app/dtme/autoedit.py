@@ -306,7 +306,7 @@ def build(project, picks: list[dict], minutes: int, seed: int = 0, titles: bool 
                     special["rot"].append(k)
                 if k.startswith("ripple"):
                     special["rip"].append(k)
-                g.trans = {"type": k, "dur": TRANS_SEC}
+                g.trans = {"type": k, "dur": ff.RIPPLE_SEC if k.startswith("ripple") else TRANS_SEC}   # v0.16.91 사각 파동 = 1초
             elif first_fade:
                 g.trans = {"type": "fadeblack", "dur": FADE_IN_SEC}             # 첫 컷 = 검정에서 페이드 인(시작 화면 있으면 = 화면이 디졸브)
             if j == 0:
@@ -561,7 +561,9 @@ def snap_to_bars(project, music_info: dict, tol_bar: float = 0.5) -> int:
 
 # ------------------------------------------------------------------ v0.16.91 시작·끝 화면(자동 편집)
 # 배경 = 스틸 + 흰색 50% · 글자 남색 · 타이핑. 시작 = 검정에서 페이드 인(→ 첫 컷으로 디졸브), 끝 = 마지막 컷에서 디졸브 → 검정으로 페이드 아웃.
-START_SEC, END_SEC = 4.0, 5.0       # 시작 화면 = 첫 컷 앞 검은 구간 · 끝 화면 = 영상 끝 뒤 검은 구간
+START_SEC, END_SEC = 10.0, 10.0     # 시작 화면 = 첫 컷 앞 구간 · 끝 화면 = 영상 끝 뒤 구간(사용자 13:50 10초씩)
+TYPE_TOTAL = 2.0                    # 시작 화면 글자 = 2초에 다 침(사용자 13:53)
+WHITE_SEC = 1.0                     # 끝: 마지막 컷 → 흰색(1초) → 흰색에서 끝 화면(1초)
 CARD_X = 0.5                        # 겹침(디졸브) 초 = 화면이 컷 위로 넘어가는 만큼
 CARD_FADE = 1.0
 CARD_COLOR = "#1b2a4e"              # 남색
@@ -676,35 +678,49 @@ def dive_line(dives: list) -> str:
     return f"{n} DIVE{'S' if n != 1 else ''} · MAX {mx:.1f}m · {tt}"
 
 
-def card_titles(img_id: str, lines: list[tuple[str, int, bool]], t0: float, t1: float, type_at: float, which: str) -> list[dict]:
-    """화면 = 이미지(꽉 참) + 글자 줄(남색, 가운데, 타이핑 차례로). lines = [(글자, 크기, 굵게)]."""
+def card_titles(img_id: str, lines: list[tuple[str, int, bool]], t0: float, t1: float, which: str, typing: bool,
+                fade_in: str, fade_out: str) -> list[dict]:
+    """화면 = 이미지(꽉 참) + 글자 줄(남색, 가운데). typing = 차례로 한 글자씩(전부 TYPE_TOTAL 초 안에), 아니면 처음부터 다 보임.
+    fade_in/out = 'cut' | 'fade'(CARD_FADE 초)."""
     from .project import new_title_image
     im = new_title_image(img_id, t0, t1, 1.0)
-    im.update(fade=CARD_FADE, auto_edit=True, card=which)
+    im.update(fade=CARD_FADE, ain=fade_in, aout=fade_out, auto_edit=True, card=which)
     out = [im]
     lines = [x for x in lines if x[0]]
     gap = 0.075
     hs = [sz / 1080 * 1.25 for _t, sz, _b in lines]
     y = 0.5 - (sum(hs) + gap * (len(lines) - 1) * 0.5) / 2
-    d = type_at - t0
-    for (text, size, bold), h in zip(lines, hs):
+    n = max(1, sum(len(t) for t, _s, _b in lines))
+    sec = TYPE_TOTAL / n
+    d = 0.5
+    for (text, size, _bold), h in zip(lines, hs):
         tx = new_text(t0, t1, text)
-        tx.update(font=card_font(text), size=size, bold=True, color=CARD_COLOR, bg="none", ain="type", aout="fade", fade=0.5,
-                  tdelay=round(d, 3), cx=0.5, cy=round(y + h / 2, 4), auto_edit=True, card=which)
+        tx.update(font=card_font(text), size=size, bold=True, color=CARD_COLOR, bg="none", aout=fade_out, fade=CARD_FADE,
+                  cx=0.5, cy=round(y + h / 2, 4), auto_edit=True, card=which)
+        if typing:
+            tx.update(ain="type", tdelay=round(d, 3), tsec=round(sec, 4))
+            d += len(text) * sec
+        else:
+            tx.update(ain=fade_in)
         out.append(tx)
         y += h + gap * 0.5
-        d += len(text) * TYPE_SEC + 0.2
     return out
 
 
 def start_card(img_id: str, place: str, period: str, lead: float) -> list[dict]:
-    """시작 화면: 0 ~ lead + 0.5(첫 컷으로 디졸브). 지명(크게) + 기간."""
-    return card_titles(img_id, [(place, 76, True), (period, 40, True)], 0.0, lead + CARD_X, CARD_FADE, "start")
+    """시작 화면(사용자 13:40·13:53): 0초에 바로(검정 페이드 없음) · 글자 한 글자씩 2초 · lead + 0.5 까지 → 첫 컷으로 디졸브."""
+    return card_titles(img_id, [(place, 76, True), (period, 40, True)], 0.0, lead + CARD_X, "start", True, "cut", "fade")
 
 
 def end_card(img_id: str, video_end: float, lines: list[tuple[str, int, bool]]) -> list[dict]:
-    """끝 화면: 영상 끝 0.5초 전(디졸브) ~ 끝 + END_SEC(검정으로 = end_fade)."""
-    return card_titles(img_id, lines, video_end - CARD_X, video_end + END_SEC, video_end + CARD_X, "end")
+    """끝 화면(사용자 13:40·13:50): 마지막 컷이 흰색으로(영상 끝 1초 전부터) → 흰색에서 끝 화면(1초) → 10초 뒤 페이드 없이 끝.
+    글자 = 처음부터 다 보임. → [이미지, 글자…, 흰 사각형(맨 위)]."""
+    from .project import new_rect
+    out = card_titles(img_id, lines, video_end, video_end + END_SEC, "end", False, "cut", "cut")
+    wr = new_rect(video_end - WHITE_SEC, video_end + WHITE_SEC)
+    wr.update(cx=0.5, cy=0.5, w=1.0, h=1.0, color="#ffffff", opacity=1.0, fade=WHITE_SEC, ain="fade", aout="fade",
+              auto_edit=True, card="end")
+    return out + [wr]
 
 
 def end_lines(log: bool, dives: list, place: str, period: str, text: str = "") -> list[tuple[str, int, bool]]:

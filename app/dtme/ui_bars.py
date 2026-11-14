@@ -413,6 +413,7 @@ class SeqTimeline(QWidget):
     cutEdgeDragged = Signal(str, str, float)   # 누른 곳부터 끈 거리(초, 타임라인)
     cutEdgeEnd = Signal()
     logToggled = Signal(str)          # v0.16.91 컷 가운데 LOG 칩 클릭 = 그 컷 LOG 켜고 끄기
+    shiftAll = Signal(float)           # v0.16.91 Ctrl+A 뒤 컷 끌기 = 전체 밀기(초)
     ovMenu = Signal(str, str, object)  # v0.16.91 글자·사각형 우클릭 = 메뉴(삭제·맨 위로·맨 아래로·따라감)
 
     WING = 9         # 전환 없는 경계·맨 앞·맨 뒤 날개 폭(px)
@@ -436,6 +437,8 @@ class SeqTimeline(QWidget):
         self.music_info = {}          # v0.16.64 음악 파일 → 분석(music.analyze): 파형 · 박자 · 마디 첫 박
         self.ov_sel = ("", "")
         self.ov_multi = set()             # v0.16.91 Shift+클릭으로 같이 고른 글자·사각형·이미지 id
+        self.all_cuts = False             # v0.16.91 Ctrl+A = 컷 전부(끌면 전체 밀기)
+        self._shift = None                # (시작 x, 지금 x)
         self.log_state = {}               # v0.16.91 다이빙 컷 id → LOG 켬/끔(없는 컷 = 칩 없음)
         self.t = 0.0
         self._press = None            # 컷: (index, x)
@@ -676,6 +679,11 @@ class SeqTimeline(QWidget):
         top, vid, mus = self._lanes()
         p.fillRect(top, QColor("#202020"))
         p.fillRect(mus, QColor("#202020"))
+        if self._shift is not None:                     # v0.16.91 전체 밀기 끄는 중 = 전부 옆으로(놓으면 적용)
+            dx = self._shift[1] - self._shift[0]
+            if self.pads[0] * self.pps + dx < 0:
+                dx = -self.pads[0] * self.pps
+            p.translate(dx, 0)
         lead, vend, tend = self.pads                    # v0.16.71 앞뒤 검은 구간(영상 줄)
         for a_, b_ in ((0.0, lead), (vend, tend)):
             if b_ - a_ > 0.01:
@@ -696,7 +704,7 @@ class SeqTimeline(QWidget):
             if dragging:
                 c.setAlpha(170)
             p.fillRect(rr, c)
-            if sid == self.sel:
+            if sid == self.sel or self.all_cuts:
                 p.setPen(QPen(QColor("white"), 2))
                 p.drawRect(rr.adjusted(1, 1, -1, -1))
             lg = self.log_state.get(sid)
@@ -955,6 +963,11 @@ class SeqTimeline(QWidget):
         return best if abs(best - v) <= tol else v
 
     # ---------------------------------------------------------------- 마우스
+    def select_all(self):
+        self.all_cuts = True
+        self.ov_multi = {t["id"] for t in self.titles}
+        self.update()
+
     def _log_rect(self, rr):
         """컷 가운데 LOG 칩 자리(컷이 좁으면 없음). 줄이 낮으면(34px 아래) 조금 작은 칩 = 한 줄 'x1 [LOG] 이름'."""
         if rr.width() < 46 or rr.height() < 16:
@@ -1040,6 +1053,12 @@ class SeqTimeline(QWidget):
         if i >= 0 and vid.top() <= pos.y() <= vid.bottom() and e.button() == Qt.RightButton:
             self.cutMenu.emit(self.items[i][0], e.globalPosition().toPoint())
             return
+        if i >= 0 and vid.top() <= pos.y() <= vid.bottom() and self.all_cuts and not (e.modifiers() & (Qt.ControlModifier | Qt.ShiftModifier)):
+            self._shift = (pos.x(), pos.x())          # v0.16.91 전부 고른 채 컷 끌기 = 전체 밀기
+            return
+        if self.all_cuts and not (e.modifiers() & Qt.ControlModifier):
+            self.all_cuts = False
+            self.ov_multi = set()
         if i >= 0 and vid.top() <= pos.y() <= vid.bottom():
             self._press = (i, pos.x())
             self._drag_x = None
@@ -1052,6 +1071,10 @@ class SeqTimeline(QWidget):
 
     def mouseMoveEvent(self, e):
         pos = e.position()
+        if self._shift is not None and (e.buttons() & Qt.LeftButton):
+            self._shift = (self._shift[0], pos.x())
+            self.update()
+            return
         if self._tdur and (e.buttons() & Qt.LeftButton):
             cid, x0, d0, left, started = self._tdur
             dx = pos.x() - x0
@@ -1127,6 +1150,13 @@ class SeqTimeline(QWidget):
             self.update()
 
     def mouseReleaseEvent(self, e):
+        if self._shift is not None:
+            x0, x1 = self._shift
+            self._shift = None
+            if abs(x1 - x0) > 3:
+                self.shiftAll.emit((x1 - x0) / self.pps)
+            self.update()
+            return
         if self._tdur:
             self._tdur = None
             return

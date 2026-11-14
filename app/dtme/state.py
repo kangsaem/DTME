@@ -428,6 +428,29 @@ class AppState(QObject):
             self.touch("audios")
         return len(new)
 
+    @staticmethod
+    def default_music() -> list[str]:
+        """v0.16.91 프로그램과 같이 오는 기본 음악(music 폴더 mp3, CC0)."""
+        from . import paths
+        d = paths.music_dir()
+        return sorted(str(f) for f in d.glob("*.mp3")) if d.is_dir() else []
+
+    def add_default_music(self) -> int:
+        """프로젝트에 곡이 없으면 기본 음악을 음악 목록에 넣음(길이 바로 읽음). 넣은 수."""
+        if self.project.audios:
+            return 0
+        new = []
+        for f in self.default_music():
+            try:
+                new.append({"id": _id(), "path": str(Path(f).resolve()), "dur": float(ff.probe_audio(f))})
+            except Exception as ex:  # noqa: BLE001
+                ff.log_error(f"기본 음악 {f}", str(ex))
+        if new:
+            self.project.audios += new
+            ff.log_info(f"기본 음악 {len(new)}곡 넣음")
+            self.touch("audios")
+        return len(new)
+
     def _queue_audio(self, a: dict):
         job = jobs.Job(lambda path=a["path"]: ff.probe_audio(path))
 

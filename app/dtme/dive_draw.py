@@ -56,6 +56,13 @@ def anim_busy(tc: float, L: float, tail: float = 0.0) -> bool:
     return any(a - 0.1 <= tc <= b + 0.1 for a, b in w)
 
 
+def until_busy(tc: float, L: float, tail: float = 0.0) -> float:
+    """v0.16.91 다음 애니메이션 구간 시작까지 남은 초(없으면 큰 값) — 0.5초 걸음이 페이드 앞부분을 건너뛰지 않게."""
+    w, _to, _go = _wins(L, tail)
+    ahead = [a - 0.1 - tc for a, _b in w if a - 0.1 > tc + 1e-6]
+    return min(ahead) if ahead else 1e9
+
+
 def wipe_mask(W: int, rv: float) -> np.ndarray:
     """왼쪽부터 드러나는 정도(열마다 0~1). rv=0 전부 숨김, 1 전부."""
     F = max(1.0, FEATHER * W)
@@ -537,7 +544,12 @@ def render_layers(project, dives: list, off: float, spans: list, total: float, W
         st = at(T)
         any_dive = any_dive or st is not None
         times.append((T, st))
-        T += (1 / ANIM_FPS) if (st is not None and anim_busy(st[5], st[6], st[7])) else (1 / RATE)
+        if st is not None and anim_busy(st[5], st[6], st[7]):
+            T += 1 / ANIM_FPS
+        elif st is not None:
+            T += max(1 / ANIM_FPS, min(1 / RATE, until_busy(st[5], st[6], st[7])))
+        else:
+            T += 1 / RATE
     if not any_dive:
         return None
     ensure_fonts()

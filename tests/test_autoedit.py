@@ -130,7 +130,7 @@ assert len(segs) >= 4 and all(autoedit.CUT_MIN - 0.05 <= x <= autoedit.CUT_MAX +
 assert abs(tot - 60) < 3.0, tot
 names = [os.path.basename(p.source(g.src).path) for g in segs]
 assert names == sorted(names), names                 # 목록순(이름에 날짜 없음)
-assert segs[0].trans == {"type": "fadeblack", "dur": autoedit.FADE_IN_SEC} and all(g.trans.get("dur") == 0.5 for g in segs[1:])   # v0.16.91 첫 컷 = 검정에서
+assert segs[0].trans == {"type": "fadeblack", "dur": autoedit.FADE_IN_SEC} and all(g.trans.get("dur") == (1.0 if g.trans["type"].startswith("ripple") else 0.5) for g in segs[1:])   # v0.16.91 첫 컷 = 검정에서 · 사각 파동 = 1초
 assert not any(g.trans["type"] in ("fadeblack", "fadewhite") for g in segs[1:]) and p.end_fade == autoedit.FADE_OUT_SEC
 assert len({g.trans["type"] for g in segs[1:]}) >= 1
 tt = [x for x in p.titles if x.get("auto_edit")]

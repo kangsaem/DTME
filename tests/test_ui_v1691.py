@@ -133,6 +133,8 @@ assert dlg.chosen() == []
 for i in range(3):
     dlg._toggle(dlg.list.item(i))
 assert len(dlg.chosen()) == 3
+print("음악 칸:", dlg.music_on.text())
+assert "기본 음악" in dlg.music_on.text() and dlg.music_on.isChecked() and len(st.default_music()) >= 15   # v0.16.91 곡 없음 = 기본 음악(CC0)
 dlg.length.setValue(1); dlg.music_on.setChecked(False)
 sset = dlg.settings()
 assert sset["start"] == "auto" and sset["end"] == "auto" and sset["place"] == "보홀주, 필리핀"
@@ -145,7 +147,7 @@ p = st.project
 segs = p.segments
 names = [os.path.basename(p.source(g.src).path)[:18] for g in segs]
 print("컷:", list(zip(names, [round((g.fout - g.fin) / 30, 1) for g in segs])), "앞", p.lead, "끝 페이드", p.end_fade)
-assert p.lead == autoedit.START_SEC and not segs[0].trans and p.end_fade == autoedit.FADE_OUT_SEC
+assert p.lead == autoedit.START_SEC and not segs[0].trans and p.end_fade == 0.0       # 끝 화면 = 페이드 없이 끝
 cards = {k: [x for x in p.titles if x.get("card") == k] for k in ("start", "end")}
 print("시작 화면:", [(x["kind"], x.get("text")) for x in cards["start"]])
 print("끝 화면:", [(x["kind"], x.get("text")) for x in cards["end"]])
@@ -156,7 +158,14 @@ for x in (cards["start"][0], cards["end"][0]):
     m = p.image(x["img"])
     assert m and os.path.exists(m.path) and (m.width, m.height) == (1920, 1080)
 vend = max(tt + ln for _c, tt, ln in cut_spans(p))
-assert abs(cards["end"][0]["t0"] - (vend - 0.5)) < 1e-3 and abs(p.tail_of() - autoedit.END_SEC) < 1e-3
+assert abs(cards["end"][0]["t0"] - vend) < 1e-3 and abs(p.tail_of() - autoedit.END_SEC) < 1e-3
+wr = cards["end"][-1]
+assert wr["kind"] == "rect" and wr["color"] == "#ffffff" and abs(wr["t0"] - (vend - 1.0)) < 1e-3 and abs(wr["t1"] - (vend + 1.0)) < 1e-3
+st_t = [x for x in cards["start"] if x["kind"] == "text"]
+assert cards["start"][0]["ain"] == "cut" and all(x["ain"] == "type" for x in st_t)
+from dtme.project import type_end  # noqa: E402
+assert abs(max(type_end(x) for x in st_t) - (0.5 + 2.0 - st_t[-1]["tsec"])) < 0.02          # 2초에 다 침
+assert all(x["ain"] == "cut" for x in cards["end"] if x["kind"] == "text")
 bars = [x for x in p.titles if x.get("datebar") and x["kind"] == "text" and x["size"] == autoedit.DB_TIME]
 print("날짜 바 시각:", [x["text"] for x in bars])
 assert [x["text"] for x in bars] == ["12:00", "14:00"]          # 보정+편집 = 클립마다(다이빙 컷 = 없음)
@@ -268,10 +277,10 @@ e.player.is_playing = _ip
 st.touch("segments"); wait(0.1)
 assert not e._tp_cache
 
-# ---------------------------------------------------------------- 7) 렌더: 시작 = 검정에서 · 끝 = 검정으로 · 시작 화면 = 흰빛 + 남색 글자
+# ---------------------------------------------------------------- 7) 렌더: 시작 = 바로 · 끝 = 흰색 → 끝 화면(페이드 없이 끝) · 시작 화면 = 흰빛 + 남색 글자
 e.timeline_to_render(); it = p.render_items[-1]
-assert it.lead == autoedit.START_SEC and it.end_fade == autoedit.FADE_OUT_SEC
-e.render_panel.render(); assert wait(900, lambda: not e.render_panel.running)
+assert it.lead == autoedit.START_SEC and it.end_fade == 0.0
+e.render_panel.render(); assert wait(1500, lambda: not e.render_panel.running)
 outs = [f for f in os.listdir(os.path.join(W, "out")) if f.endswith(".mp4")]
 print("출력:", outs, e.render_panel.status.get(it.id, "")[:60])
 assert outs
@@ -280,10 +289,11 @@ dur = float(ff.probe(out)["frames"]) / 29.97
 exp = p.lead + p.out_seconds() + p.tail_of()
 print("길이", round(dur, 2), "기대", round(exp, 2))
 assert abs(dur - exp) < 0.2
-f0, f1, f2, fz = (grab("null", x, src=out) for x in (0.05, 3.0, p.lead - 0.6, dur - 0.05))
+vend_r = p.lead + p.out_seconds()
+f0, f1, f2, fw, fz = (grab("null", x, src=out) for x in (0.05, 3.0, p.lead - 0.6, vend_r, dur - 0.05))
 navy = ((f1[..., 2].astype(int) - f1[..., 0] > 30) & (f1.mean(2) < 120)).sum()
-print("밝기: 처음", round(f0.mean(), 1), "시작 화면", round(f1.mean(), 1), "남색 픽셀", int(navy), "끝", round(fz.mean(), 1))
-assert f0.mean() < 25 and f1.mean() > 140 and navy > 500 and fz.mean() < 25
+print("밝기: 처음", round(f0.mean(), 1), "시작 화면", round(f1.mean(), 1), "남색 픽셀", int(navy), "흰색", round(fw.mean(), 1), "끝", round(fz.mean(), 1))
+assert f0.mean() > 140 and f1.mean() > 140 and navy > 500 and fw.mean() > 235 and fz.mean() > 140     # 처음 = 바로 · 끝 = 흰색 → 화면, 페이드 없음
 for x, nm in ((f1, "r_start"), (f2, "r_start2")):
     from PySide6.QtGui import QImage  # noqa: E402
     QImage(x.data, 1920, 1080, 1920 * 3, QImage.Format_RGB888).save(os.path.join(W, nm + ".png"))

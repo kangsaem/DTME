@@ -117,6 +117,8 @@ class AutoEditDialog(DragMove, QDialog):
             if s.id in sids:
                 tot += sec
         self.list.itemClicked.connect(self._toggle)
+        from PySide6.QtGui import QKeySequence, QShortcut
+        QShortcut(QKeySequence.SelectAll, self, activated=self.check_all)      # v0.16.91 Ctrl+A = 전부 체크
         self.sum = QLabel("")
         self.sum.setStyleSheet(f"color:{SUB};")
         lv = QVBoxLayout()
@@ -137,9 +139,10 @@ class AutoEditDialog(DragMove, QDialog):
         len_row.addWidget(self.len_v)
         self.title_on = QCheckBox("날짜 바")
         self.title_on.setChecked(True)
-        self.music_on = QCheckBox("음악 자동")              # 켜면 컷을 마디에 맞추는 것까지(따로 옵션 없음)
-        self.music_on.setChecked(bool(p.audios))
-        self.music_on.setEnabled(bool(p.audios))
+        n_def = 0 if p.audios else len(state.default_music())   # v0.16.91 곡이 없으면 기본 음악(CC0)
+        self.music_on = QCheckBox("음악 자동" + (f" (기본 음악 {n_def}곡)" if n_def else ""))   # 켜면 컷을 마디에 맞추는 것까지
+        self.music_on.setChecked(bool(p.audios) or bool(n_def))
+        self.music_on.setEnabled(bool(p.audios) or bool(n_def))
         self.grade_on = QCheckBox("보정 안 된 소스는 AUTO 먼저")   # AUTO 했거나 손으로 보정한 소스는 건너뜀
         self.grade_on.setChecked(True)
         self.full = full                                   # v0.16.81 [전부 자동] 팝업: 보정은 AUTO 창 값 → 보정 칸 대신 프로젝트 저장
@@ -290,6 +293,11 @@ class AutoEditDialog(DragMove, QDialog):
             ls = autoedit.end_lines(bool(ds), ds, self.place.text().strip(), autoedit.period_text(a, b))
             self.end_text.setPlaceholderText(" / ".join(x[0] for x in ls))
 
+    def check_all(self):
+        for i in range(self.list.count()):
+            self.list.item(i).setCheckState(Qt.Checked)
+        self._sum()
+
     def _toggle(self, it):
         """클릭 = 하나 켜고 끄기 · Shift+클릭 = 지난번 누른 줄부터 여기까지 같은 상태로(v0.16.91)."""
         from PySide6.QtWidgets import QApplication
@@ -350,7 +358,7 @@ class AutoEditDialog(DragMove, QDialog):
         self.b_start.setEnabled(not on)
         self.list.setEnabled(not on)
         for w in (self.length, self.title_on, self.music_on, self.grade_on, self.save_on, self.dive_on, self.place, self.end_text):
-            w.setEnabled(not on and (w is not self.music_on or bool(self.state.project.audios)))
+            w.setEnabled(not on and (w is not self.music_on or bool(self.state.project.audios) or bool(self.state.default_music())))
         for c in self.card.values():
             for b in c["grp"].buttons():
                 b.setEnabled(not on)

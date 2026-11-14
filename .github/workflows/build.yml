@@ -95,6 +95,8 @@ jobs:
           Copy-Item luts/*.cube dist/DTME/luts/
           New-Item -ItemType Directory -Force dist/DTME/fonts | Out-Null
           Copy-Item fonts/* dist/DTME/fonts/
+          New-Item -ItemType Directory -Force dist/DTME/music | Out-Null
+          Copy-Item music/* dist/DTME/music/
           Copy-Item assets dist/DTME/ -Recurse -Force
           Copy-Item README.md dist/DTME/사용법.md
           & dist/DTME/bin/ffmpeg.exe -hide_banner -version | Select-Object -First 1
@@ -247,6 +249,12 @@ jobs:
           $o_v1691 = python tests/test_ui_v1691.py v1691_test 2>&1 | Out-String
           Write-Output $o_v1691
           if ($o_v1691 -notmatch "OK test_ui_v1691") { Write-Output "::warning::OK test_ui_v1691 실패(빌드는 계속 — 사용자 11/14 12:40: 되는 부분 먼저 빌드)" }
+          $global:LASTEXITCODE = 0
+          python tests/test_mezz.py mezz_test
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $o_sa = python tests/test_ui_selectall.py selectall_test 2>&1 | Out-String
+          Write-Output $o_sa
+          if ($o_sa -notmatch "OK test_ui_selectall") { exit 1 }
           $global:LASTEXITCODE = 0
           $o_rw = python tests/test_ui_renderwin.py renderwin_test 2>&1 | Out-String
           Write-Output $o_rw

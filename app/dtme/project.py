@@ -638,7 +638,8 @@ def type_count(d: dict, t: float):
         return None
     n = len((d.get("text") or "").replace("\r", "").replace("\n", ""))
     ts = float(d["t0"]) + float(d.get("tdelay", 0.0) or 0.0)
-    k = 0 if t < ts else int((t - ts) / TYPE_SEC + 1e-6) + 1
+    sec = float(d.get("tsec", TYPE_SEC) or TYPE_SEC)
+    k = 0 if t < ts else int((t - ts) / sec + 1e-6) + 1
     return None if k >= n else max(0, k)
 
 
@@ -659,7 +660,7 @@ def type_end(d: dict) -> float:
     if d.get("ain") != TYPE:
         return float(d["t0"])
     n = len((d.get("text") or "").replace("\r", "").replace("\n", ""))
-    return float(d["t0"]) + float(d.get("tdelay", 0.0) or 0.0) + max(0, n - 1) * TYPE_SEC
+    return float(d["t0"]) + float(d.get("tdelay", 0.0) or 0.0) + max(0, n - 1) * float(d.get("tsec", TYPE_SEC) or TYPE_SEC)
 
 
 def title_anim(d: dict, t: float):
@@ -671,9 +672,11 @@ def title_anim(d: dict, t: float):
     ain, aout = d.get("ain", "fade"), d.get("aout", "fade")
     if t < t0 + fd:
         u = max(0.0, min(1.0, (t - t0) / fd))
-        if ain == TYPE and d.get("kind", "text") == "text":
-            return 1.0, None, "", 0.0                 # 타이핑 = 페이드·밀기 없음(글자 수는 type_count)
+        if (ain == TYPE and d.get("kind", "text") == "text") or ain == "cut":
+            return 1.0, None, "", 0.0                 # 타이핑 = 페이드·밀기 없음(글자 수는 type_count) · cut = 바로
         return (u, None, "", 0.0) if ain not in ANIMS[1:] else (1.0, "in", ain, (1 - u) ** 3)
+    if t > t1 - fd and aout == "cut":
+        return 1.0, None, "", 0.0
     if t > t1 - fd:
         u = max(0.0, min(1.0, (t - (t1 - fd)) / fd))
         return (1 - u, None, "", 0.0) if aout not in ANIMS[1:] else (1.0, "out", aout, u ** 3)

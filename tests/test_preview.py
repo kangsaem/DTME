@@ -152,7 +152,7 @@ from dtme.project import NEUTRAL
 g = {**NEUTRAL, "lut": lut_name}
 c = ff.cached_frame_preview(sg, fr, p1)
 png = ff.render_preview(c, ff.preview_grade(g, p1))
-assert png[:4] == b"\x89PNG" and c.size[0] == 1280
+assert png[:4] == b"\x89PNG" and c.size[0] == ff.PREVIEW_LONG
 from dtme.project import set_setting
 set_setting("use_preview", 0)
 assert ff.preview_info(sg, lut_name) is None, "설정 끔"

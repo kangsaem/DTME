@@ -34,12 +34,12 @@ IMG_DISPLAY_MAX = 2048      # 모니터 표시용 이미지 최대 변(렌더는
 # Windows 물리 키(스캔코드) — 한/영 상태와 무관하게 동작
 SCAN = {0x11: "w", 0x32: "m", 0x39: "space", 0x24: "j", 0x26: "l", 0x17: "i", 0x18: "o", 0x1A: "i", 0x1B: "o", 0x1F: "s", 0x22: "g",
         0x30: "b", 0x02: "1", 0x03: "2", 0x04: "3", 0x53: "del", 0x0E: "del", 0x01: "esc",
-        0x4B: "left", 0x4D: "right", 0x50: "down", 0x1C: "enter", 0x2C: "z", 0x15: "y", 0x2E: "c", 0x2F: "v"}
+        0x4B: "left", 0x4D: "right", 0x50: "down", 0x1C: "enter", 0x2C: "z", 0x15: "y", 0x2E: "c", 0x2F: "v", 0x1E: "a"}
 QKEY = {Qt.Key_W: "w", Qt.Key_M: "m", Qt.Key_Space: "space", Qt.Key_J: "j", Qt.Key_L: "l", Qt.Key_I: "i", Qt.Key_O: "o",
         Qt.Key_BracketLeft: "i", Qt.Key_BracketRight: "o", Qt.Key_S: "s", Qt.Key_G: "g", Qt.Key_B: "b",
         Qt.Key_1: "1", Qt.Key_2: "2", Qt.Key_3: "3", Qt.Key_Delete: "del", Qt.Key_Backspace: "del",
         Qt.Key_Escape: "esc", Qt.Key_Left: "left", Qt.Key_Right: "right", Qt.Key_Down: "down",
-        Qt.Key_Return: "enter", Qt.Key_Enter: "enter", Qt.Key_Z: "z", Qt.Key_Y: "y", Qt.Key_C: "c", Qt.Key_V: "v"}
+        Qt.Key_Return: "enter", Qt.Key_Enter: "enter", Qt.Key_Z: "z", Qt.Key_Y: "y", Qt.Key_C: "c", Qt.Key_V: "v", Qt.Key_A: "a"}
 TEXT_INPUTS = (QLineEdit, QAbstractSpinBox, QTextEdit, QPlainTextEdit)
 
 C_INFO, C_OK, C_WARN = "#cfd8e3", "#7fd18b", "#f2c94c"
@@ -480,6 +480,7 @@ class EditTab(QWidget):
         self.timeline.ovFollow.connect(self.toggle_follow)                 # v0.16.67
         self.timeline.logToggled.connect(self._toggle_cut_log)              # v0.16.91
         self.timeline.ovMenu.connect(self._ov_menu)
+        self.timeline.shiftAll.connect(self._shift_all)                     # v0.16.91 전부 고른 채 컷 끌기
         self.timeline.ovDragEnd.connect(self._ov_drag_end)                # v0.16.71 앞 검은 구간
         self.timeline.audioDropped.connect(lambda t: self.mus_list.currentItem() is not None and
                                            self.add_music_at(self.mus_list.currentItem().data(Qt.UserRole), t))
@@ -649,6 +650,9 @@ class EditTab(QWidget):
             if name == "s":
                 self.window().save_project()
                 return True
+            if name == "a":                       # v0.16.91 Ctrl+A = 마지막으로 누른 곳 전부(목록 · 타임라인)
+                self.select_all()
+                return True
             if name == "c" and self.sel_ov[0] == "title":          # v0.16.91 글자·사각형 복사·붙이기
                 self.copy_titles()
                 return True
@@ -656,7 +660,7 @@ class EditTab(QWidget):
                 self.paste_titles()
                 return True
             return False
-        if name in ("z", "y", "c", "v"):
+        if name in ("z", "y", "c", "v", "a"):
             return False
         if e.isAutoRepeat() and name not in ("left", "right"):
             return True
@@ -987,6 +991,7 @@ class EditTab(QWidget):
             return False
         self.pgen += 1
         gen, frame, tok = self.pgen, p.frame, p._token
+        self._mezz_queue(s, [frame, frame + ff._mezz_n(s)], prio=5)     # v0.16.91 멈춘 곳 조각 + 다음 조각(SSD)
         self._prefetch_range(s, frame)
         mode = self.grade.view_mode()
         full = self.state.project.grade_for_source(s.id, frame)
@@ -1096,6 +1101,8 @@ class EditTab(QWidget):
         t_req = time.monotonic()
 
         def work():
+            if gen != self.pgen:                 # v0.16.91 다른 화면을 이미 요청함 = 안 만듦(예전 = 다 만들어서 줄이 밀림)
+                return None
             t0 = time.monotonic()
             c = ff.cached_frame_preview(s, frame, pv)
             t1 = time.monotonic()
@@ -1105,13 +1112,49 @@ class EditTab(QWidget):
             return out, before
 
         def done(data, g=gen, fr=frame, t=tok):
-            if self._full_shown == g:             # 원본이 이미 나옴
+            if data is None or self._full_shown == g:             # 건너뜀 · 원본이 이미 나옴
                 return
             self._on_preview(g, fr, t, data, quick=True)
         job = jobs.Job(work)
         job.signals.done.connect(done)
         job.signals.error.connect(lambda msg: ff.log_error("미리보기(프리뷰)", msg))
         jobs.submit(jobs.PREVIEW_POOL, job, priority=6)
+
+    def _mezz_queue(self, s, frames, prio: int = 0):
+        """v0.16.91 보정용 중간 파일 조각 만들기(뒤에서, 이미 있거나 줄 서 있으면 건너뜀). frames = 원본 프레임들."""
+        if s is None or not s.frames or ff.low_spec() or self.render_panel.running:     # 렌더 중 = 원본 읽기 방해 안 함
+            return
+        from .project import get_setting
+        if str(get_setting("mezz_gb", 10)) in ("0", "0.0"):                     # 설정 '안 씀'
+            return
+        n = ff._mezz_n(s)
+        want = []
+        for f in frames:
+            k = max(0, int(f)) // n
+            if k * n < s.frames and k not in want:
+                want.append(k)
+        q = self.__dict__.setdefault("_mezz_q", set())
+        for k in want:
+            key = (s.id, k)
+            if key in q or ff.mezz_path(s, k).exists():
+                continue
+            q.add(key)
+
+            def work(s=s, k=k, key=key):
+                try:
+                    return ff.mezz_make(s, k)
+                finally:
+                    q.discard(key)
+            jobs.submit(jobs.MEZZ_POOL, jobs.Job(work), priority=prio)
+
+    def _mezz_timeline(self):
+        """타임라인 컷 구간 조각을 먼저(뒤에서)."""
+        p = self.state.project
+        for g in p.segments:
+            s = p.source(g.src)
+            if s is not None and s.frames:
+                n = ff._mezz_n(s)
+                self._mezz_queue(s, range(g.fin, g.fout, n), prio=-1)
 
     def _prefetch_range(self, s, frame):
         """멈춘 곳 앞뒤 1초 원본을 뒤에서 한 번에 디코딩(근처 프레임 보정 화면이 빨라짐). 미리보기보다 낮은 우선순위."""
@@ -1958,6 +2001,35 @@ class EditTab(QWidget):
         elif a is a_fol:
             self.toggle_follow(kind, oid)
 
+    def select_all(self):
+        """Ctrl+A: 소스·사진·음악 목록이면 그 목록 전부, 아니면 타임라인 전부(컷 = 같이 밀기 · 글자·사각형·이미지)."""
+        t = self._del_target
+        lst = {"src": self.src_list, "img": self.img_list, "mus": getattr(self, "mus_list", None)}.get(t)
+        if lst is not None and lst.isVisible():
+            lst.selectAll()
+            return
+        self.timeline.select_all()
+        self._del_target = "ov"
+        self.sel_ov = ("title", next(iter(self.timeline.ov_multi))) if self.timeline.ov_multi else ("", "")
+        self._say(f"타임라인 전부 고름(컷 {len(self.state.project.segments)} · 글자 등 {len(self.timeline.ov_multi)}) — 컷을 끌면 전체가 같이 밀림", C_INFO)
+
+    def _shift_all(self, dt: float):
+        """v0.16.91 전부 고른 채 컷을 끌어 놓음: 앞 검은 구간을 dt 만큼(0 아래로는 안 감) → 컷·글자·음악이 같이 밀림."""
+        p = self.state.project
+        new = max(0.0, float(p.lead) + dt)
+        d = round(new - float(p.lead), 4)
+        if abs(d) < 1e-3:
+            return
+        self.state.checkpoint(label="전체 밀기")
+        p.lead = round(new, 4)
+        for x in p.titles:
+            x["t0"], x["t1"] = round(float(x["t0"]) + d, 4), round(float(x["t1"]) + d, 4)
+        for m in p.music:
+            m["t0"] = round(float(m["t0"]) + d, 4)
+        self.state.touch("segments")
+        self.state.touch("titles")
+        self._say(f"전체 {'뒤로' if d > 0 else '앞으로'} {abs(d):.1f}초 — 앞 검은 구간 {p.lead:.1f}초", C_OK)
+
     def remove_titles(self, ids):
         p = self.state.project
         self.state.checkpoint(label="삭제")
@@ -2053,6 +2125,8 @@ class EditTab(QWidget):
                 self._update_tl_titles(self.tl_time)
 
     def _on_state(self, what):
+        if what in ("segments", "project"):
+            QTimer.singleShot(1500, self._mezz_timeline)          # v0.16.91 타임라인 컷 구간 중간 파일(뒤에서)
         if what in ("segments", "titles", "grade", "undo", "project") and self._tp_cache:   # 바뀌면 만든 전환 영상은 버림
             self._tp_cache.clear()
         if what == "project" and self.state.auto_dive_off():      # v0.16.91 예전 프로젝트도 시간대 차이 자동
@@ -2881,6 +2955,8 @@ class EditTab(QWidget):
             return
         if p.segments and not st.get("replace_ok") and ui_style.confirm(dlg, "타임라인을 바꿀까요?", [("cancel", "취소", 72, None), ("ok", "바꾸기", 80, "red")]) != "ok":
             return
+        if st.get("music") and not p.audios:            # v0.16.91 곡이 없으면 기본 음악(CC0) 을 목록에 넣고 씀
+            self.state.add_default_music()
         auds = [a for a in p.audios if Path(a["path"]).exists()] if st.get("music") else []
         need_auto = [s for s in srcs if st.get("grade") and not (s.auto or {}).get("preset") and is_plain(s)]
         bases = {}
@@ -3109,7 +3185,7 @@ class EditTab(QWidget):
             vend = max(t + ln for _c, t, ln in spans)
             ds = autoedit.period_dives(p.dives, a, b) if st.get("dive") and p.dives else []
             p.titles += autoedit.end_card(ids["end"], vend, autoedit.end_lines(bool(ds), ds, place, period, st.get("end_text", "")))
-        p.end_fade = max(float(p.end_fade or 0.0), autoedit.FADE_OUT_SEC)
+        p.end_fade = 0.0 if "end" in ids else max(float(p.end_fade or 0.0), autoedit.FADE_OUT_SEC)   # v0.16.91 끝 화면 = 페이드 없이 끝(사용자 13:50)
         ff.log_info(f"시작·끝 화면: {list(ids)} · 지명 {place!r} · 기간 {period!r}")
 
     def auto_music(self):

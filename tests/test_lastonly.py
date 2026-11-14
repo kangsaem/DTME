@@ -13,7 +13,7 @@ from dtme.project import Source  # noqa: E402
 
 def old_preview(c, g):
     cwd, lut = ff._lut_for(g)
-    vf = ff.lens_chain(g, *c.size) + ff.grade_chain(g, lut, 1280) + [f"select=gte(n\\,{c.lead})", "format=rgb24"]
+    vf = ff.lens_chain(g, *c.size) + ff.grade_chain(g, lut, c.size[0]) + [f"select=gte(n\\,{c.lead})", "format=rgb24"]
     return ff.run([paths.ffmpeg(), "-v", "error", *c.input_args(), "-filter_complex", ff.graph(vf, "[0:v]", "[po]"),
                    "-map", "[po]", "-frames:v", "1", "-f", "image2pipe", "-c:v", "png", "-"], cwd=cwd, data=c.data)
 

@@ -27,6 +27,11 @@ def lut_dir() -> Path:
     return d
 
 
+def music_dir() -> Path:
+    """v0.16.91 기본 음악(CC0, 프로그램과 같이 배포) — 프로젝트에 곡이 없을 때 자동 편집이 씀."""
+    return app_dir() / "music"
+
+
 def fonts_dir() -> Path:
     d = app_dir() / "fonts"
     d.mkdir(exist_ok=True)
