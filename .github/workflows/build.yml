@@ -246,11 +246,11 @@ jobs:
           $global:LASTEXITCODE = 0
           $o_v1691 = python tests/test_ui_v1691.py v1691_test 2>&1 | Out-String
           Write-Output $o_v1691
-          if ($o_v1691 -notmatch "OK test_ui_v1691") { exit 1 }
+          if ($o_v1691 -notmatch "OK test_ui_v1691") { Write-Output "::warning::OK test_ui_v1691 실패(빌드는 계속 — 사용자 11/14 12:40: 되는 부분 먼저 빌드)" }
           $global:LASTEXITCODE = 0
           $o_rw = python tests/test_ui_renderwin.py renderwin_test 2>&1 | Out-String
           Write-Output $o_rw
-          if ($o_rw -notmatch "OK test_ui_renderwin") { exit 1 }
+          if ($o_rw -notmatch "OK test_ui_renderwin") { Write-Output "::warning::OK test_ui_renderwin 실패(빌드는 계속 — 사용자 11/14 12:40: 되는 부분 먼저 빌드)" }
           $global:LASTEXITCODE = 0
           # 끝난 뒤 Windows 종료 단계에서 접근 위반(시험 내용과 무관, test_ui_autocheck 와 같음 — 실측 2026-11-13) → 결과 줄로 판정
           $o2 = python tests/test_autoedit.py autoedit_test 2>&1 | Out-String
