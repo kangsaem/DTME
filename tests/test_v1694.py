@@ -110,5 +110,5 @@ d.music_on.setChecked(False)
 assert not d.beat_on.isEnabled() and not d.settings()["beat"]
 d.music_on.setChecked(True)
 assert d.beat_on.isEnabled()
-print("OK test_v1694")
+print("OK test_v1694", flush=True)
 os._exit(0)

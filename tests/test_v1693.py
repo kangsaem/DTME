@@ -50,4 +50,5 @@ a = datetime(2026, 10, 27, 9).timestamp()
 s = autoedit.period_text(a, a + 6 * 86400)
 assert "~" in s and "–" not in s, s
 print("기간:", s)
-print("OK test_v1693")
+print("OK test_v1693", flush=True)
+os._exit(0)                # 끝날 때 Qt 정리에서 가끔 비정상 종료(Windows CI) → 바로 끝냄

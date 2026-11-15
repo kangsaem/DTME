@@ -130,10 +130,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
           python tests/test_dive.py dive_test
           if ($LASTEXITCODE -ne 0) { exit 1 }
-          python tests/test_v1693.py
-          if ($LASTEXITCODE -ne 0) { exit 1 }
-          python tests/test_v1694.py
-          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $o_v1693 = python tests/test_v1693.py 2>&1 | Out-String
+          Write-Output $o_v1693
+          if ($o_v1693 -notmatch "OK test_v1693") { exit 1 }
+          $global:LASTEXITCODE = 0
+          $o_v1694 = python tests/test_v1694.py 2>&1 | Out-String
+          Write-Output $o_v1694
+          if ($o_v1694 -notmatch "OK test_v1694") { exit 1 }
+          $global:LASTEXITCODE = 0
           python tests/test_titles.py test4k.mp4 titles_test
           if ($LASTEXITCODE -ne 0) { exit 1 }
           python tests/test_auto.py auto_test
