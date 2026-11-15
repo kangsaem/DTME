@@ -3039,6 +3039,7 @@ class EditTab(QWidget):
             p.music = []
             p.end_fade = float(plan.get("end_fade", 0.0))
             snapped = 0
+            beat_txt = ""
             if auds:
                 items = music_for(plan)
                 p.music = [{**new_music(x["path"], x["t0"], x["dur"]), "off": x["off"], "len": x["len"], "follow": True,
@@ -3046,7 +3047,14 @@ class EditTab(QWidget):
                 p.mix["fout"] = max(4.0, float(p.mix.get("fout", 2.0)))     # v0.16.75 끝 = 4초 동안 줄임
                 self.music_info.update(infos)
                 self.timeline.set_music_info(self.music_info)
-                snapped = autoedit.snap_to_bars(p, infos)
+                if st.get("beat"):                          # v0.16.94 [박자우선] = 모든 경계를 마디 첫 박(안 되면 박)에
+                    bl = autoedit.beat_lock(p, infos)
+                    snapped = bl["bar"] + bl["beat"]
+                    beat_txt = f"박자우선 {bl['bar']}/{len(p.segments) - 1}" + (f" · 박 {bl['beat']}" if bl["beat"] else "") \
+                        + (f" · 못 맞춤 {bl['miss']}" if bl["miss"] else "") + (f" · 박자 흐린 곡 {bl['weak']}" if bl["weak"] else "")
+                    ff.log_info(f"자동 편집 박자우선: {bl}")
+                else:
+                    snapped = autoedit.snap_to_bars(p, infos)
                 tot = max((t + ln for _c, t, ln in cut_spans(p)), default=0.0) + (autoedit.END_SEC if has_end else 0.0)
                 if p.music:                                  # 마지막 곡 = 영상 끝에서 자름(끝 화면 포함)
                     last = max(p.music, key=lambda m: float(m["t0"]))
@@ -3064,7 +3072,7 @@ class EditTab(QWidget):
             dtxt = (f" · 클립 {len(dropped)}개 뺌(" + ", ".join(f"{lab} {nd[k]}" for k, lab in (("blur", "흐림"), ("shake", "흔들림"), ("time", "길이"))
                                                          if nd[k]) + ")") if dropped else ""
             self._say(f"자동 편집: 컷 {len(p.segments)}개 · {int(tot // 60)}분 {int(tot % 60):02d}초"
-                      + (f" · 음악 {len(p.music)}곡(마디 맞춤 {snapped})" if auds else "") + dtxt, C_OK)
+                      + (f" · 음악 {len(p.music)}곡(" + (beat_txt or f"마디 맞춤 {snapped}") + ")" if auds else "") + dtxt, C_OK)
             if dropped:
                 ff.log_info(f"자동 편집 클립 뺌: {dropped}")
             ff.log_info(f"자동 편집: {st} → 컷 {[(Path(p.source(g.src).path).name, g.fin, g.fout) for g in p.segments]} · "

@@ -559,6 +559,89 @@ def snap_to_bars(project, music_info: dict, tol_bar: float = 0.5) -> int:
     return moved
 
 
+BEAT_CONF = 0.3                     # 리듬 신뢰도 — 이보다 낮은 곡은 박자에 안 맞춤
+
+
+def _beat_ok(inf) -> bool:
+    return bool(inf) and float(inf.get("conf", 0)) >= BEAT_CONF and len(inf.get("bars") or []) >= 2
+
+
+def beat_lock(project, music_info: dict) -> dict:
+    """v0.16.94 [박자우선](사용자 11/15): 컷 경계(전환 가운데)를 그 자리 곡의 마디 첫 박에 — 반 마디 제한 없이 가장 가까운 것.
+    ① 첫 컷 시작(시작 화면 끝) = 첫 곡의 마디 첫 박(곡 시작 위치를 반 마디 안에서 옮김)
+    ② 경계마다 앞 컷 길이를 늘리거나 줄임 → 컷 길이 = 마디 단위. 원본 끝에 막히면 앞 컷 컷인을 앞으로.
+       길이 제한: 5~60초 · LOG 다이빙 컷 15초 이상(→ 15초 넘는 가장 가까운 마디 배수).
+    ③ 맞는 마디 첫 박이 없으면 가장 가까운 박.
+    → {"bar": 마디 첫 박에 맞춘 경계, "beat": 박에 맞춘 경계, "miss": 못 맞춘 경계, "weak": 리듬이 흐려 안 맞춘 곡 수}"""
+    from .music import beats_on_timeline
+    from .project import cut_spans, follow_anchors, follow_apply
+    p = project
+    out = {"bar": 0, "beat": 0, "miss": 0,
+           "weak": len({m["path"] for m in p.music if not _beat_ok(music_info.get(m["path"]))})}
+    lead = float(getattr(p, "lead", 0.0) or 0.0)
+    if p.segments and p.music:                          # ① 첫 컷 시작
+        spans = cut_spans(p)
+        T0 = spans[0][1] if spans else lead
+        m = min(p.music, key=lambda x: float(x["t0"]))
+        inf = music_info.get(m["path"])
+        t0 = float(m["t0"])
+        if _beat_ok(inf) and t0 <= T0 + 1e-6 and T0 - t0 > 0.02:
+            o = float(m.get("off", 0.0))
+            want = o + (T0 - t0)                         # T0 자리의 곡 안 시각
+            bars = [b for b in inf["bars"] if b - (T0 - t0) >= 0]
+            if bars:
+                b = min(bars, key=lambda x: abs(x - want))
+                no = b - (T0 - t0)
+                if abs(no - o) > 0.005:
+                    m["off"] = round(no, 3)
+                    dur = float(m.get("dur", inf.get("dur", 0)) or 0)
+                    if dur:
+                        m["len"] = round(max(0.2, min(float(m["len"]), dur - no)), 3)
+    for i in range(1, len(p.segments)):                  # ② 경계마다
+        spans = cut_spans(p)
+        if i >= len(spans):
+            break
+        _cid, t, _ln = spans[i]
+        d = float((p.segments[i].trans or {}).get("dur", 0) or 0) if p.segments[i].trans else 0.0
+        T = t + d / 2
+        g = p.segments[i - 1]
+        s = p.source(g.src)
+        fps = float(s.fps)
+        cur = (g.fout - g.fin) / fps
+        lo = DIVE_MIN if dive_src(p, s) else CUT_MIN
+        lo = min(lo, cur)
+        hi = max(cur, min(CUT_MAX, s.frames / fps))
+        bars, beats = [], []
+        for m in p.music:
+            inf = music_info.get(m["path"])
+            if not _beat_ok(inf) or not (float(m["t0"]) - 0.01 <= T <= float(m["t0"]) + float(m["len"]) + 0.01):
+                continue
+            bars += beats_on_timeline(m, inf, bars=True)
+            beats += beats_on_timeline(m, inf)
+        best, kind = None, ""
+        for pts, k in ((bars, "bar"), (beats, "beat")):
+            ok = [b for b in pts if lo - 1e-6 <= cur + (b - T) <= hi + 1e-6]
+            if ok:
+                best, kind = min(ok, key=lambda b: abs(b - T)), k
+                break
+        if best is None:
+            if bars or beats:
+                out["miss"] += 1
+            continue
+        out[kind] += 1
+        nfr = max(1, int(round((cur + best - T) * fps)))
+        if nfr == g.fout - g.fin:
+            continue
+        anc = follow_anchors(p)
+        fout = g.fin + nfr
+        if fout > s.frames:                              # 원본 끝 → 컷인을 앞으로
+            g.fin, g.fout = max(0, s.frames - nfr), s.frames
+        else:
+            g.fout = fout
+        follow_apply(p, anc)
+    return out
+
+
 # ------------------------------------------------------------------ v0.16.92 시작·끝 화면(자동 편집, 사용자 11/14 16:14)
 # 영상 장면·스틸 안 씀 = 흰 화면 + 남색 글자.
 # 시작(lead = START_SEC): 0~0.5 흰 화면 → 0.5~2.5 타이핑 → 그대로 → 3.5~6.0 흰 화면 + 글자 같이 검게(2.5초) → 첫 컷 = 검정에서 1초 페이드 인.

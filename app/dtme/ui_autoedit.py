@@ -145,6 +145,9 @@ class AutoEditDialog(DragMove, QDialog):
         self.music_on = QCheckBox("음악 자동" + (f" (기본 음악 {n_def}곡)" if n_def else ""))   # 켜면 컷을 마디에 맞추는 것까지
         self.music_on.setChecked(bool(user_auds) or bool(n_def))
         self.music_on.setEnabled(bool(user_auds) or bool(n_def))
+        self.beat_on = QCheckBox("박자우선")                 # v0.16.94 컷 경계 = 마디 첫 박(컷 길이 마디 단위) · 올린 곡 있으면 기본 켬(사용자 11:46)
+        self.beat_on.setChecked(bool(user_auds))
+        self.music_on.toggled.connect(lambda _v: self._beat_enable())
         self.mix_default = QCheckBox(f"기본 음악도 같이 쓰기 ({n_all}곡)")   # 올린 곡이 있을 때만 · 기본 끔(사용자 14:44)
         self.mix_default.setChecked(False)
         self._mix_ok = bool(user_auds) and bool(n_all)
@@ -169,8 +172,15 @@ class AutoEditDialog(DragMove, QDialog):
         right.setContentsMargins(9, 4, 9, 9)
         right.addLayout(labeled("전체 길이", len_row))
         right.addWidget(line())
-        for cb in (self.title_on, self.music_on, self.mix_default, self.dive_on, self.save_on if full else self.grade_on):
-            right.addLayout(labeled("", cb))
+        for cb in (self.title_on, self.music_on, self.beat_on, self.mix_default, self.dive_on, self.save_on if full else self.grade_on):
+            if cb is self.beat_on:                          # 음악 자동 아래 들여씀
+                ind = QHBoxLayout()
+                ind.setContentsMargins(24, 0, 0, 0)
+                ind.addWidget(cb, 1)
+                right.addLayout(labeled("", ind))
+            else:
+                right.addLayout(labeled("", cb))
+        self._beat_enable()
         right.addWidget(line())
         # v0.16.92 시작·끝 화면 [켬 | 없음](흰 화면 + 글자, 스틸 없음) · 지명 · 끝 문구
         self.card = {}
@@ -321,9 +331,12 @@ class AutoEditDialog(DragMove, QDialog):
         self.sum.setText(f"{len(ids)}개 · 원본 {int(sec // 60)}분 {int(sec % 60):02d}초 → {want // 60}분{tip}")
         self._end_hint()
 
+    def _beat_enable(self):
+        self.beat_on.setEnabled(self.music_on.isEnabled() and self.music_on.isChecked())
+
     def settings(self) -> dict:
         return {"sids": self.chosen(), "minutes": int(self.length.value()), "title": self.title_on.isChecked(),
-                "music": self.music_on.isChecked(), "mix_default": self._mix_ok and self.mix_default.isChecked(), "grade": self.grade_on.isChecked() and not self.full,
+                "music": self.music_on.isChecked(), "beat": self.music_on.isChecked() and self.beat_on.isChecked(), "mix_default": self._mix_ok and self.mix_default.isChecked(), "grade": self.grade_on.isChecked() and not self.full,
                 "save": self.full and self.save_on.isChecked(),
                 "dive": self.dive_on.isChecked() and bool(self.state.project.dives),
                 "start": self.card["start"]["mode"], "end": self.card["end"]["mode"],
@@ -358,7 +371,9 @@ class AutoEditDialog(DragMove, QDialog):
         for c in self.card.values():
             for b in c["grp"].buttons():
                 b.setEnabled(not on)
+        self._beat_enable()
         if on:
+            self.beat_on.setEnabled(False)
             self.set_progress(0.0, "")
         else:
             self._job = None
