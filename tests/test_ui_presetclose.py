@@ -67,4 +67,4 @@ assert gp._pdlg is None and not d.isVisible() and not gp.preset.isChecked(), "�
 QTest.mouseClick(gp.preset, Qt.LeftButton); wait(0.3); d = gp._pdlg; assert d is not None and d.isVisible() and d.pending is None
 d.grab().save(os.path.join(d0, "preset.png")); print("그림:", os.path.join(d0, "preset.png"))
 QTest.mouseClick(gp.preset, Qt.LeftButton); wait(0.3); assert gp._pdlg is None, "프리셋 버튼 = 닫힘"
-print("OK preset popup"); os._exit(0)
+print("OK preset popup", flush=True); os._exit(0)

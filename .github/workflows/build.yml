@@ -196,8 +196,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
           python tests/test_insta.py insta_test
           if ($LASTEXITCODE -ne 0) { exit 1 }
-          python tests/test_ui_presetclose.py
-          if ($LASTEXITCODE -ne 0) { exit 1 }
+          python -X faulthandler tests/test_ui_presetclose.py
+          if ($LASTEXITCODE -ne 0) { Write-Output "test_ui_presetclose 종료 코드 $LASTEXITCODE"; exit 1 }
           python tests/test_ui_rendercancel.py rendercancel_test
           if ($LASTEXITCODE -ne 0) { exit 1 }
           python tests/test_ui_v1655.py v1655_test
