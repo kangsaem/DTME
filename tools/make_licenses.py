@@ -36,6 +36,10 @@ def ffmpeg_info(exe: Path) -> tuple[str, str, str]:
 
 
 def main(dist: str, ffdir: str, texts: str = "") -> int:
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")      # Windows 콘솔(cp1252) = 한글 출력 실패 방지
+    except Exception:  # noqa: BLE001
+        pass
     dist_p, ff_p = Path(dist), Path(ffdir)
     out = dist_p / "LICENSES"
     if out.exists():
