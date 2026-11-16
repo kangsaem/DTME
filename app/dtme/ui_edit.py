@@ -3110,19 +3110,24 @@ class EditTab(QWidget):
         if not cards or not spans:
             return
         seg_of = {g.id: g for g in p.segments}
-        g0, g1 = seg_of[spans[0][0]], seg_of[spans[-1][0]]
-        a = autoedit.cut_when(p.source(g0.src), g0)
-        b = autoedit.cut_when(p.source(g1.src), g1)
-        if b is not None:
-            b += spans[-1][2]
-        place = st.get("place") or autoedit.place_of(p.dives, a, b)
-        period = autoedit.period_text(a, b)
+        cs = []                                        # v0.16.95 컷마다 촬영 (처음, 끝) → 여행(7일+ 간격)별 지명·기간
+        for cid, _t, ln in spans:
+            g = seg_of[cid]
+            w = autoedit.cut_when(p.source(g.src), g)
+            if w is not None:
+                cs.append((w, w + ln))
+        trips = autoedit.trips_of(cs)
+        place = st.get("place") or autoedit.trips_place(p.dives, trips)
+        period = autoedit.trips_period(trips)
+        s0 = p.source(seg_of[spans[0][0]].src)
+        ow, oh = ff.out_size(p.out_of(s0)) if s0 is not None else (1920, 1080)
+        wh = (1080, 1920) if ow < oh else (1920, 1080)
         if "start" in cards:
-            p.titles += autoedit.start_card(place, period, p.lead)
+            p.titles += autoedit.start_card(place, period, p.lead, wh)
         if "end" in cards:
             vend = max(t + ln for _c, t, ln in spans)
-            ds = autoedit.period_dives(p.dives, a, b) if st.get("dive") and p.dives else []
-            p.titles += autoedit.end_card(vend, autoedit.end_lines(bool(ds), ds, place, period, st.get("end_text", "")))
+            ds = autoedit.trips_dives(p.dives, trips) if st.get("dive") and p.dives else []
+            p.titles += autoedit.end_card(vend, autoedit.end_lines(bool(ds), ds, place, period, st.get("end_text", "")), wh)
         p.end_fade = 0.0 if "end" in cards else max(float(p.end_fade or 0.0), autoedit.FADE_OUT_SEC)   # 끝 화면 = 페이드 없이 끝
         ff.log_info(f"시작·끝 화면: {sorted(cards)} · 지명 {place!r} · 기간 {period!r}")
 

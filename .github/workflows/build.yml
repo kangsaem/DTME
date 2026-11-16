@@ -42,22 +42,27 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ffmpeg.zip
-          key: ffmpeg-zip-none
-          restore-keys: ffmpeg-zip-
+          key: ffmpeg-rel-zip-none
+          restore-keys: ffmpeg-rel-zip-
 
       # 정상 = 새로 받아 캐시 바꿈 / 장애(504 등) = 캐시로 바로 (v0.16.22, 사용자 확정)
-      - name: Add FFmpeg (BtbN GPL build, NVENC/CUDA 포함)
+      # v0.16.95 정식 릴리스판으로 고정(사용자 11/15): 개발판(master) 대신 BtbN 릴리스 가지(n8.1 → n8.0 → n7.1 중 있는 것)
+      - name: Add FFmpeg (BtbN GPL release build, NVENC/CUDA 포함)
         id: ffdl
         shell: pwsh
         run: |
-          $url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
+          $base = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest"
+          $cands = @("ffmpeg-n8.1-latest-win64-gpl-8.1.zip", "ffmpeg-n8.0-latest-win64-gpl-8.0.zip", "ffmpeg-n7.1-latest-win64-gpl-7.1.zip")
           $cached = Test-Path ffmpeg.zip
           $oldHash = if ($cached) { (Get-FileHash ffmpeg.zip).Hash } else { "" }
           $ok = $false
           $tries = if ($cached) { 2 } else { 3 }                 # 캐시 있으면 짧게 시도하고 넘어감
           for ($i = 1; $i -le $tries -and -not $ok; $i++) {
-            try { Invoke-WebRequest $url -OutFile ffmpeg_new.zip -TimeoutSec 300; $ok = $true }
-            catch { Write-Host "ffmpeg latest 다운로드 실패 ${i}/${tries}: $_"; if ($i -lt $tries) { Start-Sleep -Seconds 10 } }
+            foreach ($c in $cands) {
+              try { Invoke-WebRequest "$base/$c" -OutFile ffmpeg_new.zip -TimeoutSec 300; $ok = $true; Write-Host "ffmpeg 정식판: $c"; break }
+              catch { Write-Host "없음/실패 $c (${i}/${tries}): $($_.Exception.Message)" }
+            }
+            if (-not $ok -and $i -lt $tries) { Start-Sleep -Seconds 10 }
           }
           if (-not $ok -and -not $cached) {                      # 캐시도 없을 때만: 날짜 붙은 릴리스 → gyan.dev
             $h = @{ Authorization = "Bearer ${{ github.token }}" }
@@ -65,7 +70,7 @@ jobs:
               $rels = Invoke-RestMethod "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases?per_page=6" -Headers $h
               foreach ($r in $rels) {
                 if ($r.tag_name -eq "latest") { continue }
-                $a = $r.assets | Where-Object { $_.name -match '^ffmpeg-N-.*-win64-gpl\.zip$' } | Select-Object -First 1
+                $a = $r.assets | Where-Object { $_.name -match '^ffmpeg-n[0-9.]+-.*-win64-gpl-[0-9.]+\.zip$' } | Select-Object -First 1
                 if (-not $a) { continue }
                 try { Write-Host "대신 $($r.tag_name)"; Invoke-WebRequest $a.browser_download_url -OutFile ffmpeg_new.zip -TimeoutSec 300; $ok = $true; break }
                 catch { Write-Host "실패 $($r.tag_name): $_" }
@@ -100,13 +105,20 @@ jobs:
           Copy-Item assets dist/DTME/ -Recurse -Force
           Copy-Item README.md dist/DTME/사용법.md
           & dist/DTME/bin/ffmpeg.exe -hide_banner -version | Select-Object -First 1
+          # v0.16.95 LICENSES 폴더(ffmpeg GPL · Qt LGPL · numpy · Python + 안내문, ffmpeg 버전 자동 기록)
+          New-Item -ItemType Directory -Force lic_texts | Out-Null
+          foreach ($n in @("lgpl-3.0.txt", "gpl-3.0.txt")) {
+            try { Invoke-WebRequest "https://www.gnu.org/licenses/$n" -OutFile "lic_texts/$n" -TimeoutSec 60 } catch { Write-Host "라이선스 글 받기 실패 ${n}: $_" }
+          }
+          python tools/make_licenses.py dist/DTME ffmpeg_x lic_texts
+          if ($LASTEXITCODE -ne 0) { throw "LICENSES 만들기 실패" }
 
       - name: FFmpeg 캐시 바꾸기(새로 받았을 때만)
         if: steps.ffdl.outputs.fresh == 'true'
         uses: actions/cache/save@v4
         with:
           path: ffmpeg.zip
-          key: ffmpeg-zip-${{ github.run_id }}
+          key: ffmpeg-rel-zip-${{ github.run_id }}
 
       - name: Smoke test (engine)
         shell: pwsh
@@ -137,6 +149,10 @@ jobs:
           $o_v1694 = python tests/test_v1694.py 2>&1 | Out-String
           Write-Output $o_v1694
           if ($o_v1694 -notmatch "OK test_v1694") { exit 1 }
+          $global:LASTEXITCODE = 0
+          $o_v1695 = python tests/test_v1695.py 2>&1 | Out-String
+          Write-Output $o_v1695
+          if ($o_v1695 -notmatch "OK test_v1695") { exit 1 }
           $global:LASTEXITCODE = 0
           python tests/test_titles.py test4k.mp4 titles_test
           if ($LASTEXITCODE -ne 0) { exit 1 }

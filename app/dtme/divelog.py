@@ -219,6 +219,15 @@ def memo_loc(memo: str) -> str:
     return ", ".join(parts[-2:])
 
 
+def memo_city(memo: str) -> str:
+    """v0.16.95 '위치:' 줄의 앞 부분(시·군 — '미야코지마시, 오키나와현, 일본' → '미야코지마시'). 두 부분 이하면 ''."""
+    m = _LOC.search(memo or "")
+    if not m:
+        return ""
+    parts = [x.strip() for x in re.split(r"[,，]", m.group(1)) if x.strip()]
+    return parts[-3] if len(parts) >= 3 else ""
+
+
 def dtmd_dives(obj, name: str = "") -> list:
     """DTMD logbook.json(백업) → 다이빙. FIT·UDDF·JSON 에서 온 다이빙만(손으로 그린 로그 = 뺌).
     입수 시각 = 그날 첫 입수(시:분) + 앞 다이빙 길이 + 수면 휴식(분) (DTMD rowsOf 와 같음)."""
@@ -261,8 +270,9 @@ def dtmd_dives(obj, name: str = "") -> list:
             pts, t0 = _trim(pts)                                 # 입수 전 수면 구간 = 뺌(FIT 과 같게), 입수 시각도 그만큼
             start += t0
             loc = memo_loc(memo) or memo_loc(x.get("memo") or "")
+            city = memo_city(memo) if memo_loc(memo) else memo_city(x.get("memo") or "")
             out.append({"id": f"dtmd{int(start)}", "src": "dtmd", "name": name, "start": float(start),
-                        **({"loc": loc} if loc else {}),
+                        **({"loc": loc} if loc else {}), **({"city": city} if city else {}),
                         **({"utc": utc + t0} if utc is not None else {}),
                         "sec": isinstance(d.get("sec0"), (int, float)),
                         "pts": [[round(t, 1), round(max(0.0, dd), 2)] for t, dd in pts],
@@ -317,9 +327,10 @@ def merge(old: list, new: list) -> list:
             out.append(d)
         elif (d["src"] == "fit" and out[hit]["src"] != "fit") or (d.get("utc") is not None and out[hit].get("utc") is None):
             loc = d.get("loc") or out[hit].get("loc")
-            out[hit] = {**d, **({"loc": loc} if loc else {})}   # FIT 우선 · UTC 있는 쪽 우선(같은 DTMD 백업을 새로 받으면 새 것)
-        elif d.get("loc") and not out[hit].get("loc"):
-            out[hit] = {**out[hit], "loc": d["loc"]}      # v0.16.91 지명은 DTMD 메모에만 → 남은 쪽에 붙임
+            city = d.get("city") or (out[hit].get("city") if not d.get("loc") or d.get("loc") == out[hit].get("loc") else "")
+            out[hit] = {**d, **({"loc": loc} if loc else {}), **({"city": city} if city else {})}   # FIT 우선 · UTC 있는 쪽 우선
+        elif d.get("loc") and (not out[hit].get("loc") or (d.get("city") and not out[hit].get("city"))):
+            out[hit] = {**out[hit], "loc": d["loc"], **({"city": d["city"]} if d.get("city") else {})}   # v0.16.91 지명 = DTMD 메모에만 · v0.16.95 시도
     return sorted(out, key=lambda d: d["start"])
 
 

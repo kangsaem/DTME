@@ -274,29 +274,30 @@ class AutoEditDialog(DragMove, QDialog):
             x.setChecked(x.property("key") == c["mode"])
         self._end_hint()
 
-    def _span(self):
-        """고른 소스 촬영 기간(현지 초) (처음, 끝) — 이름·파일 시각."""
+    def _trips(self):
+        """고른 소스 촬영 구간 → 여행(7일+ 간격) [(처음, 끝)] — v0.16.95."""
+        from . import autoedit
         from .dive_draw import shot_time
         p = self.state.project
         ids = set(self.chosen())
-        ts = []
+        cs = []
         for s in p.sources:
             if s.id in ids:
                 t = shot_time(s)
                 if t is not None:
-                    ts += [t, t + (s.frames / float(s.fps) if s.frames and s.fps else 0.0)]
-        return (min(ts), max(ts)) if ts else (None, None)
+                    cs.append((t, t + (s.frames / float(s.fps) if s.frames and s.fps else 0.0)))
+        return autoedit.trips_of(cs)
 
     def _end_hint(self):
-        """지명(직접 안 고쳤으면 다이빙 메모 '위치:' 에서) · 끝 문구 자리 글(자동 문구)."""
+        """지명(직접 안 고쳤으면 다이빙 메모 '위치:' 에서, 여행별) · 끝 문구 자리 글(자동 문구)."""
         from . import autoedit
         p = self.state.project
-        a, b = self._span()
+        trips = self._trips()
         if getattr(self, "_place_auto", True) and hasattr(self, "place"):
-            self.place.setText(autoedit.place_of(p.dives, a, b))
+            self.place.setText(autoedit.trips_place(p.dives, trips))
         if hasattr(self, "end_text"):
-            ds = autoedit.period_dives(p.dives, a, b) if self.dive_on.isChecked() else []
-            ls = autoedit.end_lines(bool(ds), ds, self.place.text().strip(), autoedit.period_text(a, b))
+            ds = autoedit.trips_dives(p.dives, trips) if self.dive_on.isChecked() else []
+            ls = autoedit.end_lines(bool(ds), ds, self.place.text().strip(), autoedit.trips_period(trips))
             if self._end_auto:
                 self.end_text.setText(" / ".join(x[0] for x in ls))
 

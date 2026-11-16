@@ -331,15 +331,21 @@ def build(project, picks: list[dict], minutes: int, seed: int = 0, titles: bool 
         seg_of = {g.id: g for g in segs}
         dives = list(getattr(project, "dives", []) or []) if getattr(project, "dive_on", True) else []
         last_shown = None
+        prev_when = None
         for cid, s in firsts:
             g = seg_of[cid]
             when = cut_when(s, g)
+            new_trip = when is not None and prev_when is not None and when - prev_when >= TRIP_GAP     # v0.16.95 다른 여행(7일+)
+            prev_when = when if when is not None else prev_when
             if dives:                                  # v0.16.84 수심 그래프가 들어가는 컷 = 날짜·시간 사각형 안 넣음(좌상단에 날짜·시각)
                 from . import dive_draw
                 if getattr(g, "log", True) and dive_draw.cut_dive(dives, s, g, getattr(project, "dive_off", 0.0)):
-                    last_shown = when if when is not None else last_shown
-                    continue
-            if date_mode == "gap" and last_shown is not None and when is not None and when - last_shown <= DATE_GAP:
+                    if new_trip:
+                        g.log = False                  # v0.16.95 새 여행 첫 컷 = 그 컷만 LOG 끄고 날짜 바(사용자 11/16 a)
+                    else:
+                        last_shown = when if when is not None else last_shown
+                        continue
+            if date_mode == "gap" and not new_trip and last_shown is not None and when is not None and when - last_shown <= DATE_GAP:
                 continue
             t0 = start.get(cid, 0.0) + tdur.get(cid, 0.0) + TITLE_DELAY     # v0.16.72 디졸브 끝나고 1초 뒤(사용자)
             if when is not None:
@@ -398,6 +404,7 @@ DB_LEFT, DB_RIGHT, DB_PADY = 84, 56, 18         # 왼쪽 여백(화면 왼쪽 �
 DB_YEAR_DX, DB_GAP = 3, 20                      # 연도 = 날짜보다 약간 오른쪽 · 날짜 ↔ 시각 사이
 DB_CY = 0.64                                    # 바 가운데 = 화면 높이 64% + 아래로 DB_DOWN 바 높이
 DB_DOWN = 2.0
+DB_V_TOP = 0.92                                 # v0.16.95 세로 영상: 사각형 위 = 화면 높이 92%(맨 아래, LOG 그래프 아래 · 사용자 11/15)
 DB_TYPE0 = 0.5                                  # 바가 들어온 뒤 타이핑 시작(초)
 
 
@@ -422,7 +429,8 @@ def _metrics(t: dict) -> tuple[float, float, float, float]:
         return fm.horizontalAdvance(t["text"]), fm.lineSpacing(), fm.ascent(), fm.tightBoundingRect("0123456789").height()
     except Exception:  # noqa: BLE001
         z = float(t.get("size", 64))
-        return len(t["text"]) * z * 0.56, z * 1.2, z * 0.93, z * 0.72
+        w = sum(z * (1.0 if ord(c) >= 0x2E80 else 0.56) for c in t["text"])     # 한글·한자 = 넓게
+        return w, z * 1.2, z * 0.93, z * 0.72
 
 
 def date_bar(when: float, t0: float, out_wh: tuple[int, int] = (1920, 1080)) -> list[dict]:
@@ -441,8 +449,11 @@ def date_bar(when: float, t0: float, out_wh: tuple[int, int] = (1920, 1080)) -> 
         tx.update(font=DB_FONT, size=size, bold=bold, bg="none", ain="type", aout="left", follow=True, auto_edit=True, datebar=True)
         items.append((tx,) + _metrics(tx))
     (ty, wy, ly, ay, hy), (td, wd, ld, ad, hd), (tt, wt, lt, at, ht) = items
-    B = DB_CY * H / k + (ht + 2 * DB_PADY) / 2 - DB_PADY            # 시각 기준선(1080 기준) — 바 가운데가 DB_CY
-    B += DB_DOWN * (ht + 2 * DB_PADY)                                # v0.16.91 사용자 11:05: 바 높이 2배만큼 아래로
+    if H > W:                                                        # v0.16.95 세로 = 맨 아래
+        B = DB_V_TOP * H / k + DB_PADY + ht
+    else:
+        B = DB_CY * H / k + (ht + 2 * DB_PADY) / 2 - DB_PADY        # 시각 기준선(1080 기준) — 바 가운데가 DB_CY
+        B += DB_DOWN * (ht + 2 * DB_PADY)                            # v0.16.91 사용자 11:05: 바 높이 2배만큼 아래로
     top = B - ht                                                     # 시각 숫자 위 = 연도 숫자 위
     place = [(ty, wy, ly, ay, DB_LEFT + DB_YEAR_DX, top + hy),       # (글자, 폭, 줄높이, 기준선까지, 왼쪽, 기준선)
              (td, wd, ld, ad, DB_LEFT, B),
@@ -646,9 +657,11 @@ def beat_lock(project, music_info: dict) -> dict:
 # 영상 장면·스틸 안 씀 = 흰 화면 + 남색 글자.
 # 시작(lead = START_SEC): 0~0.5 흰 화면 → 0.5~2.5 타이핑 → 그대로 → 3.5~6.0 흰 화면 + 글자 같이 검게(2.5초) → 첫 컷 = 검정에서 1초 페이드 인.
 # 끝: 마지막 컷 끝 1초 전부터 흰색으로 → 흰 화면 2초 뒤 글자 1초 디졸브 인 → 5초 뒤 끝(페이드 없음). 영상 뒤 END_SEC 초.
-START_SEC = 6.0
-TYPE_DELAY, TYPE_TOTAL = 0.5, 2.0   # 시작 글자 = 0.5초부터 2초에 다 침
-START_DARK = 2.5                    # 시작 화면 끝 2.5초 = 흰 화면·글자 같이 검게
+START_SEC = 5.0                     # v0.16.95 6 → 5초(사용자 11/15): 글자 그대로 3초 + 어두워짐 2초
+TYPE_DELAY, TYPE_TOTAL = 0.5, 2.0   # (끝 화면 등 타이핑을 쓸 때)
+START_DARK = 2.0                    # 시작 화면 끝 2초 = 흰 화면·글자 같이 검게
+START_PLACE, START_PERIOD = 100, 50  # v0.16.95 지명 · 기간 글자(1080 기준, 지금 76 · 40 → 미리보기 그림에서도 읽히게)
+CARD_FIT = 0.85                     # 글자 줄 폭 = 화면 폭의 85% 넘으면 줄임
 WHITE_SEC = 1.0                     # 끝: 마지막 컷 → 흰색(1초)
 END_TEXT_AT, END_TEXT_FADE, END_HOLD = 2.0, 1.0, 5.0
 END_SEC = END_TEXT_AT + END_TEXT_FADE + END_HOLD     # 8초
@@ -693,16 +706,35 @@ def card_texts(lines: list[tuple[str, int, bool]], t0: float, t1: float, which: 
     return out
 
 
-def start_card(place: str, period: str, lead: float = START_SEC) -> list[dict]:
-    """시작 화면: [흰 사각형, 글자…] — 0초에 바로 흰 화면 · 타이핑 · 끝 2.5초 = 같이 검게(검은 바탕으로 페이드 아웃)."""
+def fit_lines(lines: list[tuple[str, int, bool]], out_wh: tuple[int, int] = (1920, 1080),
+              frac: float = CARD_FIT) -> list[tuple[str, int, bool]]:
+    """v0.16.95 줄 폭이 화면 폭의 frac 를 넘으면 그 줄 글자를 줄임(세로 영상·긴 지명)."""
+    W, H = out_wh
+    k = min(W, H) / 1080
+    out = []
+    for text, size, bold in lines:
+        if text:
+            tx = new_text(0.0, 1.0, text)
+            tx.update(font=card_font(text), size=size, bold=True)
+            w = _metrics(tx)[0] * k
+            if w > frac * W:
+                size = max(12, int(size * frac * W / w))
+        out.append((text, size, bold))
+    return out
+
+
+def start_card(place: str, period: str, lead: float = START_SEC, out_wh: tuple[int, int] = (1920, 1080)) -> list[dict]:
+    """시작 화면: [흰 사각형, 글자…] — v0.16.95 0초부터 글자 다 보임(타이핑 없음 = 첫 프레임이 PC·카톡 미리보기) ·
+    끝 2초 = 같이 검게(검은 바탕으로 페이드 아웃)."""
+    lines = fit_lines([(place, START_PLACE, True), (period, START_PERIOD, True)], out_wh)
     return [_white(0.0, lead, "start", START_DARK, "cut", "fade")] + \
-        card_texts([(place, 76, True), (period, 40, True)], 0.0, lead, "start", True, START_DARK, "cut", "fade")
+        card_texts(lines, 0.0, lead, "start", False, START_DARK, "cut", "fade")
 
 
-def end_card(video_end: float, lines: list[tuple[str, int, bool]]) -> list[dict]:
+def end_card(video_end: float, lines: list[tuple[str, int, bool]], out_wh: tuple[int, int] = (1920, 1080)) -> list[dict]:
     """끝 화면: [흰 사각형(영상 끝 1초 전부터 페이드 인, 끝까지), 글자…(+2초부터 1초 디졸브)] · 페이드 아웃 없음."""
     return [_white(video_end - WHITE_SEC, video_end + END_SEC, "end", WHITE_SEC, "fade", "cut")] + \
-        card_texts(lines, video_end + END_TEXT_AT, video_end + END_SEC, "end", False, END_TEXT_FADE, "fade", "cut")
+        card_texts(fit_lines(lines, out_wh), video_end + END_TEXT_AT, video_end + END_SEC, "end", False, END_TEXT_FADE, "fade", "cut")
 
 
 def _ymd(t: float):
@@ -736,6 +768,63 @@ def place_of(dives: list, a: float | None, b: float | None) -> str:
     from collections import Counter
     locs = [d.get("loc") for d in period_dives(dives, a, b) if d.get("loc")]
     return Counter(locs).most_common(1)[0][0] if locs else ""
+
+
+TRIP_GAP = 7 * 86400.0              # v0.16.95 촬영 간격 7일 이상 = 다른 여행(사용자 11/15)
+
+
+def trips_of(spans: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """(처음, 끝) 촬영 구간들 → 여행 [(처음, 끝)] — 앞 여행 끝에서 7일 이상 비면 새 여행."""
+    out: list[list[float]] = []
+    for a, b in sorted((x, y if y is not None else x) for x, y in spans if x is not None):
+        if out and a - out[-1][1] < TRIP_GAP:
+            out[-1][1] = max(out[-1][1], b)
+        else:
+            out.append([a, b])
+    return [(a, b) for a, b in out]
+
+
+def trips_dives(dives: list, trips: list[tuple[float, float]]) -> list:
+    """여행 기간들의 다이빙(여행 사이 다이빙은 뺌)."""
+    seen, out = set(), []
+    for a, b in trips:
+        for d in period_dives(dives, a, b):
+            if id(d) not in seen:
+                seen.add(id(d))
+                out.append(d)
+    return out
+
+
+def trips_place(dives: list, trips: list[tuple[float, float]]) -> str:
+    """v0.16.95 여행마다 가장 많은 지명 → 이어 붙임('보홀주, 필리핀 · 오키나와현, 일본').
+    지명(뒤 두 부분)이 같은 여행이 둘 이상이면 시·군을 붙임('미야코지마시 · 이시가키시, 오키나와현, 일본', 사용자 11/16)."""
+    from collections import Counter
+    per = []
+    for a, b in trips:
+        ds = [d for d in period_dives(dives, a, b) if d.get("loc")]
+        if not ds:
+            continue
+        loc = Counter(d["loc"] for d in ds).most_common(1)[0][0]
+        cs = [d.get("city") for d in ds if d.get("loc") == loc and d.get("city")]
+        per.append((loc, Counter(cs).most_common(1)[0][0] if cs else ""))
+    order: list[str] = []
+    for loc, _c in per:
+        if loc not in order:
+            order.append(loc)
+    parts = []
+    for loc in order:
+        cities = []
+        for l2, c in per:
+            if l2 == loc and c and c not in cities:
+                cities.append(c)
+        n = sum(1 for l2, _c in per if l2 == loc)
+        parts.append(f"{' · '.join(cities)}, {loc}" if n > 1 and len(cities) > 1 else loc)
+    return " · ".join(parts)
+
+
+def trips_period(trips: list[tuple[float, float]]) -> str:
+    """여행마다 기간 → ' · ' 로 이어 붙임."""
+    return " · ".join(x for x in (period_text(a, b) for a, b in trips) if x)
 
 
 def dive_line(dives: list) -> str:
