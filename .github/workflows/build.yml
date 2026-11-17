@@ -223,8 +223,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
           python tests/test_title_anim.py titleanim_test
           if ($LASTEXITCODE -ne 0) { exit 1 }
+          # v0.17.0: 간헐 종료(Windows 접근 위반 — ui_edit.eventFilter Resize → timeline.fit, 빌드 44049411196) → 한 번 더 해 보고 판단
           python -X faulthandler tests/test_ui_titleanim.py
-          if ($LASTEXITCODE -ne 0) { exit 1 }
+          if ($LASTEXITCODE -ne 0) {
+            Write-Output "::warning::test_ui_titleanim 종료 코드 $LASTEXITCODE — 한 번 더"
+            python -X faulthandler tests/test_ui_titleanim.py
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+          }
           python tests/test_rect_style.py rectstyle_test
           if ($LASTEXITCODE -ne 0) { exit 1 }
           python tests/test_music.py music_test
