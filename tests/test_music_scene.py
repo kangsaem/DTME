@@ -26,16 +26,13 @@ for f, i in infos.items():
 assert music.is_bright(infos[bright]) and not music.is_bright(infos[epic]) and not music.is_bright(infos[calm])
 auds = [{"path": f, "dur": infos[f]["dur"]} for f in (bright, calm, epic)]
 runs = [(0.0, 12.0, "surface"), (12.0, 40.0, "calm"), (40.0, 70.0, "grand"), (70.0, 90.0, "calm")]
-items = music.plan_runs(auds, infos, runs, 2.0, targets=autoedit.RUN_TARGET)
-at = lambda tt: next(os.path.basename(x["path"]) for x in items if x["t0"] <= tt < x["t0"] + x["len"])   # noqa: E731
+items = music.plan_whole(auds, infos, 90.0, 2.0, runs=runs, targets=autoedit.RUN_TARGET)   # v0.16.96 한 곡 = 처음~끝 한 번
 print([(os.path.basename(x["path"]), x["t0"], x["len"]) for x in items])
-assert at(5) == os.path.basename(calm), "v0.16.75 시작 = 잔잔(예전 v0.16.73 = 물 밖 발랄)"
-assert at(55) == os.path.basename(epic), "블루워터 = 웅장"
-assert at(85) == os.path.basename(calm), "끝 = 잔잔"
-assert all(os.path.basename(x["path"]) != os.path.basename(bright) for x in items), "발랄한 곡 안 씀(v0.16.75)"
+assert os.path.basename(items[0]["path"]) == os.path.basename(calm), "시작 = 잔잔한 곡 먼저"
+assert len({x["path"] for x in items}) == len(items), "곡마다 한 번(되풀이 없음)"
 # 직접 정함(노래)이 추정보다 먼저
 auds2 = [dict(a, kind="vocal") if a["path"] == epic else a for a in auds]
-items2 = music.plan_runs(auds2, infos, [(0.0, 30.0, "grand")], 2.0, targets=autoedit.RUN_TARGET)
+items2 = music.plan_whole(auds2, infos, 30.0, 2.0, runs=[(0.0, 30.0, "grand")], targets=autoedit.RUN_TARGET)
 print("웅장 곡을 노래로 표시:", [os.path.basename(x["path"]) for x in items2])
 # 컷 길이 = 마디 단위
 for f in (bright, calm):

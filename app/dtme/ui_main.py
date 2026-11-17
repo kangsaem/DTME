@@ -99,6 +99,10 @@ class MainWindow(QMainWindow):
         self._rtext = text
         self._title()
         taskbar.set_progress(self, frac, bad)
+        rw = getattr(self, "_rwin", None)             # v0.16.97 렌더 작업 창(편집 창은 숨김) = 그 창의 아이콘·제목에도
+        if rw is not None:                            #   → 내려놓아도 작업 표시줄 아이콘 막대 + 제목 '렌더 45%'
+            taskbar.set_progress(rw, frac, bad)
+            rw.setWindowTitle(f"DTME — 렌더 {text}" if text else self.windowTitle())
 
     def _render_finished(self, ok: int, bad: int, sec: float, folder: str):
         from . import taskbar
@@ -108,6 +112,7 @@ class MainWindow(QMainWindow):
         taskbar.clear(self)
         rw = getattr(self, "_rwin", None)
         if rw is not None:                            # v0.16.91 렌더 작업 창 닫고 편집 창으로
+            taskbar.clear(rw)
             self._rwin = None
             rw.finish()
         if not self.isVisible():                      # 시작 창 [보정+렌더](편집 화면 숨김) = 시작 창이 팝업

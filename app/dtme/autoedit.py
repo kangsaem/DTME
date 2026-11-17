@@ -250,7 +250,7 @@ def dive_src(project, src) -> bool:
     from . import dive_draw
     if not src.frames or not src.fps:
         return False
-    return dive_draw.match(project.dives, src, src.frames / float(src.fps) / 2, getattr(project, "dive_off", 0.0)) is not None
+    return dive_draw.match(project.dives, src, src.frames / float(src.fps) / 2, project.off_of(src)) is not None
 
 
 def dive_lens(lens: list, dur: float) -> list:
@@ -339,7 +339,7 @@ def build(project, picks: list[dict], minutes: int, seed: int = 0, titles: bool 
             prev_when = when if when is not None else prev_when
             if dives:                                  # v0.16.84 수심 그래프가 들어가는 컷 = 날짜·시간 사각형 안 넣음(좌상단에 날짜·시각)
                 from . import dive_draw
-                if getattr(g, "log", True) and dive_draw.cut_dive(dives, s, g, getattr(project, "dive_off", 0.0)):
+                if getattr(g, "log", True) and dive_draw.cut_dive(dives, s, g, project.off_of(s)):
                     if new_trip:
                         g.log = False                  # v0.16.95 새 여행 첫 컷 = 그 컷만 LOG 끄고 날짜 바(사용자 11/16 a)
                     else:
@@ -664,12 +664,12 @@ def beat_lock(project, music_info: dict) -> dict:
 # 시작(lead = START_SEC): 0~0.5 흰 화면 → 0.5~2.5 타이핑 → 그대로 → 3.5~6.0 흰 화면 + 글자 같이 검게(2.5초) → 첫 컷 = 검정에서 1초 페이드 인.
 # 끝: 마지막 컷 끝 1초 전부터 흰색으로 → 흰 화면 2초 뒤 글자 1초 디졸브 인 → 5초 뒤 끝(페이드 없음). 영상 뒤 END_SEC 초.
 START_SEC = 5.0                     # v0.16.95 6 → 5초(사용자 11/15): 글자 그대로 3초 + 어두워짐 2초
-TYPE_DELAY, TYPE_TOTAL = 0.5, 2.0   # (끝 화면 등 타이핑을 쓸 때)
 START_DARK = 2.0                    # 시작 화면 끝 2초 = 흰 화면·글자 같이 검게
 START_PLACE, START_PERIOD = 160, 80  # v0.16.96 지명 · 기간 글자(1080 기준, 사용자 11/16: 카톡 재생 버튼 너머로도 읽히게)
 START_PERIOD_CY = 0.80              # 기간 = 화면 높이 80%(재생 버튼·길이 표시에 안 가림) · 지명 = 가운데 그대로
 END_TAG = "See You Underwater"      # v0.16.96 끝 화면 맨 아래 한 줄(직접 쓴 문구 없을 때, LOG 있든 없든 · 'DTME' 줄 뺌)
-END_TAG_COLOR, END_TAG_SIZE, END_TAG_CY = "#4FB3E8", 28, 0.93
+END_TAG_COLOR, END_TAG_SIZE, END_TAG_CY = "#4FB3E8", 84, 0.88      # v0.16.97 28 → 84(3배, 사용자 11/17) · 높이 88%
+PLACE_MIN, PLACE_LINES = 100, 3     # v0.16.97 지명이 한 줄에 이 크기 아래로 줄면 줄바꿈(구분 기호에서, 3줄까지) · 기간 = 지명의 절반 크기
 CARD_FIT = 0.85                     # 글자 줄 폭 = 화면 폭의 85% 넘으면 줄임
 WHITE_SEC = 1.0                     # 끝: 마지막 컷 → 흰색(1초)
 END_TEXT_AT, END_TEXT_FADE, END_HOLD = 2.0, 1.0, 5.0
@@ -697,27 +697,17 @@ def _card_text(text: str, size: int, cy: float, t0: float, t1: float, which: str
     return tx
 
 
-def card_texts(lines: list[tuple[str, int, bool]], t0: float, t1: float, which: str, typing: bool,
-               fade: float, ain: str, aout: str) -> list[dict]:
-    """글자 줄(남색, 가운데). typing = 차례로 한 글자씩(t0 + TYPE_DELAY 부터 전부 TYPE_TOTAL 초 안에)."""
+def card_texts(lines: list[tuple[str, int, bool]], t0: float, t1: float, which: str,
+               fade: float, ain: str, aout: str, out_wh: tuple[int, int] = (1920, 1080)) -> list[dict]:
+    """글자 줄(남색, 가운데 묶음). (v0.16.97 타이핑 방식 뺌 — v0.16.95 부터 안 씀)"""
     out = []
     lines = [x for x in lines if x[0]]
     gap = 0.075
-    hs = [sz / 1080 * 1.25 for _t, sz, _b in lines]
+    W_, H_ = out_wh
+    hs = [sz * (min(W_, H_) / 1080) / H_ * 1.25 for _t, sz, _b in lines]     # v0.16.97 줄 높이 = 실제 화면 높이 기준(세로 = 덜 벌어짐)
     y = 0.5 - (sum(hs) + gap * (len(lines) - 1) * 0.5) / 2
-    n = max(1, sum(len(t) for t, _s, _b in lines))
-    sec = TYPE_TOTAL / n
-    d = TYPE_DELAY
     for (text, size, _bold), h in zip(lines, hs):
-        tx = new_text(t0, t1, text)
-        tx.update(font=card_font(text), size=size, bold=True, color=CARD_COLOR, bg="none", aout=aout, fade=fade,
-                  cx=0.5, cy=round(y + h / 2, 4), auto_edit=True, card=which)
-        if typing:
-            tx.update(ain="type", tdelay=round(d, 3), tsec=round(sec, 4))
-            d += len(text) * sec
-        else:
-            tx.update(ain=ain)
-        out.append(tx)
+        out.append(_card_text(text, size, y + h / 2, t0, t1, which, fade, ain, aout))
         y += h + gap * 0.5
     return out
 
@@ -739,14 +729,56 @@ def fit_lines(lines: list[tuple[str, int, bool]], out_wh: tuple[int, int] = (192
     return out
 
 
+def _split_place(text: str) -> tuple[list[str], list[str]]:
+    """지명을 구분 기호(' · ' · ', ')에서 조각으로 → (조각들, 조각 사이 기호들)."""
+    import re as _re
+    parts = _re.split(r"( · |, )", text)
+    return parts[0::2], parts[1::2]
+
+
+def wrap_place(text: str, out_wh: tuple[int, int] = (1920, 1080), size: int = START_PLACE,
+               min_size: int = PLACE_MIN, max_lines: int = PLACE_LINES) -> tuple[list[str], int]:
+    """v0.16.97 긴 지명 줄바꿈(사용자 11/17): 한 줄로 폭 85%에 맞춘 크기가 min_size 아래면 구분 기호에서 2줄, 그래도 아래면 3줄.
+    줄 나누기 = 가장 넓은 줄이 가장 좁게 되는 자리(줄 끝 기호는 뺌). → (줄들, 글자 크기 — 모든 줄 같은 크기)."""
+    from itertools import combinations
+    toks, seps = _split_place(text)
+
+    def rows_for(cuts):
+        rows, a = [], 0
+        for c in list(cuts) + [len(toks)]:
+            r = toks[a]
+            for i in range(a + 1, c):
+                r += seps[i - 1] + toks[i]
+            rows.append(r)
+            a = c
+        return rows
+
+    def fitted(rows):
+        return min(sz for _t, sz, _b in fit_lines([(r, size, True) for r in rows], out_wh))
+    best = ([text], fitted([text]))
+    for n in range(2, max_lines + 1):
+        if best[1] >= min_size or n > len(toks):
+            break
+        cand = max((rows_for(c) for c in combinations(range(1, len(toks)), n - 1)), key=fitted)
+        if fitted(cand) > best[1]:
+            best = (cand, fitted(cand))
+    return best
+
+
 def start_card(place: str, period: str, lead: float = START_SEC, out_wh: tuple[int, int] = (1920, 1080)) -> list[dict]:
     """시작 화면: [흰 사각형, 글자…] — v0.16.95 0초부터 글자 다 보임(타이핑 없음 = 첫 프레임이 PC·카톡 미리보기) ·
     끝 2초 = 같이 검게(검은 바탕으로 페이드 아웃)."""
-    lines = fit_lines([(place, START_PLACE, True), (period, START_PERIOD, True)], out_wh)
+    W, H = out_wh
     out = [_white(0.0, lead, "start", START_DARK, "cut", "fade")]
-    for (text, size, _b), cy in zip(lines, (0.5, START_PERIOD_CY)):       # v0.16.96 지명 = 가운데 · 기간 = 높이 80%
-        if text:
-            out.append(_card_text(text, size, cy, 0.0, lead, "start", START_DARK, "cut", "fade"))
+    rows, size = wrap_place(place, out_wh) if place else ([], START_PLACE)
+    lh = size * 1.25 * (min(W, H) / 1080) / H                              # 줄 높이(화면 높이 비율)
+    y = 0.5 - lh * (len(rows) - 1) / 2                                     # v0.16.96 지명 = 가운데(여러 줄 = 묶음의 가운데)
+    for text in rows:
+        out.append(_card_text(text, size, y, 0.0, lead, "start", START_DARK, "cut", "fade"))
+        y += lh
+    if period:                                                             # 기간 = 높이 80% · v0.16.97 크기 = 지명의 절반
+        (_t, psz, _b), = fit_lines([(period, max(12, size // 2) if place else START_PERIOD, True)], out_wh)
+        out.append(_card_text(period, psz, START_PERIOD_CY, 0.0, lead, "start", START_DARK, "cut", "fade"))
     return out
 
 
@@ -756,7 +788,7 @@ def end_card(video_end: float, lines: list[tuple[str, int, bool]], out_wh: tuple
     tag = 맨 아래 하늘색 'See You Underwater' 한 줄(가운데 글자와 같이 디졸브 인)."""
     t0, t1 = video_end + END_TEXT_AT, video_end + END_SEC
     out = [_white(video_end - WHITE_SEC, video_end + END_SEC, "end", WHITE_SEC, "fade", "cut")] + \
-        card_texts(fit_lines(lines, out_wh), t0, t1, "end", False, END_TEXT_FADE, "fade", "cut")
+        card_texts(fit_lines(lines, out_wh), t0, t1, "end", END_TEXT_FADE, "fade", "cut", out_wh)
     if tag:
         (text, size, _b), = fit_lines([(END_TAG, END_TAG_SIZE, True)], out_wh)
         tx = _card_text(text, size, END_TAG_CY, t0, t1, "end", END_TEXT_FADE, "fade", "cut")
@@ -789,13 +821,6 @@ def period_dives(dives: list, a: float | None, b: float | None) -> list:
     d1 = (b if b is not None else a)
     d1 = d1 - (d1 % 86400) + 86400
     return [d for d in dives if d0 <= float(d["start"]) < d1]
-
-
-def place_of(dives: list, a: float | None, b: float | None) -> str:
-    """그 기간 다이빙 메모 '위치:' 중 가장 많은 것(같으면 먼저 나온 것)."""
-    from collections import Counter
-    locs = [d.get("loc") for d in period_dives(dives, a, b) if d.get("loc")]
-    return Counter(locs).most_common(1)[0][0] if locs else ""
 
 
 TRIP_GAP = 7 * 86400.0              # v0.16.95 촬영 간격 7일 이상 = 다른 여행(사용자 11/15)

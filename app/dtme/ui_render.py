@@ -740,7 +740,7 @@ class RenderPanel(QWidget):
         if dvi.get("on") and p.dives:                  # v0.16.84 수심 그래프(타임라인 항목만)
             from . import dive_draw
             dive_draw.ensure_fonts()                   # 글꼴 등록 = 화면 스레드에서
-            extras["dive"] = {"dives": list(p.dives), "off": float(dvi.get("off", 0.0))}
+            extras["dive"] = {"dives": list(p.dives), "off": float(dvi.get("off", 0.0)), "offs": dict(dvi.get("offs") or {})}
 
         self.stage[it.id] = "대기"
 

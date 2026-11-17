@@ -420,11 +420,23 @@ class EditTab(QWidget):
         from PySide6.QtWidgets import QSpinBox
         self.b_dive = _btn("LOG 전체", "다이빙 로그(수심 그래프) — 다이빙 컷 전부 켜기/끄기 · 컷마다 = 타임라인 컷 가운데 LOG 칩", self._toggle_dive)
         self.b_dive.setFixedWidth(84)
-        self.dive_off = QSpinBox()
-        self.dive_off.setRange(-7200, 7200)
+        class OffSpin(QSpinBox):                           # v0.16.97 Shift+방향키·휠 = 10초씩 · '—'(값이 서로 다름)에서 누르면 0 에서 시작
+            def stepBy(self, n):
+                from PySide6.QtWidgets import QApplication as _QA
+                if _QA.keyboardModifiers() & Qt.ShiftModifier:
+                    n *= 10
+                if self.value() == self.minimum():
+                    self.setValue(n)
+                else:
+                    super().stepBy(n)
+        self.dive_off = OffSpin()
+        self.dive_off.setRange(-7201, 7200)                # -7201 = 고른 클립들의 값이 서로 다름('—')
+        self.dive_off.setSpecialValueText("LOG 시각 —")
         self.dive_off.setSuffix("초")
         self.dive_off.setPrefix("LOG 시각 ")
-        self.dive_off.setToolTip("시각 맞춤: 카메라 시계가 다이빙 컴퓨터보다 늦으면 +, 빠르면 −")
+        self.dive_off.setToolTip("시각 맞춤(카메라 시계 오차): 카메라 시계가 다이빙 컴퓨터보다 늦으면 +, 빠르면 −\n"
+                                 "고른 컷의 클립에만 적용 · 전부 고름(Ctrl+A) = 모든 클립 · 고른 컷 없음 = 기본값(따로 안 정한 클립)\n"
+                                 "방향키 = 1초 · Shift+방향키 = 10초")
         self.dive_off.setFocusPolicy(Qt.ClickFocus)
         self.dive_off.setFixedWidth(124)
         self.dive_off.valueChanged.connect(self._dive_off_changed)
@@ -1465,7 +1477,8 @@ class EditTab(QWidget):
         it = self._new_item([p.snap_seg(g.copy()) for g in p.segments], tl=True)      # 보정값·◆·꺼 둔 항목 = 보내는 순간 값
         it.titles, it.music, it.mix = copy.deepcopy(p.titles), copy.deepcopy(p.music), dict(p.mix)
         it.lead = p.lead
-        it.dive = {"on": bool(p.dive_on and p.dives), "off": float(p.dive_off)}
+        it.dive = {"on": bool(p.dive_on and p.dives), "off": float(p.dive_off),
+                   "offs": {s.id: float(s.dive_off) for s in p.sources if s.dive_off is not None}}     # v0.16.97 클립마다
         it.end_fade = float(getattr(p, "end_fade", 0.0) or 0.0)
         p.render_items.append(it)
         self.state.touch("render")
@@ -1905,9 +1918,9 @@ class EditTab(QWidget):
             src = p.source(g.src)
             if src is None:
                 continue
-            key = (g.src, g.fin, g.fout, round(p.dive_off, 2), len(p.dives), g.why)
+            key = (g.src, g.fin, g.fout, round(p.off_of(src), 2), len(p.dives), g.why)
             if key not in cache:
-                cache[key] = dive_draw.cut_dive(p.dives, src, g, p.dive_off) is not None
+                cache[key] = dive_draw.cut_dive(p.dives, src, g, p.off_of(src)) is not None
             if cache[key]:
                 out[g.id] = bool(p.dive_on and g.log)
         self._cut_dive_cache = cache if len(cache) < 4000 else {}
@@ -1974,6 +1987,7 @@ class EditTab(QWidget):
             return
         self.timeline.select_all()
         self._del_target = "ov"
+        self._sync_dive_off()
         tl = self.timeline
         self.sel_ov = ("title", next(iter(tl.ov_multi))) if tl.ov_multi else ("music", next(iter(tl.mus_multi))) if tl.mus_multi else ("", "")
         self._say(f"타임라인 전부 고름(컷 {len(self.state.project.segments)} · 글자 등 {len(tl.ov_multi)} · 음악 {len(tl.mus_multi)})"
@@ -2053,10 +2067,7 @@ class EditTab(QWidget):
         part = p.dive_on and st and not all(st.values()) and any(st.values())
         ui_style.tone(self.b_dive, "key_on" if p.dive_on and not part else "")
         self.b_dive.setStyleSheet("QPushButton{border:1px solid #d9b24a;}" if part else "")   # 일부만 켬 = 테두리만 노랑
-        self.dive_off.blockSignals(True)
-        self.dive_off.setValue(int(round(p.dive_off)))
-        self.dive_off.blockSignals(False)
-        self._dive_off_tone()
+        self._sync_dive_off()
         if has:
             from . import divelog as DL
             lines = [f"{DL.fmt_date(d['start'])} {DL.fmt_hm(d['start'])} · {d['max']}m · {int(DL.dur(d) // 60)}분 · "
@@ -2083,15 +2094,50 @@ class EditTab(QWidget):
         """v0.16.91 LOG 시각 0초 = 회색 글자(맞춤 안 함)."""
         self.dive_off.setStyleSheet("QSpinBox{color:#7a7a7a;}" if self.dive_off.value() == 0 else "")
 
+    def _dive_targets(self):
+        """v0.16.97 LOG 시각 칸이 가리키는 클립: 타임라인 전부 고름 = 컷에 쓰인 모든 클립 · 고른 컷 = 그 컷의 클립 ·
+        고른 컷 없음 = None(프로젝트 기본값)."""
+        p = self.state.project
+        if getattr(self.timeline, "all_cuts", False) and p.segments:
+            ids = {g.src for g in p.segments}
+            return [s for s in p.sources if s.id in ids]
+        g = next((x for x in p.segments if x.id == self.sel_cut), None) if self.sel_cut else None
+        s = p.source(g.src) if g is not None else None
+        return [s] if s is not None else None
+
+    def _sync_dive_off(self):
+        """칸에 지금 대상의 값 표시(대상 클립들의 값이 서로 다르면 '—')."""
+        p = self.state.project
+        tg = self._dive_targets()
+        vals = {int(round(p.off_of(s))) for s in tg} if tg else {int(round(p.dive_off))}
+        self.dive_off.blockSignals(True)
+        self.dive_off.setValue(vals.pop() if len(vals) == 1 else self.dive_off.minimum())
+        self.dive_off.blockSignals(False)
+        self._dive_off_tone()
+
     def _dive_off_changed(self, v):
         self._dive_off_tone()
+        if v == self.dive_off.minimum():
+            return
         p = self.state.project
-        if abs(p.dive_off - v) > 0.01:
+        tg = self._dive_targets()
+        if tg is None:
+            if abs(p.dive_off - v) <= 0.01:
+                return
             self.state.checkpoint(tag="dive_off")
             p.dive_off = float(v)
-            self.state.dirty = True
-            if self.mode == "timeline":
-                self._update_tl_titles(self.tl_time)
+        else:
+            if all(abs(p.off_of(s) - v) <= 0.01 for s in tg):
+                return
+            self.state.checkpoint(tag="dive_off")
+            ids = {s.id for s in tg}
+            for s in self.state.project.sources:             # (checkpoint 뒤 = 새 객체일 수 있음)
+                if s.id in ids:
+                    s.dive_off = float(v)
+        self.state.dirty = True
+        if self.mode == "timeline":
+            self._refresh_timeline()                         # LOG 칩(다이빙 컷인지)도 다시
+            self._update_tl_titles(self.tl_time)
 
     def _on_state(self, what):
         if what in ("segments", "titles", "grade", "undo", "project") and self._tp_cache:   # 바뀌면 만든 전환 영상은 버림
@@ -2537,9 +2583,9 @@ class EditTab(QWidget):
         if src is None:
             return None
         from . import dive_draw
-        if not getattr(seg, "log", True) or dive_draw.cut_dive(p.dives, src, seg, p.dive_off) is None:   # 컷 LOG 끔 · 입출수 = 안 보임
+        if not getattr(seg, "log", True) or dive_draw.cut_dive(p.dives, src, seg, p.off_of(src)) is None:   # 컷 LOG 끔 · 입출수 = 안 보임
             return None
-        s = dive_draw.match(p.dives, src, seg.fin / float(src.fps) + (t - st) * float(seg.speed or 1.0), p.dive_off)
+        s = dive_draw.match(p.dives, src, seg.fin / float(src.fps) + (t - st) * float(seg.speed or 1.0), p.off_of(src))
         if not s:
             return None
         w = s[2]
@@ -2953,6 +2999,12 @@ class EditTab(QWidget):
                 k[0] += 1
                 prog(min(0.99, k[0] / max(1, n_steps)))
                 dlg_text[0] = txt
+            import time as _tm
+            tm = [_tm.monotonic()]
+
+            def lap():
+                tm.append(_tm.monotonic())
+                return tm[-1] - tm[-2]
             res = {}
             for i, s in enumerate(need_auto):
                 if cancel.is_set():
@@ -2960,6 +3012,7 @@ class EditTab(QWidget):
                 dlg_text[0] = f"AUTO {i + 1}/{len(need_auto)}"
                 res[s.id] = auto.analyze_source(s, bases[s.id], cancel=cancel)
                 step(f"AUTO {i + 1}/{len(need_auto)}")
+            t_auto = lap()
             picks = []
             for s in srcs:
                 if cancel.is_set():
@@ -2977,9 +3030,13 @@ class EditTab(QWidget):
                     sc, qual = None, {}
                 picks.append({"src": s, "scene": scene, "score": sc, "surface": sf, **qual})
                 step(f"하이라이트 {len(picks)}/{len(srcs)}")
+            t_scan = lap()
             infos = {a["path"]: music.get(a["path"]) for a in auds}
             if auds:
                 step("음악")
+            # v0.16.97 느린 곳 측정(로그): 단계별 걸린 시간
+            ff.log_info(f"자동 편집 시간(준비): AUTO {len(need_auto)}개 {t_auto:.1f}초 · 화면 읽기 {len(srcs)}개 {t_scan:.1f}초 · "
+                        f"음악 분석 {len(auds)}곡 {lap():.1f}초")
             return res, picks, infos, (set(cards_on) if picks else set())
         # v0.16.92 시작·끝 화면 = 흰 화면 + 글자(스틸 없음) · 켬 = 'auto'(예전 'pick' 도 켬)
         cards_on = {k for k in ("start", "end") if st.get(k, "none") in ("auto", "pick", "on")}
@@ -2993,6 +3050,8 @@ class EditTab(QWidget):
             res, picks, infos, cards = r
             if not dlg.isVisible():
                 return
+            import time as _tm
+            t_put = _tm.monotonic()
             p = self.state.project
             self.state.checkpoint(label="자동 편집")
             for sid, rr in res.items():                     # AUTO 넣기(AUTO 창 [보정+편집]과 같은 값)
@@ -3010,7 +3069,7 @@ class EditTab(QWidget):
                 p.dive_on = bool(st.get("dive"))
             self.state.auto_dive_off()                     # v0.16.91 시간대 차이(LOG 시각 0일 때만)
             picks, dropped = autoedit.trim_picks(p, picks, st["minutes"])     # v0.16.91 클립이 너무 많음 = 흐림·흔들림 먼저 뺌
-            has_start, has_end = "start" in cards, "end" in cards       # v0.16.91 시작·끝 화면
+            has_start = "start" in cards                                 # v0.16.91 시작·끝 화면
             p.lead = autoedit.START_SEC if has_start else 0.0
             dm = "gap" if st.get("full") else "clip"
             plan = autoedit.build(p, picks, st["minutes"], seed=seed, titles=st.get("title", True), date_mode=dm, first_fade=True)
@@ -3087,6 +3146,7 @@ class EditTab(QWidget):
                                                          if nd[k]) + ")") if dropped else ""
             self._say(f"자동 편집: 컷 {len(p.segments)}개 · {int(tot // 60)}분 {int(tot % 60):02d}초"
                       + (f" · 음악 {len(p.music)}곡(" + (beat_txt or f"마디 맞춤 {snapped}") + ")" if auds else "") + dtxt, C_OK)
+            ff.log_info(f"자동 편집 시간(넣기 — 화면이 멈추는 구간): {_tm.monotonic() - t_put:.1f}초 · 컷 {len(p.segments)}개")
             if dropped:
                 ff.log_info(f"자동 편집 클립 뺌: {dropped}")
             ff.log_info(f"자동 편집: {st} → 컷 {[(Path(p.source(g.src).path).name, g.fin, g.fout) for g in p.segments]} · "
@@ -3765,6 +3825,8 @@ class EditTab(QWidget):
         self.tl_len.setText(f"{tot:.1f}초" if items else "")
         QTimer.singleShot(0, self._fit_zoom if self._tl_fit else self._keep_tl_visible)
         self._scan_loud()
+        if hasattr(self, "dive_off"):                        # v0.16.97 LOG 시각 칸 = 고른 컷의 클립 값
+            self._sync_dive_off()
 
     # ---------------------------------------------------------------- 컷 원본 소리(v0.16.66): 말소리·수면 위 = 키움
     def _loud_map(self):

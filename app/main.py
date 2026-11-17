@@ -8,8 +8,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from PySide6.QtGui import QColor, QPalette  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from dtme.ui_main import MainWindow  # noqa: E402
-
 
 def dark(app: QApplication):
     from dtme import ui_style
@@ -78,13 +76,69 @@ def hw_check():
     threading.Thread(target=work, name="hw", daemon=True).start()
 
 
+def show_front():
+    """v0.16.97 두 번째 실행이 오면: 지금 보이는 창(확인 창 먼저)을 맨 앞으로 — 내려놓았으면 다시 띄움."""
+    from PySide6.QtCore import Qt
+    w = QApplication.activeModalWidget()
+    if w is None:
+        tops = [x for x in QApplication.topLevelWidgets() if x.isVisible() and not (x.windowFlags() & Qt.ToolTip == Qt.ToolTip)]
+        w = QApplication.activeWindow() or next((x for x in tops if x.isMinimized()), None) or (tops[-1] if tops else None)
+    if w is None:
+        return
+    if w.isMinimized():
+        w.showNormal()
+    w.raise_()
+    w.activateWindow()
+    try:
+        from dtme import taskbar
+        taskbar.flash(w)                     # Windows 가 앞으로 못 올리게 막으면 아이콘 깜빡임
+    except Exception:  # noqa: BLE001
+        pass
+
+
+WATCH_STEP_MS, WATCH_MISS = 1500, 4      # 보이는 창이 6초(1.5초 × 4번) 동안 하나도 없으면 종료(MOSCO 와 같음)
+
+
+def watch_windows(app):
+    """v0.16.97 안전장치: 창 없이 살아남은 프로세스가 '하나만 실행' 잠금을 쥐고 있지 않게.
+    보이는 최상위 창(내려놓은 창 포함)이 WATCH_MISS 번 연속 없으면 app.quit()."""
+    from PySide6.QtCore import QTimer
+    miss = [0]
+
+    def tick():
+        vis = any(x.isVisible() for x in QApplication.topLevelWidgets())
+        miss[0] = 0 if vis else miss[0] + 1
+        if miss[0] >= WATCH_MISS:
+            try:
+                from dtme import ff
+                ff.log_info("보이는 창이 없음 → 종료")
+            except Exception:  # noqa: BLE001
+                pass
+            app.quit()
+    t = QTimer(app)
+    t.timeout.connect(tick)
+    t.start(WATCH_STEP_MS)
+    return t
+
+
+def is_test_run() -> bool:
+    return bool(os.environ.get("DTME_SELFTEST")) or os.environ.get("QT_QPA_PLATFORM") == "offscreen"
+
+
 def main():
-    purge_frame_cache()
-    crash_log()
     # Qt 멀티미디어는 FFmpeg 백엔드 사용(Windows 기본)
     os.environ.setdefault("QT_MEDIA_BACKEND", "ffmpeg")
     app = QApplication(sys.argv)
     app.setApplicationName("DTME")
+    # v0.16.97 하나만 실행(MOSCO 와 같은 single.py): 무거운 import 전에. 이미 떠 있으면 그 창이 앞으로 오고 이 실행은 끝.
+    from dtme import single
+    if not single.acquire("DTME", skip=is_test_run()):
+        os._exit(0)
+    single.serve("DTME", show_front, app)
+    if single.owner() or is_test_run():      # 잠금 없이 켜진 경우(답 없는 옛 프로세스) = 그 프로세스의 파일을 지우지 않음
+        purge_frame_cache()
+    crash_log()
+    from dtme.ui_main import MainWindow
     try:                                   # 창·작업 표시줄 아이콘(v0.16.52, exe 파일 아이콘은 빌드 --icon)
         from PySide6.QtGui import QIcon
         from dtme import paths as _paths
@@ -118,7 +172,10 @@ def main():
         QTimer.singleShot(2000, lambda: app.exit(0 if n > 0 else 3))
     if args:
         w.edit.import_files(args)
+    if not is_test_run():
+        app._watch = watch_windows(app)
     code = app.exec()
+    single.release()
     sys.exit(finish(code))
 
 

@@ -32,7 +32,7 @@ assert [(x["size"], x["cy"]) for x in tx] == [(160, 0.5), (80, 0.8)], [(x["size"
 assert all(x["t0"] == 0.0 and x["ain"] == "cut" and x["aout"] == "fade" for x in tx)
 assert [x["cy"] for x in A.start_card("", "2025.10.20") if x["kind"] == "text"] == [0.8]      # 지명 없음 = 기간만(자리 그대로)
 sv = [x for x in A.start_card("미야코지마시 · 이시가키시, 오키나와현, 일본", "2025.10.20 ~ 2026.03.23", 5.0, (1080, 1920)) if x["kind"] == "text"]
-assert sv[0]["size"] < 160 and sv[0]["cy"] == 0.5 and sv[1]["cy"] == 0.8               # 세로 = 폭 85% 로 줄임, 자리 같음
+assert len(sv) == 4 and sv[0]["size"] < 160 and abs(sv[1]["cy"] - 0.5) < 1e-6 and sv[-1]["cy"] == 0.8   # v0.16.97 세로 = 3줄(가운데 묶음) · 기간 자리 같음
 for x in sv:
     assert A._metrics(x)[0] <= 0.85 * 1080 + 2
 print("시작 화면:", [(x["text"], x["size"], x["cy"]) for x in tx], "· 세로 지명", sv[0]["size"])
@@ -47,7 +47,7 @@ assert [x[0] for x in A.end_lines(True, dv, "p", "d", "Bye / 2025")] == ["Bye", 
 ec = A.end_card(100.0, ls, tag=True)
 tg = [x for x in ec if x.get("tag")]
 assert len(tg) == 1 and ec[-1] is tg[0] and tg[0]["text"] == "See You Underwater" and tg[0]["color"] == "#4FB3E8"
-assert tg[0]["size"] == 28 and tg[0]["cy"] == 0.93 and tg[0]["ain"] == "fade" and abs(tg[0]["t0"] - 102.0) < 1e-6
+assert tg[0]["size"] == 84 and tg[0]["cy"] == 0.88                                   # v0.16.97 3배 and tg[0]["ain"] == "fade" and abs(tg[0]["t0"] - 102.0) < 1e-6
 assert not any("DTME" == x.get("text") for x in ec)
 mid = [x for x in ec if x["kind"] == "text" and not x.get("tag")]
 assert len(mid) == 3 and all(x["color"] == A.CARD_COLOR for x in mid) and mid[0]["cy"] < mid[1]["cy"] < mid[2]["cy"] < 0.7

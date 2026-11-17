@@ -37,18 +37,18 @@ assert m["newage_66"] < m["ballad_72"] < m["soul_92"] < m["kpop_124"], m
 # 계획: 잔잔한 영상 = 뉴에이지·발라드 쪽, 빠른 영상 = 케이팝 쪽, 영상이 곡보다 길면 이어 붙임(크로스페이드 2초)
 auds = [{"id": k, "path": str(W / f"{k}.mp3"), "dur": v["dur"]} for k, v in info.items()]
 infos = {a["path"]: info[a["id"]] for a in auds}
-calm = music.plan(auds, infos, 20.0, 0.05)
-fast = music.plan(auds, infos, 20.0, 0.95)
+calm = music.clip_end(music.plan_whole(auds, infos, 20.0, 2.0, video=0.05), 20.0)      # v0.16.96 한 곡 = 처음~끝(영상 끝에서 자름)
+fast = music.clip_end(music.plan_whole(auds, infos, 20.0, 2.0, video=0.95), 20.0)
 print("잔잔한 영상 →", [Path(x["path"]).stem for x in calm], "· 빠른 영상 →", [Path(x["path"]).stem for x in fast])
 assert Path(calm[0]["path"]).stem in ("newage_66", "ballad_72") and Path(fast[0]["path"]).stem == "kpop_124"
 assert len(calm) == 1 and abs(calm[0]["len"] - 20.0) < 1e-6
-long = music.plan(auds, infos, 70.0, 0.05, xfade=2.0)
-print("70초 →", [(Path(x["path"]).stem, x["t0"], x["len"]) for x in long])
-assert len(long) >= 3 and abs(long[-1]["t0"] + long[-1]["len"] - 70.0) < 1e-3
+tot = sum(v["dur"] for v in info.values())
+long = music.clip_end(music.plan_whole(auds, infos, tot - 10.0, 2.0, video=0.05), tot - 10.0)
+print("긴 영상 →", [(Path(x["path"]).stem, x["t0"], x["len"]) for x in long])
+assert len(long) >= 2 and len({x["path"] for x in long}) == len(long), "곡마다 한 번"
 for a, b in zip(long, long[1:]):
     assert abs((a["t0"] + a["len"]) - b["t0"] - 2.0) < 1e-3, "겹침 2초"
-    bars = infos[a["path"]]["bars"]
-    assert any(abs(a["off"] + a["len"] - x) < 1e-3 for x in bars), "앞 곡은 마디 첫 박에서 끝남"
+    assert abs(a["off"] + a["len"] - infos[a["path"]]["dur"]) < 1e-3, "앞 곡은 끝까지"
 # 크로스페이드 렌더: 두 곡을 4초 겹침 → 겹친 곳 소리가 끊기지 않고(합 일정), 앞 곡 끝은 줄어듦
 clip = W / "black.mp4"
 subprocess.run([paths.ffmpeg(), "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=black:s=640x360:r=30:d=20", "-f", "lavfi", "-i",

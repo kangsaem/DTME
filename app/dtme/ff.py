@@ -2606,16 +2606,17 @@ def post_graph(fparts: list, cmd: list, project: Project, extras: dict, total: f
         y0, bh = int(lay["y0"]), int(lay["bh"])
         for kind in ("mul", "add", "gr", "txt"):
             cmd += ["-f", "concat", "-safe", "0", "-i", _abs(lay[kind])]
+        bw = min(ow, int(lay.get("bw", ow)))       # v0.16.97 색 띠가 있는 폭만 잘라 섞음(나머지는 그대로 = 빠름)
         fparts.append(f"{cur}split=2[dvm][dvb]")
-        fparts.append(f"[dvb]crop={ow}:{bh}:0:{y0},format=gbrp10le[dvb0]")
-        fparts.append(f"[{ii}:v:0]fps={fr},scale={ow}:{bh},format=gbrp10le[dvM]")
+        fparts.append(f"[dvb]crop={bw}:{bh}:0:{y0},format=gbrp10le[dvb0]")
+        fparts.append(f"[{ii}:v:0]fps={fr},scale={bw}:{bh},format=gbrp10le[dvM]")
         fparts.append(f"[dvb0][dvM]blend=all_mode=multiply:shortest=0:repeatlast=1[dvb1]")
-        fparts.append(f"[{ii + 1}:v:0]fps={fr},scale={ow}:{bh},format=gbrp10le[dvA]")
+        fparts.append(f"[{ii + 1}:v:0]fps={fr},scale={bw}:{bh},format=gbrp10le[dvA]")
         fparts.append(f"[dvb1][dvA]blend=all_mode=addition:shortest=0:repeatlast=1[dvb2]")
         fparts.append(f"[{ii + 2}:v:0]fps={fr},format=yuva420p[dvG]")
         fparts.append(f"[dvb2]format=yuv420p[dvb3]")
-        fparts.append(f"[dvb3][dvG]overlay=0:0:format=yuv420:eof_action=pass[dvb4]")
-        fparts.append(f"[dvm][dvb4]overlay=0:{y0}:format=yuv420:eof_action=pass[dvo]")
+        fparts.append(f"[dvm][dvb3]overlay=0:{y0}:format=yuv420:eof_action=pass[dvb4]")
+        fparts.append(f"[dvb4][dvG]overlay=0:{y0}:format=yuv420:eof_action=pass[dvo]")
         fparts.append(f"[{ii + 3}:v:0]fps={fr},format=yuva420p[dvT]")
         nin = 4
         if lay.get("pulse"):                      # v0.16.91 빨간 점 둘레 깜빡임(작은 그림, 위치 = sendcmd)
@@ -2897,11 +2898,13 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orien
         ow, oh = out_size(orientation)
         root = paths.cache_dir() / "dive"
         _clean_old(root)
-        lay = dive_draw.render_layers(project, dv["dives"], float(dv.get("off", 0.0)), spans, total, ow, oh,
+        import time as _tm
+        _t_dv = _tm.monotonic()
+        lay = dive_draw.render_layers(project, dv["dives"], {"off": float(dv.get("off", 0.0)), "offs": dv.get("offs") or {}}, spans, total, ow, oh,
                                       root / uuid.uuid4().hex[:10], dv.get("cancel"))
         if lay:
             extras = {**extras, "dive_layers": lay}
-            log_info(f"수심 그래프: {lay['txt']}")
+            log_info(f"수심 그래프: {lay['txt']} · 그림 만들기 {_tm.monotonic() - _t_dv:.1f}초")
     if extras and (extras.get("titles") or extras.get("music") or extras.get("loud") or extras.get("duck")
                    or extras.get("dive_layers")):
         fparts[:] = [f.replace("[vo]", "[vm]").replace("[ao]", "[am]") for f in fparts]

@@ -1,6 +1,19 @@
 # HANDOFF — DTME (Diving Tour Movie Editor)
 
-다음 대화는 이 문서를 기준으로 이어서 작업한다. **2026-11-17 = v0.16.96(§0-104). 사용자 PC 확인 전.** 제작 순서(사용자 11/17): ① v0.16.96(끝) → ② v0.16.97 = 느린 곳 측정·안 쓰는 함수 청소·속도 → ③ v0.17.0 = 자동 창 개편 + 편집 창 정리·LOG ±초 클립별·가로·세로 섞임·줌+위치 → 영문판은 나중(§0-102).
+다음 대화는 이 문서를 기준으로 이어서 작업한다. **2026-11-17 = v0.16.97(§0-105). 사용자 PC 확인 전.** 제작 순서(사용자 11/17): ① v0.16.96(끝) → ② v0.16.97(끝) → ③ v0.17.0 = 자동 창 개편(MOSCO 이식 확정 내용 포함) + 편집 창 정리·가로·세로 섞임·줌+위치·소스 목록 Del 키 → 영문판은 나중(§0-102).
+
+## 0-105. v0.16.97 (사용자 11/17 13:38 '1697 ㄱㄱ · 로그 안 봐도 됨')
+- **긴 지명 줄바꿈**(`autoedit.wrap_place`): 한 줄로 폭 85%에 맞춘 크기가 `PLACE_MIN` 100 아래면 구분 기호(` · `·`, `)에서 2줄 → 그래도 아래면 3줄(`PLACE_LINES`), 나누는 자리 = 가장 넓은 줄이 가장 좁게 되는 곳, 모든 줄 같은 크기. 예 '미야코지마시 · 다케토미초, 오키나와현, 일본' = 세로 3줄 140 · 가로 2줄 159. 묶음 가운데 = 화면 50%. **기간 = 지명 크기의 절반**(짧은 지명 160 → 80 그대로), 높이 80%.
+- **끝 문구** `END_TAG_SIZE` 28 → **84**, `END_TAG_CY` 0.93 → **0.88**. `card_texts` 줄 높이 = 실제 화면 높이 기준(예전 = 1080 고정 → 세로에서 줄 사이가 벌어짐) · 타이핑 인자 뺌.
+- **LOG 시각 맞춤 = 클립마다**(카메라 시계 오차, 사용자 11/17): `Source.dive_off`(None = 프로젝트 값) · `Project.off_of(src)` · 미리보기·LOG 칩·자동 편집 = `off_of` · 렌더 = `it.dive["offs"]`(보내는 순간 값) → `dive_draw._off_for`. 편집 창 [LOG 시각] 칸(`OffSpin`): **고른 컷의 클립**(같은 클립의 다른 컷도 같이) · 타임라인 전부 고름(Ctrl+A) = 컷에 쓰인 모든 클립 · 고른 컷 없음 = 프로젝트 기본값(따로 안 정한 클립) · 대상 값이 서로 다르면 '—'(거기서 한 칸 = 0 에서 시작) · 방향키 1초 / Shift 10초. 예전 프로젝트 = 전체 값 그대로. '같은 여행 전체에' 버튼 = 안 함(사용자 2.가). 자동 시간대 맞춤(`auto_dive_off`)은 프로젝트 값만.
+- **렌더 창 작업 표시줄 진행**: `ui_main._render_progress` → 렌더 작업 창(`_rwin`)에도 `taskbar.set_progress` + 제목 `DTME — 렌더 45%`(예전 = 숨겨진 편집 창에만). Windows 실제 표시는 미확인.
+- **하나만 실행**(`app/dtme/single.py` = MOSCO v0.7.99 파일 그대로, `tests/test_single.py`): main.py — QApplication 직후·무거운 import 전에 `single.acquire("DTME")`(False = `os._exit(0)`) → `serve(show_front)` → 잠금 가진 쪽만 시작 정리(cache/frames·mezz 삭제). `show_front` = 확인 창 먼저/보이는 창을 showNormal·raise·activate + 아이콘 깜빡임. 시험·빌드 점검(`DTME_SELFTEST` 또는 offscreen) = 검사 안 함, `DTME_MULTI=1` 예외. **안전장치** `watch_windows`: 1.5초마다 보이는 최상위 창 확인, 4번(6초) 연속 없으면 `app.quit()`(시험 실행에서는 안 켬). `ui_main.MainWindow` import = main() 안으로.
+- **측정 로그**: `자동 편집 시간(준비): AUTO n개 a초 · 화면 읽기 n개 b초 · 음악 분석 n곡 c초` · `자동 편집 시간(넣기 — 화면이 멈추는 구간): x초` · `수심 그래프: … · 그림 만들기 y초`. (프록시·렌더·미리보기 시간 줄은 원래 있음.)
+- **속도(이 환경 CPU 2코어, 4K 원본 20초 → 1080p x264)**: 보정만 48.6초 · 기본 노이즈·샤픈 +8.7초 · **수심 그래프 +28.7초(59%)** · 끝 화면 글자 +7.9초. 수심 그래프 = 색 띠 섞기(RGB 10bit 변환 + multiply/add) ≈ 13초 + 변환·얹기 ≈ 15초. → **색 띠가 있는 폭만 섞음**(`lay["bw"]` = 왼쪽 아래에서 1000k, 8의 배수 · 화면 폭 90% 넘으면 전체): 77.3 → 70.7초(−9%). 세로 영상(폭 1080)은 이득 없음. 8bit 로 바꾸면 −6초 더 되지만 색 계단 위험 → 안 함. 남은 후보(안 함): 그래프가 안 보이는 구간 건너뛰기(필터 구조 바꿔야 함) · 끝/시작 화면 흰 사각형을 그림 대신 color 필터로.
+- **청소**: music `plan_runs`·`plan`·`hl_start`·`_bar_end`·`first_bar`·`SONG_MAX`·`GRAND_BOOST`·`is_vocal` · autoedit `place_of`·타이핑(`TYPE_DELAY/TOTAL`) · project `type_end` · state `_read_image_now` 뺌. 시험 4개(test_autoedit·test_music·test_music_scene·test_ui_v1675)를 `plan_whole` 기준으로 고침. **남긴 것(시험만 씀)**: ff `live_count`·`precache_forget`·`sharpness_around`·`render_still` · dive_draw `when_at` · auto `preset_keys`·`measured_water` · ui_grade `set_output`·`_apply_preset` · ui_auto/ui_autoedit(v0.17.0 에서 창째 바뀜). `tests/test_launcher.py` = 예전부터 실패(CI 에 없음, v0.17.0 에서 정리).
+- 시험: `tests/test_v1697.py`(CI) · `tests/test_single.py`(CI, 실제 프로세스 4가지) · test_v1696 고침(세로 3줄 · 끝 문구 84). 로컬 통과: v1694~97 · single · dive · autoedit · music · music_scene · ui_music · ui_v1674/75/81/84/91(실제 렌더) · ui_start · shutdown · launch_done · ui_renderwin · ui_renderprog · ui_selectall.
+- 한계: Windows 에서 실제 더블클릭 두 번·작업 표시줄 막대·창 0개 종료는 못 봄 · 속도 수치는 CPU 2코어 기준(NVENC PC 는 다름) · 사용자 dtme.log 없이 진행(사용자 '안 봐도 됨').
+- 사용자 PC 확인할 것: 세로 시작 화면(3줄 지명 크기) · 끝 화면 'See You Underwater' 크기 · **LOG 시각 칸으로 2026.03 클립 수심 맞추기**(컷 고르고 방향키) · 렌더 창 내려놓았을 때 아이콘 막대 · EXE 두 번 실행 = 기존 창이 앞으로 · 렌더 시간(수심 그래프 있는 가로 영상).
 
 ## 0-104. v0.16.96 (사용자 11/17 10:11 'ㄱㄱ' — §0-102 의 작은 묶음 + 음악)
 - **시작 화면**: 지명 160 = 가운데 그대로 · 기간 80 = 화면 높이 80%(`START_PLACE/START_PERIOD/START_PERIOD_CY`, `_card_text`). 지명 없으면 기간만 80% 자리. 폭 85% 줄이기 그대로(세로 긴 지명 ≈ 53).

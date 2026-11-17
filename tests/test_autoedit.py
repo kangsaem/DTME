@@ -50,11 +50,11 @@ assert music.grand(ie) > 0.7 and music.grand(ic) < 0.3
 auds = [{"path": f_epic, "dur": ie["dur"]}, {"path": f_calm, "dur": ic["dur"]}]
 infos = {f_epic: ie, f_calm: ic}
 runs = [(0.0, 20.0, "calm"), (20.0, 50.0, "grand"), (50.0, 70.0, "calm")]          # v0.16.75 시작·끝 = 잔잔, 가운데 블루워터 = 웅장
-items = music.plan_runs(auds, infos, runs, 2.0, targets=autoedit.RUN_TARGET)
-at_ = lambda tt: next(x["path"] for x in items if x["t0"] <= tt < x["t0"] + x["len"])     # noqa: E731
-assert at_(5) == f_calm and at_(35) == f_epic and at_(65) == f_calm, [(x["path"], x["t0"]) for x in items]
-cov = max(x["t0"] + x["len"] for x in items)
-assert cov >= 69.5, items
+items = music.plan_whole(auds, infos, 70.0, 2.0, runs=runs, targets=autoedit.RUN_TARGET)   # v0.16.96 한 곡 = 처음~끝 한 번
+assert [x["path"] for x in items] == [f_calm, f_epic], [(x["path"], x["t0"]) for x in items]   # 시작 = 잔잔한 곡 먼저 · 되풀이 없음
+assert all(abs(x["off"] + x["len"] - infos[x["path"]]["dur"]) < 1e-3 for x in items)
+cov = music.music_end(music.fill_tail(items, auds, infos, 70.0, 2.0))
+assert cov >= 70.0 - music.TAIL_FILL, items
 spans = [("a", 0.0, 10.0), ("b", 10.0, 10.0), ("c", 20.0, 30.0), ("d", 50.0, 15.0)]
 mr = autoedit.music_runs(spans, {"a": "bluewater", "b": "bluewater", "c": "shallow", "d": "deep"})
 assert [g for _a, _b, g in mr] == ["grand", "calm"] and mr[0][1] == 20.0, mr      # 20초 미만 '깊은' 구간 = 앞에 붙음

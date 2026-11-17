@@ -23,15 +23,11 @@ subprocess.run([FF, "-v", "error", "-y", "-f", "s16le", "-ar", str(SR), "-ac", "
 infos = {f: music.analyze(f) for f in (song, bright, calm, epic)}
 auds = [{"path": f, "dur": infos[f]["dur"]} for f in infos]
 runs = [(0.0, 15.0, "surface"), (15.0, 45.0, "calm"), (45.0, 75.0, "grand"), (75.0, 95.0, "calm"), (95.0, 120.0, "grand"), (120.0, 135.0, "surface")]
-items = music.plan_runs(auds, infos, runs, 2.0, targets=autoedit.RUN_TARGET)
+items = music.plan_whole(auds, infos, 135.0, 2.0, runs=runs, targets=autoedit.RUN_TARGET)   # v0.16.96 한 곡 = 처음~끝 한 번(장면별 곡·음량 업 없앰)
 nm = lambda f: os.path.basename(f)          # noqa: E731
-at = lambda tt: next(x for x in items if x["t0"] <= tt < x["t0"] + x["len"])      # noqa: E731
-print([(nm(x["path"]), x["t0"], round(x["len"], 1), x.get("boost")) for x in items])
-assert nm(at(130)["path"]) in (nm(calm),), "끝 = 잔잔(연주곡)"
-assert all(nm(x["path"]) != nm(bright) for x in items), "발랄한 곡 안 씀"
-assert all(music.guess_kind(x["path"]) != "vocal" for x in items if x["t0"] > 14.5), "노래 = 첫 구간만"
-assert nm(at(60)["path"]) == nm(epic) and at(60).get("boost") == music.GRAND_BOOST, "블루워터 첫 등장 = 웅장 + 음량 업"
-assert not at(110).get("boost"), "두 번째 블루워터 = 보통 음량"
+print([(nm(x["path"]), x["t0"], round(x["len"], 1)) for x in items])
+assert len({x["path"] for x in items}) == len(items), "곡마다 한 번"
+assert all(abs(x["off"] + x["len"] - infos[x["path"]]["dur"]) < 1e-3 for x in items), "처음 ~ 끝"
 # 곡 음량 맞추기
 g_loud, g_quiet = music.norm_gain({"loud": -8.0}), music.norm_gain({"loud": -25.0})
 assert abs(g_loud - 10 ** (-10 / 20)) < 0.01 and abs(g_quiet - 10 ** (7 / 20)) < 0.01 and music.norm_gain(None) == 1.0

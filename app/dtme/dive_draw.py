@@ -547,7 +547,15 @@ def cut_mode(src, seg, W: int, H: int) -> str:
 
 
 # ------------------------------------------------------------------ 렌더 그림(작업 스레드)
-def render_layers(project, dives: list, off: float, spans: list, total: float, W: int, H: int, folder, cancel=None):
+def _off_for(off, src) -> float:
+    """off = 숫자(모든 클립 같음) 또는 {"off": 기본, "offs": {소스 id: 초}}(v0.16.97 클립마다)."""
+    if isinstance(off, dict):
+        v = (off.get("offs") or {}).get(getattr(src, "id", ""))
+        return float(off.get("off", 0.0) if v is None else v)
+    return float(off or 0.0)
+
+
+def render_layers(project, dives: list, off, spans: list, total: float, W: int, H: int, folder, cancel=None):
     """출력 시간축(0~total) 그림 → concat 목록 {txt, gr, mul, add} + 위치. 다이빙 컷이 없으면 None.
     spans = [(시작 초, 끝 초, Segment, 끝 전환 초)] (lead 포함, 전환 겹침이면 뒤 컷).
     보통 0.5초마다, 애니메이션 중(디졸브·긁기)엔 1/15초마다. 같은 그림은 한 파일."""
@@ -559,6 +567,11 @@ def render_layers(project, dives: list, off: float, spans: list, total: float, W
     _x, _y, tw, th = text_box(W, H)
     fs = 2 if W * H > 2600 * 1500 else 1               # 색 띠 = 부드러운 그라데이션 → 4K 는 절반 크기로 만들어 늘림(빠르게)
     fw, fh = W // fs, max(2, bh // fs)
+    # v0.16.97 색 띠 = 왼쪽 아래 모서리에서 1000k 안에만 있음 → 그 폭(bw)만 만들고 섞음(가로 1080p = 화면 폭의 절반쯤 → 렌더 빠름)
+    bw = min(W, (int(np.ceil(1000 * k_of(W, H) / 8)) + 1) * 8)
+    if bw > W * 0.9:
+        bw = W
+    fwc = max(2, bw // fs)
 
     inside: dict = {}
 
@@ -575,10 +588,10 @@ def render_layers(project, dives: list, off: float, spans: list, total: float, W
         if src is None or not src.fps:
             return None
         if seg.id not in inside:
-            inside[seg.id] = getattr(seg, "log", True) and cut_dive(dives, src, seg, off) is not None   # v0.16.91 컷 LOG 끔 = 없음
+            inside[seg.id] = getattr(seg, "log", True) and cut_dive(dives, src, seg, _off_for(off, src)) is not None   # v0.16.91 컷 LOG 끔 = 없음
         if not inside[seg.id]:
             return None
-        m_ = match(dives, src, seg.fin / float(src.fps) + (T - a) * float(seg.speed or 1.0), off)
+        m_ = match(dives, src, seg.fin / float(src.fps) + (T - a) * float(seg.speed or 1.0), _off_for(off, src))
         if not m_:
             return None
         return m_[0], m_[1], m_[2], seg, src, T - a, b - a, tail
@@ -624,8 +637,8 @@ def render_layers(project, dives: list, off: float, spans: list, total: float, W
         if st is None:
             put("txt", "none", lambda: blank(tw, th), dur)
             put("gr", "none", lambda: blank(W, bh), dur)
-            put("mul", "white", lambda: to_qimage(np.full((fh, fw, 3), 255, np.uint8)), dur)
-            put("add", "black", lambda: to_qimage(np.zeros((fh, fw, 3), np.uint8)), dur)
+            put("mul", "white", lambda: to_qimage(np.full((fh, fwc, 3), 255, np.uint8)), dur)
+            put("add", "black", lambda: to_qimage(np.zeros((fh, fwc, 3), np.uint8)), dur)
             continue
         dive, t, w, seg, src, tc, L, tail = st
         ta, rv, ga = anim(tc, L, tail)
@@ -662,10 +675,12 @@ def render_layers(project, dives: list, off: float, spans: list, total: float, W
         a_ = fill_alpha(W // fs, H // fs, dive, t, rv, ga)[0] if need else None
         if a_ is not None and a_.shape != (fh, fw):
             a_ = np.ascontiguousarray(np.pad(a_, ((0, max(0, fh - a_.shape[0])), (0, max(0, fw - a_.shape[1]))))[:fh, :fw])
+        if a_ is not None:
+            a_ = np.ascontiguousarray(a_[:, :fwc])
         put("mul", fk if on and mode == "multiply" else "white",
-            lambda a_=a_: to_qimage(fill_rgb(a_, "multiply")) if a_ is not None else to_qimage(np.full((fh, fw, 3), 255, np.uint8)), dur)
+            lambda a_=a_: to_qimage(fill_rgb(a_, "multiply")) if a_ is not None else to_qimage(np.full((fh, fwc, 3), 255, np.uint8)), dur)
         put("add", fk if on and mode == "add" else "black",
-            lambda a_=a_: to_qimage(fill_rgb(a_, "add")) if a_ is not None else to_qimage(np.zeros((fh, fw, 3), np.uint8)), dur)
+            lambda a_=a_: to_qimage(fill_rgb(a_, "add")) if a_ is not None else to_qimage(np.zeros((fh, fwc, 3), np.uint8)), dur)
     # v0.16.91 점 깜빡임 = 작은 그림 따로(1.5초 주기 반복) + 위치는 0.5초마다(sendcmd) · 그래프가 다 보일 때만
     k = k_of(W, H)
     S = int(PULSE_BOX * k) // 2 * 2 + 2
@@ -720,5 +735,5 @@ def render_layers(project, dives: list, off: float, spans: list, total: float, W
         lf = folder / f"{kind}.txt"
         lf.write_text("\n".join(txt) + "\n", encoding="utf-8")
         out[kind] = str(lf)
-    out["y0"], out["bh"], out["tw"], out["th"] = y0, bh, tw, th
+    out["y0"], out["bh"], out["tw"], out["th"], out["bw"] = y0, bh, tw, th, bw
     return out

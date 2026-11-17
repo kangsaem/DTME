@@ -358,24 +358,6 @@ class AppState(QObject):
         self.touch("images")
         return len(new)
 
-    def _read_image_now(self, m: ImageSource) -> bool:
-        """Qt 로 크기만 즉시 읽기(영상 분석·프록시 대기열과 무관). EXIF 방향은 직접 읽음."""
-        try:
-            from PySide6.QtGui import QImageReader
-            r = QImageReader(m.path)
-            sz = r.size()
-            if not sz.isValid() or sz.width() <= 0:
-                return False
-            o = ff.exif_orientation(m.path)
-            w, h = sz.width(), sz.height()
-            m.width, m.height, m.orient = (h, w, o) if o >= 5 else (w, h, o)
-            self.img_status[m.id] = ""
-            return True
-        except Exception as e:  # noqa: BLE001
-            ff.log_error(f"이미지 {m.path}", str(e))
-            return False
-
-    @staticmethod
     def _image_info(path: str) -> dict:
         """크기·방향: Qt 로 헤더만(빠름), 안 되면 ffprobe. 작업 스레드에서."""
         try:

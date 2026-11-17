@@ -363,6 +363,7 @@ class Source:
     ctime: str = ""                              # 파일 안의 만든 시각 YYYYMMDDhhmm(현지 시간) — 이름에 날짜가 없을 때 표시·렌더 이름(v0.16.55)
     cutc: float = 0.0                            # v0.16.86 파일 안의 만든 시각(UTC 초). 0 = 아직 안 읽음, -1 = 없음
     off: list = field(default_factory=list)      # 이름을 눌러 잠시 끈 보정 항목(미리보기·보낼 때 빼고 적용)
+    dive_off: float | None = None                # v0.16.97 이 클립의 LOG 시각 맞춤(초, 카메라 시계 오차 · 사용자 11/17). None = 프로젝트 값
     lut_mode: str = ""                           # DJI 메타로 판단한 색 모드 dlog | normal | unknown ("" = 옛 프로젝트, 판단 안 함)
     rotation: int = 0                            # v0.16.78 파일의 회전 정보(세로 촬영 ±90) — GPU 프레임 경로는 자동 회전이 안 돼서 피함
     id: str = field(default_factory=_id)
@@ -655,14 +656,6 @@ def type_lines(text: str, n) -> list:
     return out
 
 
-def type_end(d: dict) -> float:
-    """타이핑이 끝나는 시각(타이핑 아님 = t0)."""
-    if d.get("ain") != TYPE:
-        return float(d["t0"])
-    n = len((d.get("text") or "").replace("\r", "").replace("\n", ""))
-    return float(d["t0"]) + float(d.get("tdelay", 0.0) or 0.0) + max(0, n - 1) * float(d.get("tsec", TYPE_SEC) or TYPE_SEC)
-
-
 def title_anim(d: dict, t: float):
     """t(초)에서 → (알파, 'in'|'out'|None, 방향, 거리 비율 0~1)."""
     t0, t1 = float(d["t0"]), float(d["t1"])
@@ -787,6 +780,11 @@ class Project:
     dive_on: bool = True                             # 수심 그래프 넣기
     dive_off: float = 0.0                            # 시각 맞춤(초): 카메라 시계 − 다이빙 컴퓨터 시계 차이 보정
     end_fade: float = 0.0                            # v0.16.91 영상 끝 검정 페이드 아웃(초) — 자동 편집이 켬
+
+    def off_of(self, src) -> float:
+        """LOG 시각 맞춤(초): 클립에 따로 정한 값이 있으면 그 값, 없으면 프로젝트 값."""
+        v = getattr(src, "dive_off", None) if src is not None else None
+        return float(self.dive_off if v is None else v)
 
     def tail_of(self, titles=None, video_end: float | None = None) -> float:
         """영상 끝 뒤 검은 구간(초) = 글자·사각형·이미지가 영상 끝을 넘은 만큼(음악은 안 늘림)."""
