@@ -45,6 +45,7 @@
 - 지금 = 막는 장치 없음(EXE 두 번 = 창 두 개). 문제: 시작 때 `cache/frames`·`mezz` 통째 삭제(main.py) → 먼저 켠 쪽 미리보기 그림 사라짐 · `settings.json`·자동 저장 같은 자리 덮어씀 · 프록시·전환 파일 동시 만들기 · NVENC 세션 다툼.
 - **B = 두 번째 실행은 끝내고, 이미 떠 있는 창을 맨 앞으로**. 잠금 = `QLockFile`(죽은 프로세스 잠금 자동 해제 → 비정상 종료 뒤에도 켜짐) · 앞으로 올리기 = `QLocalServer`/`QLocalSocket` 신호(시작 창·자동 창·편집 창 중 떠 있는 것, 최소화면 복원). 렌더 중이어도 같음. 프로젝트 파일 넘기기(C) = 안 함.
 - **MOSCO 와 공통 방식 상의(11/17 12:46, MOSCO 메모 = `docs/MOSCO_single_instance_question.md` · DTME 답 = `docs/DTME_single_instance_reply.md`, 사용자 확정 전)**: MOSCO v0.7.98 = 소켓만 → 동시 더블클릭이면 둘 다 켜지는 구멍(리눅스 3번 중 1번). 공통안 = `QLockFile`(임시 폴더, `setStaleLockTime(0)`) + `QLocalServer/Socket`("show" → "ok", 최대 8초 0.3초 간격 재시도) · 답 없음 = 그냥 실행. DTME 의견: 동의 · 잠금·listen 은 무거운 import 전에 · listen 전 `removeServer` · **잠금 못 얻고 실행하면 시작 정리(cache 삭제) 건너뜀** · 강제 종료 뒤 다시 켜지는지 시험 · 순서 = MOSCO 가 독립 파일(`single.py`, 앱 이름 인자)로 먼저 → DTME 복사. 사용자가 정할 것: 버전 달라도 하나만(예외 `DTME_MULTI=1`) · DTME 에도 '보이는 창 0개 → 종료' 안전장치 · 구현 순서.
+- **확정(사용자 11/17 12:51)**: ① **버전이 달라도 하나만 실행**(잠금 = 임시 폴더 · 예외는 환경 변수 `DTME_MULTI=1` = 시험·빌드 점검용) ② DTME 에도 **'보이는 창 0개 → 몇 초 뒤 종료' 안전장치** 넣음(MOSCO = 6초, 같은 값으로 · 렌더·작업 중 창 숨김(solo) 같은 정상 상황은 제외해야 함 — 코딩 때 확인) ③ **구현 순서 = MOSCO 먼저(독립 파일 `single.py`) → DTME v0.16.97 에서 복사** + "잠금 못 얻고 실행하면 시작 정리 건너뜀".
 - 잠금·캐시 삭제 순서: 잠금 얻은 뒤에만 캐시 지움. 시험(tests)은 잠금 끔(환경 변수) — 여러 시험이 같이 돌아야 함.
 
 ### MOSCO 이식 지시 — 시작 창·AUTO 창(사용자 11/17 11:56 올림 → `docs/MOSCO_auto_window_port.md` 원문, 적용 방법 상의 중)
