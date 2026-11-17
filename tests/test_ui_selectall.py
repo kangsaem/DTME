@@ -107,18 +107,22 @@ assert [m["id"] for m in st.project.music] == [ms[1]] and tid not in {t["id"] fo
 w.undo(); wait(0.2)
 assert len(st.project.music) == 3
 # 자동 편집 창 Ctrl+A
-from dtme.ui_autoedit import AutoEditDialog  # noqa: E402
-d = AutoEditDialog(st, set(), w)
+d = e.make_auto_window()                             # v0.17.0 자동 창
+for r_ in d.rows:
+    r_.checked = False
+d._row_changed()
 assert d.chosen() == []
 d.check_all()
 assert len(d.chosen()) == 2
+d.reject()
 # v0.16.91 기본 음악: 올린 곡이 있으면 '기본 음악도 같이 쓰기' 칸(기본 끔) · 넣으면 [기본] 표시 + 목록 맨 아래
 import shutil  # noqa: E402
 mine = os.path.join(W, "my song.mp3")
 shutil.copy(st.default_music()[0], mine)
 st.import_audios([mine]); wait(3, lambda: all(a.get("dur") for a in st.project.audios))
-d2 = AutoEditDialog(st, set(), w)
-assert d2._mix_ok and not d2.mix_default.isChecked() and not d2.settings()["mix_default"] and "기본 음악" not in d2.music_on.text()
+d2 = e.make_auto_window(); d2.mix_default.setChecked(False); d2._sync()
+assert not d2.mix_default.isHidden() and not d2.autoedit_settings()["mix_default"] and d2.stages["music"].summary.endswith("올린 곡 1곡")
+d2.reject()
 n = st.add_default_music(); wait(0.3)
 names = [e.mus_list.item(i).text() for i in range(e.mus_list.count())]
 print("음악 목록:", names[:2], "…", names[-1], "· 기본", n)

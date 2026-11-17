@@ -1,4 +1,4 @@
-"""v0.16.52 점검: 시작 창 = MOSCO 틀(테두리 없는 400×560 · 그림 400×400 · ✕ 26×26 · 세로 글자 · [AUTO] 160×48 + [편집] 160×32 · 끌어 옮김).
+"""v0.16.52 점검: 시작 창 = MOSCO 틀(테두리 없는 400×560 · 그림 400×400 · ✕ 26×26 · 세로 글자 · [AUTO] 160×48(v0.17.0 [편집] 없앰) · 끌어 옮김).
 사용: python tests/test_ui_start.py [캡처.png]"""
 import os, sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "app"))
@@ -26,9 +26,9 @@ s = la.side.geometry()
 assert s.right() + 1 == 400 - 14 and s.bottom() + 1 == 400 - 14, s           # 오른쪽·아래 끝에서 14px
 assert la.side.text == "Diving Tour Movie Editor" and la.side.font().pixelSize() == 14
 assert (la.b_auto.width(), la.b_auto.height()) == (160, 48) and la.b_auto.text() == "AUTO"
-assert (la.b_manual.width(), la.b_manual.height()) == (160, 32) and la.b_manual.text() == "편집"
-assert la.b_manual.y() - (la.b_auto.y() + la.b_auto.height()) == 12, "버튼 간격 12"
-assert la.b_auto.y() >= 400 and not la.bar.isVisible() and not la.msg.isVisible() and not la.b_folder.isVisible()
+from PySide6.QtWidgets import QPushButton
+assert sorted(b.text() for b in la.findChildren(QPushButton)) == ["AUTO", "✕"], "v0.17.0 [AUTO] 하나"
+assert la.b_auto.y() >= 400 and abs((la.b_auto.y() + 24) - 480) <= 1, la.b_auto.y()       # 아래 칸 가운데
 # 빈 곳을 끌어 옮김(글자 위도 통과)
 p0 = la.pos()
 QTest.mousePress(la, Qt.LeftButton, Qt.NoModifier, QPoint(60, 40))

@@ -39,7 +39,7 @@ p = st.project
 e.import_files(clips + [str(W / "newage_66.mp3"), str(W / "kpop_124.mp3"), str(W / "ballad_72.mp3")])
 assert wait(120, lambda: len(p.sources) == 3 and all(st.status.get(s.id) == "준비" for s in p.sources) and len(p.audios) == 3)
 assert wait(60, lambda: len(e.music_info) == 3), "넣으면 분석"
-assert e.b_mauto.isVisible() and "BPM" in e.mus_list.item(1).toolTip(), e.mus_list.item(1).toolTip()
+assert "BPM" in e.mus_list.item(1).toolTip(), e.mus_list.item(1).toolTip()
 for s in p.sources:                                         # 타임라인: 6초 × 3
     e._select_source(s.id); wait(0.3); e.to_timeline() if hasattr(e, "to_timeline") else None
 if len(p.segments) < 3:
@@ -77,8 +77,8 @@ assert "xfade" in dlg.labels and dlg.labels["xfade"][0].text() == "2.0초"
 dlg.reject()
 # 5) [음악 자동]: 18초 영상 → 곡 고르고 길이 맞춤(바꾸기 확인 = 바꾸기)
 ui_style.confirm = lambda *a, **k: "ok"
-e.b_mauto.click()
-assert wait(120, lambda: e.b_mauto.isEnabled() and "음악 자동" in e.status.text()), e.status.text()
+e.auto_music()                                             # v0.17.0 [음악 자동] 버튼 없앰 → 자동 창 음악 단계가 같은 함수를 부름
+assert wait(120, lambda: "음악 자동" in e.status.text()), e.status.text()
 print("음악 자동:", e.status.text(), [(Path(x["path"]).stem, x["t0"], x["len"]) for x in p.music])
 total = max(st_ + ln for _g, st_, ln in e._tl_cuts)
 assert p.music and abs(p.music[-1]["t0"] + p.music[-1]["len"] - total) < 1e-3

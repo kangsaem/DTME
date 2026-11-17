@@ -118,34 +118,30 @@ sh = [dataclasses.replace(s, path=s.path.replace("_20261027104000", "_2026102709
 print("시간대 1시간 다른 카메라:", dive_draw.guess_off(p.dives, sh))
 assert dive_draw.guess_off(p.dives, sh) == 3600.0              # 카메라 필리핀(+8) · 시계 한국(+9) = +3600초(사용자 11:07 확인)
 p.output.folder = os.path.join(W, "out"); p.output.encoder = "x264"; p.output.gpu_decode = False
-from dtme.ui_autoedit import AutoEditDialog  # noqa: E402
-dlg = AutoEditDialog(st, {s.id for s in p.sources}, w)
+dlg = e.make_auto_window()                           # v0.17.0 자동 창
+dlg.dive_on.setChecked(True); dlg._sync()
 print("지명:", dlg.place.text(), "| 끝 문구:", dlg.end_text.text())
 assert dlg.place.text() == "보홀주, 필리핀" and dlg.end_text.text().startswith("1 DIVE · MAX 22.0m · 40m")   # 실제 글(커서로 고침)
-assert dlg.settings()["end_text"] == ""                       # 안 고침 = 자동(글자 크기 등 자동 그대로)
+assert dlg.autoedit_settings()["end_text"] == ""              # 안 고침 = 자동(글자 크기 등 자동 그대로)
 from PySide6.QtTest import QTest as _QT  # noqa: E402
+dlg.show(); dlg._open_stage("edit"); wait(0.2)
 dlg.end_text.setFocus(); dlg.end_text.end(False); _QT.keyClicks(dlg.end_text, "!")
-assert dlg.settings()["end_text"].endswith("2026.10.27!")
-assert [x[0] for x in autoedit.end_lines(True, [], "", "", dlg.settings()["end_text"])][-1].endswith("!")
-dlg._end_auto = True; dlg._end_hint()
-from PySide6.QtWidgets import QApplication as _QA  # noqa: E402
-_orig_mods = _QA.keyboardModifiers
-dlg._toggle(dlg.list.item(0)); dlg._toggle(dlg.list.item(0))      # 끔 → 켬(기준 = 0번 켬)
-dlg._toggle(dlg.list.item(2))                                    # 2번 끔
-dlg._toggle(dlg.list.item(0))                                    # 0번 끔(기준 = 끔)
-_QA.keyboardModifiers = staticmethod(lambda: Qt.ShiftModifier)
-dlg._toggle(dlg.list.item(2))                                    # Shift = 0~2 모두 끔
-_QA.keyboardModifiers = _orig_mods
-assert dlg.chosen() == []
-for i in range(3):
-    dlg._toggle(dlg.list.item(i))
-assert len(dlg.chosen()) == 3
-print("음악 칸:", dlg.music_on.text())
-assert "기본 음악" in dlg.music_on.text() and dlg.music_on.isChecked() and len(st.default_music()) == 2   # v0.16.91 곡 없음 = 기본 음악(CC0)
-dlg.length.setValue(1); dlg.music_on.setChecked(False)
-sset = dlg.settings()
-assert sset["start"] == "auto" and sset["end"] == "auto" and sset["place"] == "보홀주, 필리핀"
-dlg.show(); wait(0.3); dlg.grab().save(os.path.join(W, "dialog.png"))
+assert dlg.autoedit_settings()["end_text"].endswith("2026.10.27!")
+assert [x[0] for x in autoedit.end_lines(True, [], "", "", dlg.autoedit_settings()["end_text"])][-1].endswith("!")
+dlg.end_text.clearFocus(); dlg._end_auto = True; dlg._sync()
+assert dlg.autoedit_settings()["end_text"] == "" and not dlg.end_text.text().endswith("!")
+for r_ in dlg.rows:                                           # 체크 전부 끔 → 전부 켬
+    r_.checked = False
+dlg._row_changed()
+assert dlg.chosen() == [] and not dlg.b_start.isEnabled()
+dlg.check_all()
+assert len(dlg.chosen()) == 3 and dlg.b_start.isEnabled()
+print("음악 줄:", dlg.stages["music"].summary)
+assert "기본 음악 2곡" in dlg.stages["music"].summary and len(st.default_music()) == 2   # v0.16.91 곡 없음 = 기본 음악(CC0)
+dlg.length.setValue(1); dlg.stages["music"].set_on(False); dlg._sync()
+sset = dlg.autoedit_settings()
+assert sset["start"] == "auto" and sset["end"] == "auto" and sset["place"] == "보홀주, 필리핀" and not sset["music"]
+wait(0.3); dlg.grab().save(os.path.join(W, "dialog.png"))
 ui_style.confirm = lambda *a_, **k_: "ok"
 e.run_autoedit(dlg, sset)
 assert wait(400, lambda: not dlg.isVisible()), dlg.state_lab.text()

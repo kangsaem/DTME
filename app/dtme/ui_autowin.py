@@ -628,8 +628,14 @@ class AutoWindow(DragMove, QDialog):
         self.end_text = QLineEdit()
         self._end_auto = True
         self.end_text.textEdited.connect(lambda _t: setattr(self, "_end_auto", False))
+        self.end_text.editingFinished.connect(self._end_done)
         return self._body([labeled("전체 길이", self.length.box, 64), labeled("", cbs, 64), cards,
                            labeled("지명", self.place, 64), labeled("끝 문구", self.end_text, 64)])
+
+    def _end_done(self):
+        if not self.end_text.text().strip():              # 다 지움 = 자동 문구로
+            self._end_auto = True
+            self._sync()
 
     def _music_body(self, cfg):
         self.beat_on = QCheckBox("박자우선")
@@ -1101,8 +1107,14 @@ class AutoWindow(DragMove, QDialog):
                                             "기존 보정 유지" if self.keep.value() == "keep" else "기존 보정 무시"]))
         # 편집
         self.dive_on.setEnabled(bool(p.dives))
+        self.dive_on.setToolTip(f"다이빙 {len(p.dives)}개 · 컷 최소 15초" if p.dives else "다이빙 기록 없음 — FIT·DTMD 파일을 이 창에 끌어다 놓기")
+        trips = self._trips()
         if self._place_auto and not self.place.hasFocus():
-            self.place.setText(autoedit.trips_place(p.dives, self._trips()) if p.dives else "")
+            self.place.setText(autoedit.trips_place(p.dives, trips) if p.dives else "")
+        if self._end_auto and not self.end_text.hasFocus():       # 자동 문구를 실제 글로(커서로 바로 고침, ' / ' = 줄바꿈)
+            ds = autoedit.trips_dives(p.dives, trips) if self.dive_on.isChecked() and p.dives else []
+            ls = autoedit.end_lines(bool(ds), ds, self.place.text().strip(), autoedit.trips_period(trips))
+            self.end_text.setText(" / ".join(x[0] for x in ls) if rows else "")
         cards = [n for k, n in (("start", "시작"), ("end", "끝")) if self.card[k].value() == "auto"]
         st["edit"].set_summary(" · ".join(x for x in (f"{self.length.value()}분", "날짜 바" if self.title_on.isChecked() else "",
                                                        "LOG" if self.dive_on.isChecked() and p.dives else "",
@@ -1134,8 +1146,6 @@ class AutoWindow(DragMove, QDialog):
         ok = bool(rows) or (self.has_timeline() and (st["music"].active() or st["render"].active())
                             and not st["grade"].active() and not e_on)
         self.b_start.setEnabled(ok and not self.running)
-        if not self._end_auto and not self.end_text.text():
-            self._end_auto = True
 
     def _open_stage(self, key):
         """줄 누름 = 펼침(한 번에 하나)."""
@@ -1184,8 +1194,17 @@ class AutoWindow(DragMove, QDialog):
                 "mix_default": self.mix_default.isChecked() and bool([a for a in p.audios if not a.get("builtin")]),
                 "grade": False, "save": self.save_on.isChecked(), "dive": self.dive_on.isChecked() and bool(p.dives),
                 "start": self.card["start"].value(), "end": self.card["end"].value(),
-                "place": self.place.text().strip(), "end_text": self.end_text.text().strip(),
+                "place": self.place.text().strip(), "end_text": "" if self._end_auto else self.end_text.text().strip(),
                 "full": True, "replace_ok": True, "no_prep": True}
+
+    def chosen(self) -> list[str]:
+        return [r.sid for r in self.rows if r.checked]
+
+    def autoedit_settings(self, grade: bool = True) -> dict:
+        """자동 편집만 따로 돌릴 때(시험 · run_autoedit 직접): 끝나면 창이 닫히고 편집 화면 타임라인."""
+        st = self.edit_settings(self.chosen())
+        st.update(full=False, replace_ok=False, no_prep=False, grade=grade)
+        return st
 
     # ================================================================ 분석(보정 단계)
     def _compute(self, r: AutoRow):
@@ -1710,7 +1729,10 @@ class AutoWindow(DragMove, QDialog):
             self.set_running(False)
             self._to_editor()
         else:
-            self._back("")
+            j = self._job
+            if j is not None:
+                j.cancel.set()
+            self._back("취소됨")
 
     def _cancel_close(self):
         """작업 중이 아닐 때 [취소]: 시작 창에서 연 것 = 넣은 영상 버림 / 편집 창에서 연 것 = 닫기만."""

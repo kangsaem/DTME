@@ -97,18 +97,30 @@ assert r["weak"] == 1 and r["bar"] == 0 and [(g.fin, g.fout) for g in p.segments
 from PySide6.QtWidgets import QApplication  # noqa: E402
 app = QApplication(sys.argv)
 from dtme.state import AppState  # noqa: E402
-from dtme.ui_autoedit import AutoEditDialog  # noqa: E402
+from dtme.ui_autowin import AutoWindow  # noqa: E402
+from dtme.project import set_setting  # noqa: E402
+set_setting("autowin", {})
+
+
+class _Ed:                                            # 자동 창이 쓰는 EditTab 자리(창만 봄)
+    def __init__(self, st_):
+        self.state = st_
+
+    def window(self):
+        return None
+
+
 st = AppState()
 st.project.sources.append(Source(path="/x/a.mp4", fps_num=30, fps_den=1, frames=900, width=1920, height=1080))
-d = AutoEditDialog(st, {st.project.sources[0].id})
+d = AutoWindow(_Ed(st), None, from_edit=True)
 assert d.beat_on.text() == "박자우선"
-assert d.beat_on.isChecked(), "v0.16.96 기본 = 늘 켬"
+assert d.beat_on.isChecked(), "v0.16.96 기본 = 늘 켬(v0.17.0 기본 음악만이어도)"
 st.project.audios.append({"path": "/x/song.mp3", "dur": 300.0})
-d = AutoEditDialog(st, {st.project.sources[0].id})
-assert d.beat_on.isChecked() and d.beat_on.isEnabled() and d.settings()["beat"]
-d.music_on.setChecked(False)
-assert not d.beat_on.isEnabled() and not d.settings()["beat"]
-d.music_on.setChecked(True)
-assert d.beat_on.isEnabled()
+d = AutoWindow(_Ed(st), None, from_edit=True)
+assert d.beat_on.isChecked() and d.autoedit_settings()["beat"] and d.autoedit_settings()["music"]
+d.stages["music"].set_on(False); d._sync()            # 음악 단계 끔 = 음악 없음
+assert not d.autoedit_settings()["music"]
+d.stages["edit"].set_on(False); d.stages["music"].set_on(True); d._sync()
+assert not d.stages["music"].active() and d.stages["music"].summary == "편집을 켜야 함"
 print("OK test_v1694", flush=True)
 os._exit(0)

@@ -108,18 +108,17 @@ st.touch("segments"); wait(0.2)
 
 for s in p.sources:
     s.out = "vertical"                                # 세로 출력에서 글자 사각형 확인(v0.16.69)
-from dtme.ui_autoedit import AutoEditDialog  # noqa: E402
-dlg = AutoEditDialog(st, {s.id for s in p.sources}, e)
-dlg.length.setValue(1)
-dlg.music_on.setChecked(True)
-dlg.card_mode("start", "none"); dlg.card_mode("end", "none")      # v0.16.91 시작·끝 화면은 test_ui_v1691 에서
-assert dlg.settings()["minutes"] == 1 and dlg.settings()["grade"] and dlg.settings()["title"]
+dlg = e.make_auto_window()                           # v0.17.0 자동 창(자동 편집만 따로 = autoedit_settings)
+dlg.length.setValue(1); dlg.title_on.setChecked(True)
+dlg.stages["music"].set_on(True); dlg._sync()
+dlg.card["start"].set_value("none"); dlg.card["end"].set_value("none")      # v0.16.91 시작·끝 화면은 test_ui_v1691 에서
+assert dlg.autoedit_settings()["minutes"] == 1 and dlg.autoedit_settings()["grade"] and dlg.autoedit_settings()["title"]
 dlg.show(); wait(0.2)
 dlg.grab().save(os.path.join(d, "autoedit_dialog.png"))
 ui_style.confirm = lambda *a_, **k_: "ok"            # 타임라인 바꾸기 확인
 print("단계: 실행", flush=True)
 nu = len(st._undo)
-e.run_autoedit(dlg, dlg.settings())
+e.run_autoedit(dlg, dlg.autoedit_settings())
 assert wait(240, lambda: not dlg.isVisible()), dlg.state_lab.text()
 print("단계: 끝남", flush=True)
 wait(0.5)

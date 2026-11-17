@@ -31,37 +31,42 @@ e.import_files(vids); assert wait(90, lambda: len(st.project.sources) == 2 and a
 for s in st.project.sources:
     s.auto = {"preset": "shallow", "by": "user"}
 ui_style.confirm = lambda *a, **k: "ok"
-from dtme.ui_autoedit import AutoEditDialog
-# 1) 자동 편집: 시작 = 편집 창 숨김, 자동 편집 창 = 주인 없는 창 + [−] / 끝 = 편집 창 다시
-dlg = AutoEditDialog(st, {s.id for s in st.project.sources}, e); dlg.show(); wait(0.2)
+# 1) 자동 편집(v0.17.0 자동 창): 시작 = 편집 창 숨김, 자동 창 = 주인 없는 창 + [−] / 끝 = 편집 창 다시
+dlg = e.make_auto_window(); dlg.show(); wait(0.2)
 dlg.length.setValue(1)
 assert not dlg.b_min.isVisible()
-e.run_autoedit(dlg, dlg.settings()); wait(0.2)
+e.run_autoedit(dlg, dlg.autoedit_settings()); wait(0.2)
 hidden = not w.isVisible()
 print("작업 중: 편집 창 숨김", hidden, "· 주인 없음", dlg.parent() is None, "· [−]", dlg.b_min.isVisible())
 assert hidden and dlg.parent() is None and dlg.b_min.isVisible() and dlg.isVisible()
 dlg.b_min.click(); wait(0.1)                       # 내리기
 assert wait(120, lambda: w.isVisible()), "끝나면 편집 창"
 assert not dlg.isVisible() and st.project.segments
-# 2) 자동 편집 [취소] = 편집 창 다시
+# 2) 자동 창 작업 중 [취소] = 편집 창 다시 + 자동 창 남음(설정 화면)
 wait(1.0)                                          # 앞 작업 정리(Windows CI 에서 가끔 늦음)
-dlg2 = AutoEditDialog(st, {s.id for s in st.project.sources}, e); dlg2.show(); wait(0.2)
-e.run_autoedit(dlg2, dlg2.settings())
+dlg2 = e.make_auto_window(); dlg2.show(); wait(0.2)
+for k in ("grade", "music", "render"):
+    dlg2.stages[k].set_on(False)
+dlg2.stages["edit"].set_on(True); dlg2._sync()
+dlg2.b_start.click()
 assert wait(3, lambda: not w.isVisible()), "두 번째 자동 편집 = 편집 창 숨김"
-dlg2._cancel(); wait(0.3)
-assert w.isVisible() and not dlg2.isVisible()
-# 3) AUTO 창: [보정+편집] 누른 뒤 분석 기다림 = 편집 창 숨김 / 작업 중 [취소] = 편집 창 + AUTO 창 남음
+assert dlg2.running and not dlg2.rw.isVisible() and dlg2.run_w.isVisible()
+dlg2.cancel(); wait(0.3)
+assert w.isVisible() and dlg2.isVisible() and not dlg2.running and dlg2.rw.isVisible()
+dlg2.cancel(); wait(0.2)                           # 작업 없음 [취소] = 닫힘
+assert not dlg2.isVisible()
+# 3) 보정 단계: 분석 기다림 = 편집 창 숨김 / 작업 중 [취소] = 편집 창 + 자동 창 남음
 for s in st.project.sources:
     s.auto = {}
-ad = e.make_auto_dialog(); ad.show(); wait(0.2)
-for r in ad.rows:
-    r.result, r.prog = None, 0.0
-ad.mode = "each"
-e._auto_start(ad); wait(0.1)
-print("AUTO 분석 기다림: 편집 창 숨김", not w.isVisible(), "· AUTO 창", ad.isVisible(), ad.parent() is None)
-if ad.busy:
-    assert not w.isVisible() and ad.isVisible() and ad.parent() is None
-    ad.cancel(); wait(0.3)
-    assert w.isVisible() and ad.isVisible() and not ad.busy
-ad.reject()
+ad = e.make_auto_window(); ad.show(); wait(0.2)
+for k in ("edit", "music", "render"):
+    ad.stages[k].set_on(False)
+ad.stages["grade"].set_on(True); ad._sync()
+ad.analyze_all = lambda: None                      # 분석이 안 끝난 상태로 둠
+ad.b_start.click(); wait(0.1)
+print("보정 기다림: 편집 창 숨김", not w.isVisible(), "· 자동 창", ad.isVisible(), ad.parent() is None)
+assert ad.running and not w.isVisible() and ad.isVisible() and ad.parent() is None
+ad.cancel(); wait(0.3)
+assert w.isVisible() and ad.isVisible() and not ad.running
+ad.cancel()
 print("OK test_ui_v1674", flush=True); os._exit(0)

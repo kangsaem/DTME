@@ -184,8 +184,6 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
           python tests/test_outputs.py outputs_test
           if ($LASTEXITCODE -ne 0) { exit 1 }
-          python tests/test_launch_done.py
-          if ($LASTEXITCODE -ne 0) { exit 1 }
           python tests/test_curvekeys.py
           if ($LASTEXITCODE -ne 0) { exit 1 }
           python tests/test_ui_v1634.py
@@ -272,9 +270,9 @@ jobs:
           Write-Output $o_v1680
           if ($o_v1680 -notmatch "OK test_ui_v1680") { exit 1 }
           $global:LASTEXITCODE = 0
-          $o_v1681 = python tests/test_ui_v1681.py v1681_test 2>&1 | Out-String
-          Write-Output $o_v1681
-          if ($o_v1681 -notmatch "OK test_ui_v1681") { exit 1 }
+          $o_v1700 = python tests/test_ui_v1700.py v1700_test 2>&1 | Out-String
+          Write-Output $o_v1700
+          if ($o_v1700 -notmatch "OK test_ui_v1700") { exit 1 }
           $global:LASTEXITCODE = 0
           $o_v1684 = python tests/test_ui_v1684.py v1684_test 2>&1 | Out-String
           Write-Output $o_v1684

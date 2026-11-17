@@ -50,30 +50,38 @@ def poke():
         QTimer.singleShot(100, poke); return
     wait(1.0)
     seen["rows"] = len(dlg.rows)
-    seen["media"] = dlg.media_lab.text()
-    # AUTO 창에 사진 하나 더 끌어다 놓기
+    seen["music"] = dlg.music_box.isVisible() and "song" in dlg.music_box.text()
+    seen["photos"] = dlg.photo_lay.count() - 1               # (끝 여백 1개 뺌)
+    # 자동 창에 사진 하나 더 끌어다 놓기
     md = QMimeData(); md.setUrls([QUrl.fromLocalFile(png2)])
     ev = QDropEvent(QPointF(10, 10), Qt.CopyAction, md, Qt.LeftButton, Qt.NoModifier)
     dlg.dropEvent(ev); wait(1.0)
-    seen["media2"] = dlg.media_lab.text()
-    # 2) 작업 중 [취소] = 창 남김
-    for r in dlg.rows:                       # 분석 안 끝난 상태로(끝났으면 기다림 없이 바로 넘어감)
-        r.result, r.prog = None, 0.5
-    dlg.mode = "each"; dlg.waiting = "start"; dlg.set_busy(True)     # [보정+편집] 누른 뒤 분석 기다리는 중(작업 중)
-    seen["busy"] = bool(dlg.busy or dlg.waiting)
+    seen["photos2"] = dlg.photo_lay.count() - 1
+    seen["launcher_hidden"] = not la.isVisible()
+    # 2) 작업 중 [취소] = 창 남김(설정 화면으로)
+    for k in ("edit", "music", "render"):
+        dlg.stages[k].set_on(False)
+    dlg.stages["grade"].set_on(True); dlg._sync()
+    dlg.analyze_all = lambda: None             # 분석이 안 끝난 상태로 둠
+    dlg.b_start.click(); wait(0.2)
+    seen["busy"] = dlg.running and dlg._step == "grade"
     dlg.cancel(); wait(0.3)
     seen["after_cancel_visible"] = dlg.isVisible()
-    seen["after_cancel_busy"] = bool(dlg.busy or dlg.waiting)
-    dlg.reject()                             # 이제(작업 없음) [취소] = 예전대로 닫힘
+    seen["after_cancel_busy"] = dlg.running
+    seen["n_src"] = len(mw.state.project.sources)
+    seen["n_media"] = (len(mw.state.project.audios), len(mw.state.project.images))
+    dlg.cancel()                             # 이제(작업 없음) [취소] = 닫힘 → 넣은 영상 버림 · 시작 창으로
 QTimer.singleShot(100, poke)
 quit_called = []
 la._quit = lambda: quit_called.append(1)
 la.run_auto([WORK])
 print(seen)
-assert seen["rows"] == 2 and seen["media"] == "음악 1곡: song · 사진 1", seen
-assert seen["media2"] == "음악 1곡: song · 사진 2", seen
+assert seen["rows"] == 2 and seen["music"] and seen["photos"] == 1 and seen["photos2"] == 2 and seen["launcher_hidden"], seen
 assert seen["busy"] and seen["after_cancel_visible"] and not seen["after_cancel_busy"], seen
+assert seen["n_src"] == 2 and seen["n_media"] == (1, 2), seen
+assert la.isVisible() and not quit_called and not mw.state.project.sources, "v0.17.0 [취소] = 넣은 영상 버림 · 시작 창으로"
 st, e = mw.state, mw.edit
+e.import_files(vids + [mp3, png, png2]); wait(5, lambda: len(st.project.images) == 2)
 p = st.project
 assert len(p.audios) == 1 and len(p.images) == 2
 # 3) 파일 추가 버튼 이름

@@ -29,17 +29,16 @@ def wait(sec, cond=None):
 st, e = w.state, w.edit
 e.import_files(vids); wait(60, lambda: len(st.project.sources) == 5 and all(st.status.get(x.id) == "준비" for x in st.project.sources))
 print("소스", len(st.project.sources), [st.status.get(x.id) for x in st.project.sources], flush=True)
-from dtme import ui_auto  # noqa: E402
-ui_auto.AutoDialog.analyze_all = lambda self: None     # 체크 쓸기만 봄 — 뒤 분석 스레드 없이(Windows 종료 때 접근 위반 방지)
-dlg = e.make_auto_dialog(); dlg.show(); wait(1)
+dlg = e.make_auto_window(); dlg.show(); wait(1)      # v0.17.0 자동 창(AUTO 전 = 분석 없음)
+IT = dlg._src_items()                                # 머리줄을 뺀 소스 줄
 print("창", dlg.list.count(), flush=True)
 assert dlg.ver_lab.text() == f"DTME {__version__}"
 vp = dlg.list.viewport()
-pt = lambda i: QPoint(dlg.list.visualItemRect(dlg.list.item(i)).left() + 14, dlg.list.visualItemRect(dlg.list.item(i)).center().y())  # noqa: E731
+pt = lambda i: QPoint(dlg.list.visualItemRect(IT[i]).left() + 14, dlg.list.visualItemRect(IT[i]).center().y())  # noqa: E731
 ck = lambda: [r.checked for r in dlg.rows]  # noqa: E731
 print("체크", ck(), flush=True)
 assert ck() == [True] * 5
-sel0 = [it.isSelected() for it in (dlg.list.item(i) for i in range(5))]
+sel0 = [it.isSelected() for it in IT]
 # 1번 줄 누름(끔) → 3번까지 쓸기 → 2번으로 되돌림 → 놓기
 QTest.mousePress(vp, Qt.LeftButton, Qt.NoModifier, pt(1)); wait(0.05)
 assert ck() == [True, False, True, True, True]
@@ -49,7 +48,7 @@ QTest.mouseMove(vp, pt(2)); wait(0.05)
 assert ck() == [True, False, False, True, True], ck()
 QTest.mouseRelease(vp, Qt.LeftButton, Qt.NoModifier, pt(2)); wait(0.2)
 assert ck() == [True, False, False, True, True]
-assert [it.isSelected() for it in (dlg.list.item(i) for i in range(5))] == sel0, "체크 쓸기 = 줄 선택 안 바뀜"
+assert [it.isSelected() for it in IT] == sel0, "체크 쓸기 = 줄 선택 안 바뀜"
 # 꺼진 줄에서 시작 = 켬 칠하기, 위로
 QTest.mousePress(vp, Qt.LeftButton, Qt.NoModifier, pt(2)); wait(0.05)
 QTest.mouseMove(vp, pt(0)); wait(0.05)
@@ -67,9 +66,9 @@ assert ck() == [True, True, True, True, True], ck()
 QTest.mouseClick(vp, Qt.LeftButton, Qt.NoModifier, pt(4)); wait(0.2)
 assert ck() == [True, True, True, True, False]
 # 이름 쪽 클릭 = 줄 선택(체크 그대로)
-r = dlg.list.visualItemRect(dlg.list.item(3))
+r = dlg.list.visualItemRect(IT[3])
 QTest.mouseClick(vp, Qt.LeftButton, Qt.NoModifier, QPoint(r.left() + 120, r.center().y())); wait(0.2)
-assert dlg.list.item(3).isSelected() and ck() == [True, True, True, True, False]
+assert IT[3].isSelected() and ck() == [True, True, True, True, False]
 dlg.grab().save(os.path.join(d, "autocheck.png"))
 dlg.hide(); wait(0.3)
 print("OK test_ui_autocheck", flush=True)

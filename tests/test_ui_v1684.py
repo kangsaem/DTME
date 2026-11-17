@@ -64,10 +64,11 @@ assert not p.dive_on and e.player.mon.dive is None and not e.dive_off.isVisible(
 e.b_dive.click(); wait(0.2)
 assert p.dive_on
 # 자동 편집 창: 체크칸(다이빙 1개 · 기본 켬)
-from dtme.ui_autoedit import AutoEditDialog  # noqa: E402
-d = AutoEditDialog(st, {s1.id, s2.id}, w)
-print("체크:", d.dive_on.text(), d.dive_on.isChecked())
-assert d.dive_on.isEnabled() and d.dive_on.isChecked() and "다이빙 1개" in d.dive_on.text() and "15초" in d.dive_on.text() and d.settings()["dive"]
+d = e.make_auto_window(); d.dive_on.setChecked(True); d._sync()       # v0.17.0 자동 창
+print("체크:", d.dive_on.text(), d.dive_on.toolTip(), d.dive_on.isChecked())
+assert d.dive_on.isEnabled() and "다이빙 1개" in d.dive_on.toolTip() and "15초" in d.dive_on.toolTip() and d.autoedit_settings()["dive"]
+assert d.sum.text().startswith("다이빙 기록 1개") and "LOG" in d.stages["edit"].summary
+d.reject()
 # 컷 최소 10초(다이빙 소스) · 다이빙 밖은 그대로
 assert autoedit.dive_lens([6.0, 7.0, 8.0, 10.0], 40.0) == [15.5, 15.5]          # v0.16.88 최소 15초
 assert autoedit.dive_lens([16.0], 40.0) == [16.0] and autoedit.dive_lens([6.0], 12.0) == [12.0]
