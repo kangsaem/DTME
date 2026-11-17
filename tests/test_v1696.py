@@ -1,6 +1,6 @@
 """v0.16.96: 시작 화면(지명 160 가운데 · 기간 80 높이 80%) · 기간 = 처음 ~ 끝 하나 · 끝 화면(요약/지명/기간 3줄,
 LOG 없음 = 지명/기간, 맨 아래 하늘색 'See You Underwater', 직접 쓴 문구 = 그것만) · 끝 소리(흰 화면 동안 내림) ·
-선 아래 색 = 3.0초부터 0.4초 디졸브 · 분홍 점 1초 · 음악 = 한 곡 처음~끝 한 번, 30초 규칙, 컷 경계 = 마디 첫 박.
+선 아래 색 = 2.0초부터(v0.17.0) 0.4초 디졸브 · 분홍 점 1초 · 음악 = 한 곡 처음~끝 한 번, 30초 규칙, 컷 경계 = 마디 첫 박.
 사용: python tests/test_v1696.py"""
 import os
 import sys
@@ -96,17 +96,17 @@ print("끝 소리(실제 렌더, dB): 앞", v0, "· 내리는 중", v1, "· 끝 
 assert v0 > -40 and v0 - 15 < v1 < v0 - 2 and v2 < -70, (v0, v1, v2)
 
 # ---------------------------------------------------------------- 4) 선 아래 색 = 디졸브(긁기 없음) · 분홍 1초
-fi = [D.fill_in(D.anim(tc, 20.0)[1]) for tc in (0.0, 2.0, 2.99, 3.0, 3.2, 3.4, 5.0)]
+fi = [D.fill_in(D.anim(tc, 20.0)[1]) for tc in (0.0, 1.0, 1.99, 2.0, 2.2, 2.4, 5.0)]
 assert fi[:4] == [0.0, 0.0, 0.0, 0.0] or max(fi[:4]) < 1e-3, fi
 assert abs(fi[4] - 0.5) < 0.02 and fi[5] > 0.999 and fi[6] > 0.999, fi
 dive = {"id": "d", "start": 0.0, "pts": [[0, 0], [300, 20.0], [600, 5.0], [900, 0]], "max": 20.0}
-a_half = D.fill_alpha(480, 270, dive, 600.0, D.anim(3.2, 20.0)[1])[0]
+a_half = D.fill_alpha(480, 270, dive, 600.0, D.anim(2.2, 20.0)[1])[0]
 a_full = D.fill_alpha(480, 270, dive, 600.0, 1.0)[0]
 on = a_full > 0.02
 assert on.sum() > 500
 ratio = a_half[on] / a_full[on]
 assert abs(float(ratio.mean()) - 0.5) < 0.03 and float(ratio.std()) < 0.01, (ratio.mean(), ratio.std())     # 전체가 같은 비율 = 디졸브
-assert float(D.fill_alpha(480, 270, dive, 600.0, D.anim(2.9, 20.0)[1])[0].max()) < 1e-3
+assert float(D.fill_alpha(480, 270, dive, 600.0, D.anim(1.9, 20.0)[1])[0].max()) < 1e-3
 nfr = int(D.PULSE_SEC * D.PULSE_FPS)
 assert sum(D.is_flash(j / nfr) for j in range(nfr)) == D.PULSE_FPS == 12 and D.is_flash(0.0) and not D.is_flash(1.0 / D.PULSE_SEC + 1e-3)
 print("색 디졸브:", [round(x, 2) for x in fi], "· 분홍", sum(D.is_flash(j / nfr) for j in range(nfr)), "장/주기")

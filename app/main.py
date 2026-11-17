@@ -85,12 +85,9 @@ def show_front():
         w = QApplication.activeWindow() or next((x for x in tops if x.isMinimized()), None) or (tops[-1] if tops else None)
     if w is None:
         return
-    if w.isMinimized():
-        w.showNormal()
-    w.raise_()
-    w.activateWindow()
     try:
         from dtme import taskbar
+        taskbar.front(w)                     # v0.17.0 잠깐 맨 위 켰다 끔
         taskbar.flash(w)                     # Windows 가 앞으로 못 올리게 막으면 아이콘 깜빡임
     except Exception:  # noqa: BLE001
         pass
@@ -165,6 +162,18 @@ def main():
         w._launcher = Launcher(w)
         w._launcher.center()
         w._launcher.show()
+        from PySide6.QtCore import QTimer      # v0.17.0 처음 켤 때 시작 창이 뒤에 깔림 → 맨 앞으로(바로 + 0.3초 뒤 한 번 더)
+        from dtme import taskbar
+        taskbar.front(w._launcher)
+
+        def again():
+            try:
+                lw = getattr(w, "_launcher", None)
+                if lw is not None and lw.isVisible():
+                    taskbar.front(lw)
+            except RuntimeError:               # 이미 닫힌 창
+                pass
+        QTimer.singleShot(300, again)
     if os.environ.get("DTME_SELFTEST"):   # 빌드 점검용: 창을 띄우고 2초 뒤 종료
         from PySide6.QtCore import QTimer
         from PySide6.QtMultimedia import QMediaFormat

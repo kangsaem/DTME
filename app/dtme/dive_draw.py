@@ -28,16 +28,16 @@ def _sm(x: float) -> float:
     return x * x * (3 - 2 * x)
 
 
-FILL_FADE = 0.4                        # v0.16.96 선 아래 파란 색 = 긁지 않고, 선이 절반 그려진 때(컷 시작 3.0초)부터 0.4초 디졸브(사용자 11/16)
+FILL_FADE = 0.4                        # v0.16.96 선 아래 파란 색 = 긁지 않고, v0.17.0 = 선 긁기 시작(컷 시작 2.0초)부터 0.4초 디졸브(사용자 11/17)
 
 
 def fill_in(rv: float) -> float:
     """그래프 드러남(rv, 긁기 0~1) → 선 아래 색 투명도 0~1. rv = smoothstep(u) 의 u(시간 비율)를 되구해
-    u 0.5(= 컷 시작 G_IN + G_WIPE/2)부터 FILL_FADE 초 동안 디졸브 — 미리보기·렌더 같은 함수."""
+    u 0(= 컷 시작 G_IN, 선 긁기 시작과 같이)부터 FILL_FADE 초 동안 디졸브 — 미리보기·렌더 같은 함수(v0.17.0)."""
     import math
     rv = max(0.0, min(1.0, rv))
     u = 0.5 - math.sin(math.asin(1 - 2 * rv) / 3)
-    return _sm((u - 0.5) / (FILL_FADE / G_WIPE))
+    return _sm(u / (FILL_FADE / G_WIPE))
 
 
 def _wins(L: float, tail: float):

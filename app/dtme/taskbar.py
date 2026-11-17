@@ -85,3 +85,28 @@ def flash(w) -> None:
             QApplication.alert(w.window(), 0)
     except Exception:  # noqa: BLE001
         pass
+
+
+def front(w) -> None:
+    """v0.17.0 창을 맨 앞으로(처음 켤 때 시작 창이 뒤에 깔리던 것, 사용자 11/17): raise·activate +
+    Windows = 잠깐 맨 위(HWND_TOPMOST) 켰다 바로 끔(계속 맨 위 고정 아님 · 창이 숨었다 나타나지 않게 SetWindowPos 로)."""
+    try:
+        if w.isMinimized():
+            w.showNormal()
+        w.raise_()
+        w.activateWindow()
+    except Exception:  # noqa: BLE001
+        return
+    if os.name != "nt":
+        return
+    try:
+        u = ctypes.windll.user32
+        h = _hwnd(w)
+        if not h:
+            return
+        flags = 0x0001 | 0x0002 | 0x0040          # SWP_NOSIZE | SWP_NOMOVE | SWP_SHOWWINDOW
+        u.SetWindowPos(h, -1, 0, 0, 0, 0, flags)  # HWND_TOPMOST
+        u.SetWindowPos(h, -2, 0, 0, 0, 0, flags)  # HWND_NOTOPMOST
+        u.SetForegroundWindow(h)
+    except Exception:  # noqa: BLE001
+        pass
