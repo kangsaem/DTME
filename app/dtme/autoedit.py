@@ -837,6 +837,49 @@ def trips_of(spans: list[tuple[float, float]]) -> list[tuple[float, float]]:
     return [(a, b) for a, b in out]
 
 
+def trip_groups(dives: list, sources: list) -> list[tuple[str, list]]:
+    """v0.17.0 소스 목록 여행별 묶음: [(머리줄 '기간 · 지명'(기록 없으면 기간만), [소스…])] — 촬영 시각순.
+    촬영 시각을 모르는 소스 = 맨 뒤에 머리줄 없이('')."""
+    from .dive_draw import shot_time
+    timed, unknown = [], []
+    for s in sources:
+        try:
+            t = shot_time(s)
+        except Exception:  # noqa: BLE001
+            t = None
+        if t is None:
+            unknown.append(s)
+        else:
+            dur = s.frames / float(s.fps) if s.frames and s.fps else 0.0
+            timed.append((t, t + dur, s))
+    timed.sort(key=lambda x: x[0])
+    out = []
+    for a, b in trips_of([(x, y) for x, y, _s in timed]):
+        grp = [s for x, _y, s in timed if a <= x <= b]
+        place = trips_place(dives, [(a, b)]) if dives else ""
+        out.append((" · ".join(x for x in (period_text(a, b), place) if x), grp))
+    if unknown:
+        out.append(("", unknown))
+    return out
+
+
+def orient_count(sources: list) -> tuple[int, int]:
+    """(가로로 찍은 소스 수, 세로로 찍은 소스 수) — 크기를 아직 모르는 소스는 가로로 셈."""
+    from .project import is_portrait
+    v = sum(1 for s in sources if is_portrait(s))
+    return len(sources) - v, v
+
+
+def mix_note(sources: list) -> str:
+    """v0.17.0 가로·세로가 섞였을 때 목록 아래 알림 한 줄(안 섞임 = '')."""
+    h, v = orient_count(sources)
+    if not h or not v:
+        return ""
+    if v > h:
+        return f"가로 {h} · 세로 {v} — 가로 {h}개는 가운데 잘라 넣음"
+    return f"가로 {h} · 세로 {v} — 세로 {v}개는 가운데 잘라 넣음"
+
+
 def trips_dives(dives: list, trips: list[tuple[float, float]]) -> list:
     """여행 기간들의 다이빙(여행 사이 다이빙은 뺌)."""
     seen, out = set(), []

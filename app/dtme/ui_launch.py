@@ -1,19 +1,17 @@
-"""시작 창(v0.16.52): MOSCO v0.7.75 시작 창과 같은 틀 — 제목 표시줄·테두리 없는 400×560, 위 = 정사각형 그림(assets/start.png)
-+ 왼쪽 위 'DTME'·버전 + 오른쪽 위 ✕(종료) + 오른쪽 아래 세로 글자, 아래(#262626) = [AUTO] 160×48 + [편집] 160×32. 빈 곳을 끌어 옮김.
-(v0.16.8) 큰 [AUTO] + 작은 [MANUAL → 편집]. AUTO = 파일·폴더 선택(또는 끌어 놓기) → AUTO 창만 띄워 분석.
-[보정+편집] → 메인 편집 화면, [샘플] → AUTO 창 그대로, [보정+렌더] → 이 창에 진행 막대 → 끝나면 프로그램 종료,
-[취소] → 프로그램 종료(v0.16.9, 사용자 2026-11-07)."""
+"""시작 창(v0.16.52 틀 · v0.17.0 [AUTO] 하나): 제목 표시줄·테두리 없는 400×560, 위 = 정사각형 그림(assets/start.png)
++ 왼쪽 위 'DTME'·버전 + 오른쪽 위 ✕(종료) + 오른쪽 아래 세로 글자, 아래(#262626) = [AUTO] 160×48. 빈 곳을 끌어 옮김.
+[AUTO] = 빈 자동 창(ui_autowin) · 끌어다 놓기 = 그 파일이 들어간 자동 창 · 프로젝트 파일 = 바로 편집 화면.
+자동 창 [취소] = 넣은 영상 버리고 이 창으로 · 렌더 끝 [닫기] = 프로그램 종료 · 그 밖 = 편집 화면."""
 from __future__ import annotations
 
 from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont, QPainter, QPixmap
-from PySide6.QtWidgets import (QDialog, QFileDialog, QLabel, QMenu, QProgressBar, QPushButton,
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import QLabel, QPushButton, QVBoxLayout, QWidget
 
 from . import __version__, paths, ui_style
-from .project import Project, get_setting, set_setting
+from .project import Project
 
 VIDEO_EXT = {".mp4", ".mov"}
 MEDIA_FILTER = ("영상·사진·음악·다이빙 기록 (*.mp4 *.MP4 *.mov *.MOV *.jpg *.JPG *.jpeg *.JPEG *.png *.PNG "
@@ -126,7 +124,7 @@ class Launcher(QWidget):
                                    " font-size:14px; padding:0;} QPushButton:hover{background:#c0392b;}")
         self.b_close.move(IMG - 26 - 10, 10)
         self.b_close.clicked.connect(self.close)
-        # 아래: 버튼(동작은 예전 그대로 — [AUTO] · [편집](예전 MANUAL) · 렌더 중 진행 막대·글자·[폴더 열기])
+        # 아래: [AUTO] 하나(v0.17.0 — [편집] 없앰: 프로젝트 열기·그냥 편집 = 자동 창에서)
         self.b_auto = QPushButton("AUTO")
         self.b_auto.setFixedSize(160, 48)
         self.b_auto.setFocusPolicy(Qt.NoFocus)
@@ -135,43 +133,14 @@ class Launcher(QWidget):
         f.setPointSizeF(f.pointSizeF() * 1.3)
         f.setBold(True)
         self.b_auto.setFont(f)
-        self.b_auto.clicked.connect(self._menu)
-        self.b_manual = QPushButton("편집")
-        self.b_manual.setFixedSize(160, 32)
-        self.b_manual.setFocusPolicy(Qt.NoFocus)
-        self.b_manual.clicked.connect(self.manual)
-        self.bar = QProgressBar()
-        self.bar.setTextVisible(False)
-        self.bar.setFixedSize(160, 6)
-        from . import stage as SG
-        self.bar.setStyleSheet("QProgressBar{background:#2a2a2a; border:none;} QProgressBar::chunk{background:%s;}" % SG.STAGE["render"][1])   # v0.16.82 렌더 색 통일
-        self.bar.setVisible(False)
-        self.msg = QLabel("")
-        self.msg.setAlignment(Qt.AlignCenter)
-        self.msg.setStyleSheet("color:#9a9a9a;")
-        self.msg.setVisible(False)
-        self.b_folder = QPushButton("폴더 열기")
-        self.b_folder.setFixedSize(160, 26)
-        self.b_folder.setFocusPolicy(Qt.NoFocus)
-        self.b_folder.clicked.connect(self._open_folder)
-        self.b_folder.setVisible(False)
+        self.b_auto.clicked.connect(lambda: self.run_auto([]))
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(0)
         v.addWidget(self.img)
         v.addStretch(1)
         v.addWidget(self.b_auto, 0, Qt.AlignHCenter)
-        v.addSpacing(4)
-        v.addWidget(self.bar, 0, Qt.AlignHCenter)
-        v.addWidget(self.msg)
-        v.addSpacing(8)
-        v.addWidget(self.b_manual, 0, Qt.AlignHCenter)
-        v.addWidget(self.b_folder, 0, Qt.AlignHCenter)
         v.addStretch(1)
-        self.rendering = False
-        rp = mw.edit.render_panel
-        rp.runProgress.connect(self._render_progress)      # v0.16.33: 편집 화면 [렌더] 버튼과 같은 전체 진행(영상 길이 기준)
-        rp.runFinished.connect(self._render_finished)
 
     def _style(self, hot):
         self.setStyleSheet("#Launcher{background:#262626; border:none;}" if not hot else
@@ -196,24 +165,8 @@ class Launcher(QWidget):
         scr = self.screen().availableGeometry()
         self.move(scr.center().x() - self.width() // 2, scr.center().y() - self.height() // 2)
 
-    # ------------------------------------------------------------ 선택
-    def _menu(self):
-        m = QMenu(self)
-        a_f = m.addAction("파일 선택…")
-        a_d = m.addAction("폴더 선택…")
-        act = m.exec(self.b_auto.mapToGlobal(self.b_auto.rect().bottomLeft()))
-        start = get_setting("last_src_folder", "") or ""
-        if act is a_f:
-            files, _ = QFileDialog.getOpenFileNames(self, "파일 선택", start, MEDIA_FILTER)
-            if files:
-                self.run_auto(files)
-        elif act is a_d:
-            d = QFileDialog.getExistingDirectory(self, "폴더 선택", start)
-            if d:
-                self.run_auto([d])
-
     def dragEnterEvent(self, e):
-        if not self.rendering and e.mimeData().hasUrls():
+        if e.mimeData().hasUrls():
             e.acceptProposedAction()
             self._style(True)
 
@@ -227,103 +180,49 @@ class Launcher(QWidget):
 
     # ------------------------------------------------------------ AUTO
     def run_auto(self, paths):
-        if self.rendering:
-            return
-        allf = collect_media(paths)                 # v0.16.72 음악·사진도 같이 받음(편집 화면에서 씀)
-        files = [f for f in allf if Path(f).suffix.lower() in VIDEO_EXT]
-        if not files:
-            self._say("영상 없음")
-            return
-        try:
-            set_setting("last_src_folder", str(Path(files[0]).parent))
-        except Exception:  # noqa: BLE001
-            pass
-        self.b_folder.setVisible(False)
-        self._say("")
+        """[AUTO] = 빈 자동 창 / 끌어다 놓기 = 그 파일이 들어간 자동 창. 프로젝트 파일 = 바로 편집 화면.
+        자동 창 결과: 편집 화면으로 · 닫기(렌더 끝) = 종료 · 취소 = 넣은 영상 버리고 이 창으로."""
+        from .ui_autowin import is_project_file
         mw = self.mw
-        mw.state.set_project(Project())             # 시작 창 AUTO = 늘 새 작업
-        mw.state.defer_proxy = True                 # 프록시(재생용)는 [보정+편집] 때 — 분석·샘플·렌더는 원본에서
-        mw.edit.import_files(allf)
-        if not mw.state.project.sources:
-            mw.state.defer_proxy = False
-            self._say("영상 없음")
+        proj = next((f for f in paths if is_project_file(f)), None)
+        if proj:
+            mw.state.set_project(Project())
+            mw._load(proj)
+            self._to_editor()
             return
-        dlg = mw.edit.make_auto_dialog()
+        mw.state.set_project(Project())             # 시작 창 AUTO = 늘 새 작업
+        mw.state.defer_proxy = True                 # AUTO 전 = 파일 정보만(프록시는 AUTO 뒤)
+        dlg = mw.edit.make_auto_window(from_edit=False)
         c = self.geometry().center()
         dlg.move(c.x() - dlg.width() // 2, c.y() - dlg.height() // 2)
+        if paths:
+            dlg.add_paths(list(paths))
+            if dlg.outcome == "edit":               # 끌어다 놓은 것이 프로젝트였음
+                self._to_editor()
+                return
         self.hide()
-        r = dlg.exec()
-        if r == QDialog.Accepted and dlg.mode in ("each", "full"):   # [보정+편집]·[전부 자동](v0.16.81) → 메인 편집 화면
-            mw.state.resume_proxies()
-            mw.show()
-            mw.raise_()
-            self.close()
-            return
-        if not (r == QDialog.Accepted and dlg.mode == "render" and mw.edit.render_panel.running):
-            self._quit()                            # [취소]·Esc(또는 렌더할 것 없음) = 프로그램 종료
-            return
-        self.show()                                 # [보정+렌더] = 이 창에 진행 막대
-        self.rendering = True
-        self.b_auto.setEnabled(False)
-        self.bar.setValue(0)
-        self.bar.setVisible(True)
-        self._say("렌더 중…")
+        self._auto_dlg = dlg
+        dlg.exec()
+        if dlg.outcome == "edit":
+            self._to_editor()
+        elif dlg.outcome == "close":                # 렌더 끝 [닫기]
+            self._quit()
+        else:                                       # [취소] = 넣은 영상 버림
+            mw.state.defer_proxy = False
+            mw.state.set_project(Project())
+            self.show()
+            from . import taskbar
+            taskbar.front(self)
 
-    def _render_progress(self, frac, text, bad):
-        if not self.rendering:
-            return
-        from . import taskbar
-        self.bar.setValue(int(frac * 100))
-        self._say(f"렌더 {text}")
-        self.setWindowTitle(f"DTME {__version__} — 렌더 {text}")
-        taskbar.set_progress(self, frac, bad)          # 시작 창을 내려 둬도 작업 표시줄에 진행
-
-    def _render_finished(self, ok, bad, sec, folder):
-        """[보정+렌더] 끝(v0.16.33): 완료 팝업 → [확인]·[폴더 열기] 누르면 프로그램 종료(예전 = 바로 종료)."""
-        if not self.rendering:
-            return
-        from . import taskbar
-        from .ui_render import show_done_popup
-        self.rendering = False
-        self.b_auto.setEnabled(True)
-        self.bar.setVisible(False)
-        self.setWindowTitle(f"DTME {__version__}")
-        taskbar.clear(self)
-        self._say(f"완료 {ok}개" + (f" · 실패 {bad}개" if bad else ""), "#7fd18b" if not bad else "#f2c94c")
-        self.b_folder.setVisible(ok > 0)
-        if self.mw.isVisible():                           # 그새 편집 화면으로 갔으면 거기 팝업
-            return
-        self.show()
-        taskbar.flash(self)
-        self._done_dlg = show_done_popup(self, ok, bad, sec, folder,
-                                         on_close=None if bad else self._quit)   # 실패가 있으면 시작 창에 남김(예전과 같음)
+    def _to_editor(self):
+        mw = self.mw
+        mw.state.resume_proxies()
+        mw.show()
+        mw.raise_()
+        self.close()
+        mw.edit.after_auto()
 
     def _quit(self):
         from PySide6.QtWidgets import QApplication
         self.hide()
         QApplication.quit()
-
-    def _say(self, t, color="#9a9a9a"):
-        self.msg.setStyleSheet(f"color:{color};")
-        self.msg.setText(t)
-        self.msg.setVisible(bool(t))
-
-    def _open_folder(self):
-        from .ui_render import open_file, out_dir
-        open_file(str(out_dir(self.mw.state.project)))
-
-    # ------------------------------------------------------------ MANUAL
-    def manual(self):
-        if not self.rendering:
-            self.mw.state.set_project(Project())
-        self.mw.show()
-        self.mw.raise_()
-        self.close()
-
-    def closeEvent(self, e):
-        if self.rendering and not self.mw.isVisible():
-            if ui_style.confirm(self, "렌더 중입니다. 끄고 종료할까요?",
-                                [("cancel", "취소", 72, None), ("quit", "종료", 80, "red")]) != "quit":
-                e.ignore()
-                return
-        e.accept()

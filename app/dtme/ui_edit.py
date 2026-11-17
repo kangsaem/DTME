@@ -11,13 +11,13 @@ from pathlib import Path
 
 from PySide6.QtCore import QEvent, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QImage, QImageReader, QPainter, QPen, QPixmap
-from PySide6.QtWidgets import (QAbstractItemView, QAbstractSpinBox, QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QFileDialog, QFrame,
+from PySide6.QtWidgets import (QAbstractItemView, QAbstractSpinBox, QApplication, QButtonGroup, QCheckBox, QComboBox, QFileDialog, QFrame,
                                QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
                                QMenu, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSlider,
                                QSplitter, QStyle, QStyledItemDelegate, QTextEdit, QVBoxLayout, QWidget)
 
 from . import ff, jobs, paths, ui_style
-from .project import (MAX_LAYERS, TITLE_DEFAULT_SEC, Marker, RenderItem, Segment, display_name, grade_at, has_clip_grade, is_plain, new_layer,
+from .project import (MAX_LAYERS, TITLE_DEFAULT_SEC, Marker, RenderItem, Segment, display_name, has_clip_grade, is_plain, new_layer,
                       new_music, new_text, new_title_image, reframe_at, reframe_max, short_name,
                       speed_label, timecode)
 from .state import AppState
@@ -259,17 +259,12 @@ class EditTab(QWidget):
         self.mus_list.setVisible(False)
         self.music_info = {}                    # v0.16.64 음악 파일 → 분석(박자·파형·분위기)
         self._mus_jobs = set()
-        from .ui_auto import main_button as _mb
-        self.b_mauto = _mb("음악 자동", "red")         # v0.16.65 아래 ▼ 와 같은 크기(88×32) · [AUTO] 와 같은 색
-        self.b_mauto.clicked.connect(self.auto_music)
-        self.b_mauto.setToolTip("영상 길이·분위기에 맞춰 넣은 음악에서 골라 음악 줄을 채움")
-        self.b_mauto.setVisible(False)
         self.load_bar = QProgressBar()
         self.load_bar.setTextVisible(False)
         self.load_bar.setFixedHeight(6)
         from .ui_auto import main_button
         self.b_auto = main_button("AUTO", "red")
-        self.b_auto.setToolTip("전체 자동 보정 · 렌더")
+        self.b_auto.setToolTip("자동 창: 보정 · 편집 · 음악 · 렌더")
         self.b_auto.clicked.connect(self.open_auto)
         self.auto_bar = QProgressBar()
         self.auto_bar.setTextVisible(False)
@@ -296,7 +291,6 @@ class EditTab(QWidget):
         left.addWidget(self.src_list, 3)
         left.addWidget(self.img_list, 1)
         left.addWidget(self.mus_list, 1)
-        left.addWidget(self.b_mauto, 0, Qt.AlignLeft)       # 아래 렌더 칸 ▼ 와 같은 줄(왼쪽)
         left.addWidget(self.load_bar)
         self.src_box = QWidget()          # 오른쪽 열 위: 소스. 높이 = 모니터+바(렌더가 재생 버튼 줄부터 시작)
         self.src_box.setLayout(left)
@@ -383,11 +377,11 @@ class EditTab(QWidget):
             cut.addWidget(b)
         self.speed_group.button(1).setChecked(True)
         cut.addSpacing(12)
-        cut.addWidget(_btn("샘플", "G", lambda: self._key("g")))
         cut.addWidget(_btn("★", "장면 표시 (M) · 다시 누르면 지움", lambda: self._key("m")))
         cut.addWidget(_btn("글자", "타임라인 맨 앞에 글자 추가", self.add_text))
         cut.addWidget(_btn("사각형", "글자 배경용 사각형(타임라인 맨 앞, 글자 아래)", self.add_rect))
         cut.addSpacing(12)
+        cut.addWidget(_btn("샘플", "G", lambda: self._key("g")))      # v0.17.0 [스틸] 바로 왼쪽(회색)
         b_still = _btn("스틸", "S", lambda: self._key("s"))         # 빨강, ➜ 바로 왼쪽(v0.16.8)
         ui_style.tone(b_still, "red")
         cut.addWidget(b_still)
@@ -403,11 +397,7 @@ class EditTab(QWidget):
         self.tl_len = QLabel("")
         self.tl_len.setStyleSheet("color:#aaa;")
         b_trans = _btn("컷편집", "선택한 컷 앞 경계의 화면 전환", self.edit_transition)
-        from .ui_auto import main_button as _mb2
-        self.b_autoedit = _mb2("자동 편집", "red", 100)      # v0.16.67 시안: 고른 소스 → 하이라이트로 타임라인 채움
-        self.b_autoedit.clicked.connect(self.open_autoedit)
         lbox = QHBoxLayout()
-        lbox.addWidget(self.b_autoedit)
         lbox.addWidget(b_trans)
         lbox.addWidget(self.tl_len)
         self.tl_out = QComboBox()                          # v0.16.72 타임라인 출력(자동 = 첫 컷 소스)
@@ -1592,20 +1582,22 @@ class EditTab(QWidget):
         self.state.touch("segments")
         self._say("전환 뺌")
 
-    def preview_transition(self, cid):
-        """그 경계 앞뒤만 540p 로 빨리 렌더 → 모니터 위에서 반복 재생(같은 내용이면 다시 렌더 안 함)."""
+    def _trans_spec(self, cid):
+        """그 경계 미리보기 영상의 재료(v0.17.0 — 미리보기·편집 준비가 같이 씀). 전환 없음 = None.
+        {key, pick, orient, extras, out(파일), w0, a(컷 시작), d(전환 길이), i}"""
+        import hashlib
         from .project import plan_transitions
         from . import paths
-        from .ui_trans import decode_frames
         p = self.state.project
         segs = [g for g in p.segments if p.source(g.src) and p.source(g.src).frames]
         i = next((k for k, g in enumerate(segs) if g.id == cid), -1)
         if i < 0:
-            return
+            return None
         lens = [p.seg_out_seconds(g, p.source(g.src).fps) for g in segs]
-        t = plan_transitions(segs, lens)[i]
+        plan = plan_transitions(segs, lens)
+        t = plan[i]
         if not t:
-            return
+            return None
         d = t[1]
         margin = max(1.0, d)
 
@@ -1619,11 +1611,11 @@ class EditTab(QWidget):
                 c.fout = min(g.fout, g.fin + n)
             return c
         pick = ([part(segs[i - 1], True)] if i > 0 else []) + [part(segs[i], False)]
-        orient = "preview_v" if self._vert(p.source(segs[0].src) if segs else None) else "preview"
+        orient = "preview_v" if self._vert(p.tl_source(segs)) else "preview"       # v0.17.0 출력 = 많은 쪽 방향
         # v0.16.33: 그 구간의 타임라인 글자·이미지도 같이(예전 = 전환 미리보기에 글자·PNG 가 안 보임)
         starts, st = [], float(p.lead)                 # v0.16.71 앞 검은 구간
         for k, g in enumerate(segs):
-            pt = plan_transitions(segs, lens)[k]
+            pt = plan[k]
             if k > 0 and pt:
                 st -= pt[1]
             starts.append(st)
@@ -1643,28 +1635,51 @@ class EditTab(QWidget):
         extras = {"titles": tts, "music": [], "mix": p.mix} if tts else None
         key = (repr([({k: v for k, v in vars(c).items() if k != "id"}, p.grade_for_source(c.src, seg=c)) for c in pick])
                + orient + repr(tts))
+        pdir = paths.cache_dir() / "preview"
+        pdir.mkdir(parents=True, exist_ok=True)
+        out = pdir / f"trans_{hashlib.md5(key.encode('utf-8', 'replace')).hexdigest()[:12]}.mp4"
+        return {"key": key, "pick": pick, "orient": orient, "extras": extras, "out": out, "w0": w0, "a": starts[i], "d": d, "i": i}
+
+    def _trans_trim(self):
+        """전환 미리보기 파일 = 최근 것만(타임라인 경계 수 + 3개)."""
+        from . import paths
+        keep = max(3, len(self.state.project.segments) + 3)
+        pdir = paths.cache_dir() / "preview"
+        for old in sorted(pdir.glob("trans_*.mp4"), key=lambda f: f.stat().st_mtime)[:-keep]:
+            try:
+                old.unlink()
+            except OSError:
+                pass
+
+    def preview_transition(self, cid):
+        """그 경계 앞뒤만 540p 로 빨리 렌더 → 모니터 위에서 반복 재생(같은 내용이면 다시 렌더 안 함).
+        v0.17.0: 편집 준비 때 만들어 둔 파일이 있으면 렌더 없이 파일에서 풀기만."""
+        from .ui_trans import decode_frames
+        sp = self._trans_spec(cid)
+        if sp is None:
+            return
+        p = self.state.project
+        key, pick, orient, extras, out, w0, d, i = (sp[k] for k in ("key", "pick", "orient", "extras", "out", "w0", "d", "i"))
         if key == self._tp_key and self._tp_frames:
             self.trans_prev.play(self._tp_frames)
             return
         if self._tp_job is not None:
             self._tp_job.cancel.set()
-        pdir = paths.cache_dir() / "preview"
-        pdir.mkdir(parents=True, exist_ok=True)
-        for old in sorted(pdir.glob("trans_*.mp4"), key=lambda f: f.stat().st_mtime)[:-3]:   # 최근 3개만
-            try:
-                old.unlink()
-            except OSError:
-                pass
-        out = pdir / f"trans_{abs(hash(key)) % 10**10}.mp4"
+        self._trans_trim()
+        ready = out.exists() and out.stat().st_size > 1000
 
         def work(prog, cancel):
-            ff.render_video(p, pick, str(out), prog, cancel, orient, False, fast=True, extras=extras)
+            if not ready:
+                tmp = out.with_suffix(".part.mp4")
+                ff.render_video(p, pick, str(tmp), prog, cancel, orient, False, fast=True, extras=extras)
+                os.replace(tmp, out)
             return decode_frames(str(out))
         job = jobs.Job(work, with_progress=True)
         self._tp_job = job
-        job.signals.progress.connect(lambda v: self._say(f"전환 미리보기 {int(v * 100)}%"))
+        if not ready:
+            job.signals.progress.connect(lambda v: self._say(f"전환 미리보기 {int(v * 100)}%"))
 
-        def done(frames, job=job, key=key, cid=cid, w0=w0, a=starts[i], d=d):
+        def done(frames, job=job, key=key, cid=cid, w0=w0, a=sp["a"], d=d):
             if job is not self._tp_job:
                 return
             self._tp_job = None
@@ -1687,6 +1702,60 @@ class EditTab(QWidget):
         job.signals.done.connect(done)
         job.signals.error.connect(err)
         jobs.submit(jobs.PREVIEW_POOL, job)
+
+    def prep_transitions(self, on_prog=None, on_done=None):
+        """v0.17.0 편집 준비: 모든 경계의 전환 미리보기를 파일로만 미리(메모리에 풀지 않음 — 볼 때 파일에서 풀기).
+        on_prog(끝난 수, 전체) · on_done() — 실패한 경계는 건너뜀(볼 때 그 자리에서 다시)."""
+        p = self.state.project
+        specs = [sp for sp in (self._trans_spec(g.id) for g in p.segments) if sp is not None]
+        todo = [sp for sp in specs if not (sp["out"].exists() and sp["out"].stat().st_size > 1000)]
+        self._prep_job = None
+        if not todo:
+            if on_done:
+                on_done()
+            return
+        self._trans_trim()
+        n = len(todo)
+        cnt = [0]
+
+        def work(prog, cancel):
+            import time as _tm
+            t0 = _tm.monotonic()
+            for k, sp in enumerate(todo):
+                if cancel.is_set():
+                    raise ff.Cancelled()
+                tmp = sp["out"].with_suffix(".part.mp4")
+                try:
+                    ff.render_video(p, sp["pick"], str(tmp), lambda v, k=k: prog((k + v) / n), cancel, sp["orient"], False,
+                                    fast=True, extras=sp["extras"])
+                    os.replace(tmp, sp["out"])
+                except ff.Cancelled:
+                    raise
+                except Exception as ex:  # noqa: BLE001
+                    ff.log_error("편집 준비 전환", str(ex)[-300:])
+                cnt[0] = k + 1
+                prog((k + 1) / n)
+            ff.log_info(f"편집 준비: 전환 미리보기 {n}개 {_tm.monotonic() - t0:.1f}초")
+            return n
+        job = jobs.Job(work, with_progress=True)
+        self._prep_job = job
+        if on_prog:
+            on_prog(0, n)
+            job.signals.progress.connect(lambda _v: on_prog(cnt[0], n))
+
+        def end(*_a, job=job):
+            if self._prep_job is job:
+                self._prep_job = None
+                if on_done:
+                    on_done()
+        job.signals.done.connect(end)
+        job.signals.error.connect(end)
+        jobs.submit(jobs.PREVIEW_POOL, job)
+
+    def prep_transitions_cancel(self):
+        j, self._prep_job = getattr(self, "_prep_job", None), None
+        if j is not None:
+            j.cancel.set()
 
     # ---------------------------------------------------------------- v0.16.67 타임라인 컷 인·아웃 끌기 · 따라감
     CUT_MIN_SEC = 0.5
@@ -2820,7 +2889,6 @@ class EditTab(QWidget):
             it.setToolTip(f"{a['path']}\n" + (f"{a['dur']:.1f}초" if a.get("dur") else "읽는 중"))
             self.mus_list.addItem(it)
         self.mus_list.setVisible(bool(self.state.project.audios))
-        self.b_mauto.setVisible(bool(self.state.project.audios))
         self._analyze_audios()
 
     def _analyze_audios(self):
@@ -2949,17 +3017,6 @@ class EditTab(QWidget):
         self.state.touch("titles")
         self._say(f"음악 넣음 {d['t0']:.1f}초 · {Path(a['path']).stem}")
 
-    def open_autoedit(self):
-        from .ui_autoedit import AutoEditDialog
-        if not self.state.project.sources:
-            return
-        self.player.pause()
-        sids = self._selected_sids() or [s.id for s in self.state.project.sources]
-        dlg = AutoEditDialog(self.state, set(sids), self)
-        dlg.startRequested.connect(lambda st, dlg=dlg: self.run_autoedit(dlg, st))
-        self._autoedit_dlg = dlg
-        dlg.exec()
-
     def run_autoedit(self, dlg, st: dict, then=None):
         """[자동 편집](v0.16.68): (보정 안 된 소스 AUTO) → 화면 읽기·하이라이트 → 컷·전환·글자 → (음악 + 컷 경계를 마디에)
         → 타임라인에 넣기(실행취소 1번). 작업은 뒤에서, 넣기는 화면 스레드에서."""
@@ -3043,12 +3100,13 @@ class EditTab(QWidget):
         dlg_text = [""]
         job = jobs.Job(work, with_progress=True)
         dlg._job = job
+        own = bool(st.get("no_prep"))                   # v0.17.0 자동 창 = 진행 표시(막대·작업 표시줄)를 그 창이 함
         job.signals.progress.connect(lambda v: (dlg.set_progress(v, dlg_text[0]),
-                                                solo.progress(dlg, 0.25 + 0.5 * v if st.get("full") else v)))
+                                                None if own else solo.progress(dlg, 0.25 + 0.5 * v if st.get("full") else v)))
 
         def done(r):
             res, picks, infos, cards = r
-            if not dlg.isVisible():
+            if not dlg.isVisible() or getattr(dlg, "_cancelled", False):
                 return
             import time as _tm
             t_put = _tm.monotonic()
@@ -3154,7 +3212,7 @@ class EditTab(QWidget):
             if not st.get("full"):                        # 전부 자동 = 작업 창 그대로(렌더까지)
                 solo.leave(dlg)
             self.set_tl_fit(True)                         # v0.16.78 자동 편집 뒤 = 타임라인 끝에서 끝까지
-            if p.segments:
+            if p.segments and not st.get("no_prep"):      # v0.17.0 자동 창 = 편집 화면 준비(미리보기·프록시)는 나중에(after_auto)
                 self.set_mode("timeline")
                 self.show_timeline(0.0)
             if not st.get("full"):
@@ -3163,6 +3221,11 @@ class EditTab(QWidget):
                 then()
 
         def err(msg):
+            if hasattr(dlg, "_fail"):                     # v0.17.0 자동 창
+                if not ("Cancelled" in msg or msg == "취소됨" or getattr(dlg, "_cancelled", False)):
+                    ff.log_error("자동 편집", msg)
+                    dlg._fail(f"자동 편집 실패: {msg[-80:]}")
+                return
             dlg.set_running(False)
             solo.leave(dlg, keep_dialog=True)
             if "Cancelled" in msg or not dlg.isVisible():
@@ -3206,7 +3269,7 @@ class EditTab(QWidget):
         p.end_fade = 0.0 if "end" in cards else max(float(p.end_fade or 0.0), autoedit.FADE_OUT_SEC)   # 끝 화면 = 페이드 없이 끝
         ff.log_info(f"시작·끝 화면: {sorted(cards)} · 지명 {place!r} · 기간 {period!r}")
 
-    def auto_music(self):
+    def auto_music(self, ask: bool = True, then=None):
         """[음악 자동](v0.16.64): 타임라인 영상의 분위기(움직임·컷 빠르기·배속)를 재고, 넣은 음악 중 분위기가 가까운 곡으로
         영상 길이를 채움(모자라면 곡을 이어 붙여 크로스페이드). 실행취소 1번."""
         from . import music
@@ -3214,15 +3277,19 @@ class EditTab(QWidget):
         segs = list(p.segments)
         if not segs:
             self._say("타임라인이 비어 있음", C_WARN)
+            if then is not None:
+                then(False)
             return
+        if not [a for a in p.audios if not a.get("builtin")]:
+            self.state.add_default_music()               # v0.17.0 올린 곡 없음 = 기본 음악(자동 편집과 같음)
         if not p.audios:
+            if then is not None:
+                then(False)
             return
         total = max((st + ln for _g, st, ln in self._tl_cuts), default=0.0)
-        if p.music and ui_style.confirm(self, "음악 줄을 바꿀까요?", [("cancel", "취소", 72, None), ("ok", "바꾸기", 80, "red")]) != "ok":
+        if ask and p.music and ui_style.confirm(self, "음악 줄을 바꿀까요?", [("cancel", "취소", 72, None), ("ok", "바꾸기", 80, "red")]) != "ok":
             return
         auds = [a for a in p.audios if Path(a["path"]).exists()]
-        self.b_mauto.setEnabled(False)
-        self.b_mauto.setText("분석 중…")
 
         def work():
             infos = {a["path"]: music.get(a["path"]) for a in auds}
@@ -3233,8 +3300,6 @@ class EditTab(QWidget):
             infos, vm = r
             self.music_info.update(infos)
             self.timeline.set_music_info(self.music_info)
-            self.b_mauto.setEnabled(True)
-            self.b_mauto.setText("음악 자동")
             p = self.state.project                     # (분석하는 사이 실행취소 등으로 바뀌었을 수 있음)
             from . import auto, autoedit
             from .project import cut_spans
@@ -3246,8 +3311,10 @@ class EditTab(QWidget):
             items = music.clip_end(music.fill_tail(items, auds, infos, total, xf), total)
             if not items:
                 self._say("쓸 수 있는 음악이 없음", C_WARN)
+                if then is not None:
+                    then(False)
                 return
-            self.state.checkpoint()
+            self.state.checkpoint(label="음악 자동")
             p.music = [{**new_music(x["path"], x["t0"], x["dur"]), "off": x["off"], "len": x["len"],
                         "gain": music.norm_gain(infos.get(x["path"])), "boost": x.get("boost", 1.0)} for x in items]
             p.mix["fout"] = max(4.0, float(p.mix.get("fout", 2.0)))
@@ -3256,12 +3323,14 @@ class EditTab(QWidget):
                                f"{' · 웅장' if music.grand(infos[x['path']]) >= 0.6 else ''})" for x in items)
             self._say(f"음악 자동: 영상 {music.mood_word(vm['mood'])} · {names}", C_INFO)
             ff.log_info(f"음악 자동: 영상 {vm} → {[(Path(x['path']).name, round(music.mood(infos[x['path']]), 2), x['len']) for x in items]}")
+            if then is not None:
+                then(True)
 
         def err(msg):
-            self.b_mauto.setEnabled(True)
-            self.b_mauto.setText("음악 자동")
             ff.log_error("음악 자동", msg)
             self._say(f"음악 자동 실패: {msg[-120:]}", C_WARN)
+            if then is not None:
+                then(False)
         job = jobs.Job(work)
         job.signals.done.connect(done)
         job.signals.error.connect(err)
@@ -3345,21 +3414,34 @@ class EditTab(QWidget):
         self.auto_bar.setValue(int(v * 100))
 
     def open_auto(self):
-        if not self.state.project.sources:
-            return
+        """[AUTO] = 자동 창(v0.17.0): 지금 소스 전체가 들어간 채로 열림(소스 없어도 열림 — 그 창에서 넣음)."""
         self.player.pause()
-        self.make_auto_dialog().exec()
+        dlg = self.make_auto_window(from_edit=True)
+        dlg.exec()
+        if dlg.outcome == "edit":
+            self.after_auto()
 
-    def make_auto_dialog(self):
-        from .ui_auto import AutoDialog
-        dlg = AutoDialog(self.state, self)
-        dlg.startRequested.connect(lambda: self._auto_start(dlg))
-        dlg.sampleRequested.connect(lambda: self._auto_sample(dlg))
-        dlg.on_cancel_work = lambda: self._auto_cancel_work(dlg)
-        geo = self.window().geometry()
+    def make_auto_window(self, from_edit: bool = True):
+        from .ui_autowin import AutoWindow
+        dlg = AutoWindow(self, self.window() if from_edit else None, from_edit=from_edit)
+        geo = self.window().geometry() if self.window().isVisible() else self.screen().availableGeometry()
         dlg.move(geo.center().x() - dlg.width() // 2, geo.center().y() - dlg.height() // 2)
         self._auto_dlg = dlg
         return dlg
+
+    def after_auto(self):
+        """자동 창이 끝나고 편집 화면이 보인 뒤: 타임라인이 있으면 타임라인 첫 화면, 없으면 첫 소스(반반)."""
+        p = self.state.project
+        self.set_tl_fit(True)
+        if p.segments:
+            self.set_mode("timeline")
+            self.show_timeline(0.0)
+        elif p.sources:
+            if not self._cur():
+                self._select_source(p.sources[0].id)
+            if any((s.auto or {}).get("preset") for s in p.sources):
+                self.grade.set_view("split")
+            self._load_current()
 
     def _set_split_dir(self, v):
         self.player.mon.split_v = v
@@ -3377,214 +3459,6 @@ class EditTab(QWidget):
             except Exception:  # noqa: BLE001
                 pass
         return d
-
-    def _auto_start(self, dlg):
-        """[시작] 저장폴더 → (분석 덜 끝났으면 기다림) → 클립에 적용 → 바로 렌더 또는 개별 보정."""
-        if dlg.mode == "full":
-            self._auto_full(dlg)
-            return
-        if dlg.mode == "render" and not dlg.busy and not getattr(dlg, "_folder", ""):   # [보정+편집]은 파일을 안 만들어 폴더 안 물음
-            from .ui_render import ask_quality
-            if not ask_quality(dlg, self.state):          # v0.16.80 용량 먼저(1분당 예상) → 저장폴더
-                return
-            d = self._ask_folder()
-            if not d:
-                return
-            dlg._folder = d
-        if dlg.mode == "render":
-            self._auto_render_step(dlg)
-            return
-        if self.state.defer_proxy:                 # 시작 창 [보정+편집]: 분석과 함께 프록시 시작(기다리지 않음 → 편집 화면에서 계속)
-            self.state.resume_proxies()
-        if not self.window().isVisible() and not self._allow_hidden:   # 편집 화면 첫 장면 미리(원본 구간 캐시·보정 화면)
-            self._allow_hidden = True
-            self._load_current()
-        if dlg.wait_then("start"):
-            dlg.set_busy(True)
-            from . import solo
-            solo.enter(dlg, self.window())           # v0.16.74 분석 기다리는 동안 = AUTO 창만(편집 창 숨김)
-            return
-        rows = dlg.chosen_rows()
-        if not rows:
-            dlg.set_busy(False)
-            return
-        self._auto_begin(dlg)
-        self._auto_apply(dlg, rows)
-        self.grade.set_view("split")
-        if rows:
-            self._select_source(rows[0].sid)
-        self._say(f"AUTO 완료: {len(rows)}개 클립", C_OK)
-        from . import solo
-        solo.leave(dlg)
-        dlg.accept()
-
-    # ---------------------------------------------------------------- [전부 자동](v0.16.81)
-    def _auto_full(self, dlg):
-        """AUTO 창 [전부 자동]: 설정 팝업(자동 편집과 같음) → 용량 → 저장폴더 → 작업 창 하나로 끝까지(v0.16.82)
-        [보정(분석) → 편집 → 음악 → 렌더] 단계 막대 · 프로젝트 저장(체크 시). AUTO 창은 설정 뒤 바로 닫음(분석은 계속)."""
-        from . import solo
-        from .ui_autoedit import AutoEditDialog
-        if not getattr(dlg, "_full", None):
-            if dlg.busy:
-                return
-            sids = [r.sid for r in dlg.rows if r.checked]
-            if not sids:
-                return
-            ed = AutoEditDialog(self.state, set(sids), dlg, full=True)
-            ed.stage_bar.setVisible(False)                  # 설정 팝업에서는 막대 없음
-            ed.move(dlg.geometry().center().x() - ed.width() // 2, dlg.geometry().center().y() - ed.height() // 2)
-            got = {}
-
-            def go(st, ed=ed):
-                if self._full_ask(ed):
-                    got["st"] = st
-                    ed.accept()
-            ed.startRequested.connect(go)
-            ed.exec()
-            if "st" not in got:
-                return
-            dlg._full = got["st"]
-            dlg._folder = self.state.project.output.folder
-            self._auto_begin(dlg)                          # 설정 저장·이름(실행취소 지점 = 자동 편집 1번)
-            # 작업 창(단계 막대) — 편집 창은 숨김, 이 창만 작업 표시줄에
-            w = AutoEditDialog(self.state, set(sids), self, full=True)
-            w.length.setValue(int(got["st"]["minutes"]))
-            w.title_on.setChecked(got["st"].get("title", True))
-            w.music_on.setChecked(bool(got["st"].get("music")))
-            w.save_on.setChecked(bool(got["st"].get("save")))
-            w.set_running(True)
-            w.set_stage("analyze", 0.0)
-            w.on_cancel = lambda: self._full_cancel(dlg)
-            geo = self.window().geometry()
-            w.move(geo.center().x() - w.width() // 2, geo.center().y() - w.height() // 2)
-            self._full_dlg, self._full_auto = w, dlg
-            dlg.accept()                                   # AUTO 창 닫음(분석 작업·결과는 이 객체에 남아 계속)
-            w.show()
-            if not solo.enter(w, self.window()):
-                w.raise_()
-            w.rejected.connect(lambda: solo.leave(w))
-            if dlg.wait_then("start"):                     # 분석 덜 끝남 = 끝나면 startRequested → 여기(다시)
-                self._full_poll()
-                return
-        w = getattr(self, "_full_dlg", None)
-        if w is None or not w.isVisible():
-            dlg._full = None
-            return
-        if dlg.pending():
-            return
-        st, dlg._full = dlg._full, None
-        rows = [r for r in dlg.chosen_rows() if r.sid in set(st["sids"])]
-        st["sids"] = [r.sid for r in rows]
-        if not rows:
-            w.set_stage("analyze", 0.0, "분석 결과 없음")
-            w.set_running(False)
-            return
-        w.set_stage("analyze", 1.0)
-        self._auto_apply(dlg, rows)
-        st["grade"], st["replace_ok"], st["full"] = False, True, True
-        w.set_stage("edit", 0.0)
-        self.run_autoedit(w, st, then=lambda: self._full_render(st))
-
-    def _full_poll(self):
-        """보정(분석) 단계 진행 = AUTO 창(닫힌 채) 상태를 0.3초마다 읽어 작업 창 막대에."""
-        w, dlg = getattr(self, "_full_dlg", None), getattr(self, "_full_auto", None)
-        if w is None or dlg is None or not w.isVisible() or w.stage_bar.k > 0 or not getattr(dlg, "_full", None):
-            return
-        _t, _kind, v = dlg.status_text()
-        rows = [r for r in dlg.rows if r.checked]
-        n = len(rows)
-        done = sum(1 for r in rows if r.result is not None or r.error)
-        v = sum(min(1.0, r.prog) for r in rows) / max(1, n) if n else v
-        w.set_stage("analyze", v, f"{done}/{n}")
-        from . import solo
-        solo.progress(w, 0.25 * v)
-        QTimer.singleShot(300, self._full_poll)
-
-    def _full_cancel(self, dlg):
-        """작업 창 [취소]: 그 단계만 멈춤(분석 · 편집 · 렌더). 넣은 값·편집 결과는 그대로(실행취소로 되돌림)."""
-        w = getattr(self, "_full_dlg", None)
-        k = w.stage_bar.k if w is not None else 0
-        if k == 0 and dlg is not None:
-            dlg._full = None
-            dlg.waiting = None
-            for j in dlg.jobs:
-                j.cancel.set()
-                jobs.AUTO_POOL.tryTake(j)
-            dlg.jobs = []
-            self.state.clear_work("analyze", {r.sid for r in dlg.rows})
-        if k == 3 and self.render_panel.running:
-            self.render_panel.cancel_all()
-        self._full_dlg = None
-        from . import solo
-        if w is not None:
-            solo.leave(w)
-
-    def _full_ask(self, parent) -> bool:
-        """[전부 자동] 시작 전: (타임라인 바꾸기 확인) → 렌더 용량 → 저장폴더. 하나라도 취소 = False."""
-        from .ui_render import ask_quality
-        p = self.state.project
-        if p.segments and ui_style.confirm(parent, "타임라인을 바꿀까요?",
-                                           [("cancel", "취소", 72, None), ("ok", "바꾸기", 80, "red")]) != "ok":
-            return False
-        if not ask_quality(parent, self.state):
-            return False
-        d = self._ask_folder()
-        if not d:
-            return False
-        if p.output.folder != d:
-            p.output.folder = d
-            self.state.dirty = True
-        return True
-
-    def _full_render(self, st):
-        """자동 편집 끝 → 타임라인을 렌더 리스트에 1개로 → 그것만 렌더(막대 = 렌더 단계) · 프로젝트 저장(영상과 같은 이름 .dtme.json)."""
-        from .ui_render import file_name, out_dir, unique
-        p = self.state.project
-        w = getattr(self, "_full_dlg", None)
-        if not p.segments:
-            if w is not None:
-                w.set_stage("edit", 0.0, "컷 없음")
-                w.set_running(False)
-            return
-        self.timeline_to_render()
-        it = p.render_items[-1]
-        if st.get("save"):
-            try:
-                f = unique(out_dir(p) / f"{file_name(p, it)}.dtme.json")
-                p.save(str(f))
-                self.state.dirty = False
-                self._say(f"프로젝트 저장 ✓  {f}", C_OK)
-                win = self.window()
-                if hasattr(win, "_title"):
-                    win._title()
-            except Exception as ex:  # noqa: BLE001
-                ff.log_error("전부 자동 프로젝트 저장", str(ex))
-        if w is not None:
-            w.set_stage("render", 0.0)
-            from . import solo
-            rp = self.render_panel
-
-            def on_prog(frac, text, _bad, w=w):
-                if w.isVisible():
-                    w.set_stage("render", frac, text)
-                    solo.progress(w, 0.75 + 0.25 * frac)
-
-            def on_end(ok, bad, _sec, _folder, w=w):
-                for sig, fn in ((rp.runProgress, on_prog), (rp.runFinished, on_end)):
-                    try:
-                        sig.disconnect(fn)
-                    except (RuntimeError, TypeError):
-                        pass
-                if self._full_dlg is w:
-                    self._full_dlg = None
-                if w.isVisible():
-                    w.set_stage("render", 1.0, f"완료 {ok}" + (f" · 실패 {bad}" if bad else ""))
-                    solo.leave(w)
-                    w.accept()
-            rp.runProgress.connect(on_prog)
-            rp.runFinished.connect(on_end)
-        self._set_auto_bar(0.0, "#d9604f")
-        self.render_panel.enqueue([it])
 
     def _auto_begin(self, dlg):
         """AUTO 적용 시작: 설정 저장 · 실행취소 지점 1번 · 저장폴더·이름."""
@@ -3620,149 +3494,6 @@ class EditTab(QWidget):
         self.grade._load_controls()
         self.grade.keysChanged.emit()
         self._refresh_tips()
-
-    def _auto_cancel_work(self, dlg):
-        """AUTO 창 작업 중 [취소](v0.16.72): [보정+렌더]로 시작한 렌더·샘플 멈춤, 창은 남김(다시 누르면 처음부터)."""
-        dlg._full = None                              # v0.16.81 [전부 자동] 분석 기다리던 중 취소 = 다시 누르면 팝업부터
-        if getattr(dlg, "_started", False):
-            self._auto_feeding = False
-            dlg._started = False
-            if self.render_panel.running:
-                self.render_panel.cancel_all()
-        self._set_auto_bar(1.0, "#555")
-        from . import solo
-        solo.leave(dlg, keep_dialog=True)
-
-    def _auto_render_step(self, dlg):
-        """[보정+렌더]: 분석이 끝난 영상부터 바로 값 넣고 렌더 시작(뒤 영상은 그동안 분석). 모두 끝나면 창 닫음."""
-        p = self.state.project
-        if not getattr(dlg, "_started", False):
-            dlg._started, dlg._applied = True, set()
-            self._auto_begin(dlg)
-            self._auto_items = set()
-            self._auto_feeding = True
-        ready = [r for r in dlg.chosen_rows() if r.sid not in dlg._applied]
-        if ready:
-            self._auto_apply(dlg, ready)
-            items = []
-            for r in ready:
-                dlg._applied.add(r.sid)
-                s = p.source(r.sid)
-                a, b = s.io
-                items.append(RenderItem(name=short_name(s.path), segs=[p.snap_seg(Segment(s.id, a, b, 1.0))],
-                                        orientation=r.out, audio=True))
-            p.render_items += items
-            self._auto_items |= {it.id for it in items}
-            self.state.touch("render")
-            if not self.render_panel.running:
-                self._set_auto_bar(0.0, "#d9604f")
-            self.render_panel.enqueue(items)
-        from . import solo
-        if dlg.pending():
-            dlg.waiting = "start"
-            dlg.set_busy(True)
-            solo.enter(dlg, self.window())           # v0.16.74 분석 기다리는 동안 = AUTO 창만
-            dlg.analyze_all()
-            return
-        dlg.waiting = None
-        self._auto_feeding = False
-        solo.leave(dlg)
-        dlg.accept()
-        if not dlg._applied:
-            dlg.set_busy(False)
-        elif not self.render_panel.running:          # 이미 다 끝남
-            self._render_progress("", 1.0, False)
-
-    def _auto_sample(self, dlg):
-        """[샘플] 저장 창(폴더·크기·형식·이름) → 클립마다 반반 PNG 6장. 클립 값은 바꾸지 않음."""
-        from . import auto
-        from .ui_auto import SampleDialog, sample_frames6, sample_name
-        if not dlg.busy and not getattr(dlg, "_scfg", None):
-            from .project import get_setting
-            sd = SampleDialog(dlg.name.text().strip(), self.state.project.output.folder or get_setting("last_folder", ""), dlg,
-                              "lr" if self.player.mon.split_v else "tb")      # 배치 기본 = 모니터 반반 방향
-            sd.move(dlg.geometry().center().x() - sd.width() // 2, dlg.geometry().center().y() - 150)
-            if sd.exec() != QDialog.Accepted:
-                return
-            dlg._scfg = sd.config()
-            dlg._sfolder = sd.folder.text().strip()
-        if dlg.wait_then("sample"):
-            dlg.set_busy(True)
-            return
-        cfg, folder = dlg._scfg, Path(dlg._sfolder)
-        dlg._scfg = None
-        folder.mkdir(parents=True, exist_ok=True)
-        rows = dlg.chosen_rows()
-        p = self.state.project
-        todo = []
-        for r in rows:
-            s = p.source(r.sid)
-            gk = r.result["gkeys"] if dlg.keys.value() == "auto" else s.gkeys
-            for k, f in enumerate(sample_frames6(s), start=1):
-                g = grade_at(r.result["grade"], gk, f) if gk else r.result["grade"]
-                out = unique(folder / sample_name(cfg, s, k, auto.preset_label(r.result["preset"])))
-                todo.append((s, f, g, str(out), r.out))
-        if not todo:
-            dlg.set_busy(False)
-            return
-        dlg.set_busy(True, "#d9a646")
-        from . import solo
-        solo.enter(dlg, self.window())               # v0.16.74 샘플 만드는 동안 = AUTO 창만
-        dlg.bar.setValue(0)
-        gpu = p.output.gpu_decode
-        size, fmt, layout = int(cfg.get("size", 1920)), cfg.get("fmt", "png8"), cfg.get("layout", "side")
-
-        def work(prog, cancel):
-            for i, (s, f, g, out, orient) in enumerate(todo):
-                if cancel.is_set():
-                    raise ff.Cancelled()
-                ff.export_split(s, f, g, out, size, fmt, "vertical" if ff.is_vertical(orient) else "horizontal", gpu, layout)
-                prog((i + 1) / len(todo))
-            return len(todo)
-        job = jobs.Job(work, with_progress=True)
-        dlg.jobs.append(job)
-        per = {}                                    # sid → [인덱스…] (소스 줄 = 샘플 k/6)
-        for i, t in enumerate(todo):
-            per.setdefault(t[0].id, []).append(i)
-        for sid in per:
-            self.state.set_work(sid, "sample", -1)
-        order = list(per)
-
-        def on_prog(v):
-            solo.progress(dlg, v)
-            k = int(round(v * len(todo)))
-            dlg.bar.setValue(int(v * 100))
-            for sid, idx in per.items():
-                got = sum(1 for i in idx if i < k)
-                if got >= len(idx):
-                    self.state.set_work(sid, None)
-                elif got > 0 or (idx[0] <= k):
-                    self.state.set_work(sid, "sample", got / len(idx), f"샘플 {got}/{len(idx)}")
-            cur = next((n for n, sid in enumerate(order, start=1) if self.state.work.get(sid, ("",))[0] == "sample"
-                        and self.state.work[sid][1] >= 0), 0)
-            done_n = sum(1 for sid in order if sid not in self.state.work)
-            dlg.show_state(f"샘플 {done_n}/{len(order)}" + (f" ({cur}번)" if cur else ""), "sample")
-        job.signals.progress.connect(on_prog)
-        on_prog(0.0)
-
-        def done(n):
-            self.state.clear_work("sample", set(per))
-            solo.leave(dlg, keep_dialog=True)
-            dlg.set_busy(False)
-            dlg.set_bar_color("#d9a646")
-            dlg.bar.setValue(100)
-            dlg.show_state(f"샘플 {len(order)}/{len(order)} · {n}장 저장", "sample")
-            self._say(f"샘플 {n}장 저장 ✓  {folder}", C_OK)
-
-        def err(m):
-            self.state.clear_work("sample", set(per))
-            solo.leave(dlg, keep_dialog=True)
-            dlg.set_busy(False)
-            dlg._progress()
-            self._say(f"샘플 실패: {m[-160:]}", C_WARN)
-        job.signals.done.connect(done)
-        job.signals.error.connect(err)
-        jobs.submit(jobs.RENDER_POOL, job)
 
     def _render_progress(self, iid, v, running):
         """AUTO 렌더 진행 → 맨 위 빨간 막대 + 소스 줄 배경."""

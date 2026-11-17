@@ -818,6 +818,22 @@ class Project:
         key = (getattr(src, "out", "") if src is not None else "") or rotate_for(self.output.orientation, src)   # v0.16.70 세로 촬영 = 돌린 크기
         return clamp_src(key, src)
 
+    def tl_source(self, segs=None) -> Source | None:
+        """v0.17.0 타임라인 출력을 정하는 소스: 컷에 쓰인 소스 중 많은 쪽 방향(가로·세로, 같으면 가로)의 첫 소스.
+        예전 = 첫 컷 소스. 방향이 다른 클립은 가운데 크롭."""
+        segs = self.segments if segs is None else segs
+        srcs, seen = [], set()
+        for g in segs:
+            s = self.source(g.src)
+            if s is not None and s.id not in seen:
+                seen.add(s.id)
+                srcs.append(s)
+        if not srcs:
+            return None
+        nv = sum(1 for s in srcs if is_portrait(s))
+        want = nv > len(srcs) - nv
+        return next((s for s in srcs if is_portrait(s) == want), srcs[0])
+
     def source(self, sid: str) -> Source | None:
         return next((s for s in self.sources if s.id == sid), None)
 
