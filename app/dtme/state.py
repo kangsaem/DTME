@@ -358,6 +358,7 @@ class AppState(QObject):
         self.touch("images")
         return len(new)
 
+    @staticmethod
     def _image_info(path: str) -> dict:
         """크기·방향: Qt 로 헤더만(빠름), 안 되면 ffprobe. 작업 스레드에서."""
         try:
