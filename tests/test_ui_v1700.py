@@ -89,7 +89,7 @@ d.rows[2].checked = True; d._row_changed()
 # ---------------------------------------------------------------- 3) 전부 자동(렌더 켬): 편집 창 안 뜸 · 프록시 없음
 for k in ("grade", "edit", "music", "render"):
     d.stages[k].set_on(True)
-d.length.setValue(1); d.folder.setText(OUT); d.save_on.setChecked(True); d._sync()
+d.length.setValue(1); d.folder.setText(OUT); d.save_on.setChecked(True); d.quality.set_value("normal"); d._sync()
 assert d.stages["render"].summary.startswith("1080 · 보통"), d.stages["render"].summary
 seen = {"mw": False, "steps": [], "rw": False}
 _show = d._show

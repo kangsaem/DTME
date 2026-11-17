@@ -33,7 +33,7 @@ wait(0.8)
 sb = gp._scroll.verticalScrollBar()
 print("왼쪽 패널: 내용", gp._scroll.widget().sizeHint().height(), "· 보이는 높이", gp._scroll.viewport().height(), "· 스크롤 최대", sb.maximum(), "· 커브", gp.curve.height())
 assert sb.maximum() == 0, "1536×864 에서 스크롤이 생김"
-assert gp.curve.height() >= 120, gp.curve.height()
+assert gp.curve.height() >= 96, gp.curve.height()      # v0.17.0 줌 줄이 들어와 커브가 한 줄(≈24px)만큼 낮아짐(예전 기준 120)
 e.import_files([v]); assert wait(60, lambda: st.project.sources and st.status.get(st.project.sources[0].id) == "준비")
 s = st.project.sources[0]; e._select_source(s.id); wait(1.0)
 assert not gp.smp_win.isVisible() and gp.b_smp.text() == "샘플 보기"
