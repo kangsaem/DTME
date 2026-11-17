@@ -76,7 +76,7 @@ assert d.music_box.isVisible() and "calm instrumental" in d.music_box.text()
 assert d.sum.text().startswith("영상 4개 0:32"), d.sum.text()
 assert d.b_start.isEnabled()
 wait(1.5)
-assert not any(s.proxy for s in st.project.sources), "AUTO 전 프록시 없음"
+assert not st._proxy_jobs, "AUTO 전 프록시 없음"
 assert not d.jobs and all(r.result is None and r.prog == 0 for r in d.rows), "AUTO 전 분석 없음"
 assert st.project.tl_source([__import__("dtme.project", fromlist=["Segment"]).Segment(s.id, 0, 10) for s in st.project.sources]).width == 640
 print("넣기: 머리줄", heads, "· 표시", tags, "·", d.note.text(), "· 프록시·분석 없음")
@@ -105,7 +105,7 @@ print("전부 자동:", files, "· 단계", seen["steps"], "· 컷", len(p.segme
 assert ok, (d._step, d.state_lab.text(), files)
 assert seen["steps"] == ["grade", "edit", "music", "render"], seen["steps"]
 assert not seen["mw"] and not w.isVisible(), "편집 창이 안 떠야 함"
-assert not any(s.proxy for s in p.sources), "렌더 켬 = 프록시 안 만듦"
+assert not st._proxy_jobs, "렌더 켬 = 프록시 안 만듦"
 assert len([f for f in files if f.endswith(".mp4")]) == 1 and len([f for f in files if f.endswith(".dtme.json")]) == 1, files
 assert len(p.segments) >= 3 and p.music and all((s.auto or {}).get("preset") for s in p.sources)
 assert not getattr(w, "_rwin", None), "렌더 작업 창은 안 뜸(자동 창 안에서 진행)"
@@ -171,6 +171,57 @@ d5.stages["edit"].set_on(False); d5._sync()
 assert d5.stages["music"].summary == "편집을 켜야 함" and not d5.stages["music"].active()
 d5.reject()
 print("음악만 · 단계 없음 = 편집 화면 · '편집을 켜야 함'")
+
+# ---------------------------------------------------------------- 6) 편집 끔 + 보정 + 렌더 = 클립마다 따로(예전 [보정+렌더])
+for f in glob.glob(os.path.join(OUT, "*")):
+    os.remove(f)
+st.defer_proxy = True
+d6 = e.make_auto_window(from_edit=False); d6.show(); wait(0.2)
+d6.add_paths(vids[:2])
+assert wait(60, lambda: len(st.project.sources) == 2 and all(s.frames for s in st.project.sources))
+for k, on in (("grade", True), ("edit", False), ("music", False), ("render", True)):
+    d6.stages[k].set_on(on)
+d6.folder.setText(OUT); d6._sync()
+assert not d6.stages["music"].active()
+d6.b_start.click()
+assert d6.step_bar.steps == ["grade", "render"] and d6._plan["per_clip"], (d6.step_bar.steps, d6._plan)
+assert wait(300, lambda: d6.outcome == "close"), (d6._step, d6.state_lab.text())
+mp4 = sorted(f for f in os.listdir(OUT) if f.endswith(".mp4"))
+print("클립마다 렌더:", mp4)
+assert len(mp4) == 2 and not st.project.segments and not st._proxy_jobs
+
+# ---------------------------------------------------------------- 7) 시작 창: [AUTO] → 자동 창 → 단계 없이 AUTO = 편집 화면 / [취소] = 시작 창
+from PySide6.QtCore import QTimer  # noqa: E402
+w.hide()
+L2 = Launcher(w); L2.show(); wait(0.2)
+quits = []
+L2._quit = lambda: quits.append(1)
+
+
+def poke(what):
+    dd = getattr(e, "_auto_dlg", None)
+    if dd is None or not dd.isVisible() or dd is poke.last:
+        QTimer.singleShot(100, lambda: poke(what)); return
+    poke.last = dd
+    wait(0.3)
+    poke.seen = (len(dd.rows), dd.from_edit, not L2.isVisible())
+    if what == "cancel":
+        dd.cancel(); return
+    for k in ("grade", "edit", "music", "render"):
+        dd.stages[k].set_on(False)
+    dd._sync(); dd.b_start.click()
+
+
+poke.last = d6
+QTimer.singleShot(100, lambda: poke("cancel"))
+L2.b_auto.click()                                   # 빈 자동 창
+assert poke.seen == (0, False, True), poke.seen
+assert L2.isVisible() and not w.isVisible() and not quits, "[취소] = 시작 창으로"
+QTimer.singleShot(100, lambda: poke("edit"))
+L2.run_auto(vids[:2])                               # 끌어다 놓기 = 그 파일이 들어간 자동 창
+assert poke.seen == (2, False, True), poke.seen
+assert w.isVisible() and not L2.isVisible() and len(st.project.sources) == 2 and not st.defer_proxy, "편집 화면으로"
+print("시작 창: [AUTO] = 빈 자동 창 · [취소] = 시작 창 · 단계 없이 AUTO = 편집 화면")
 w.close()
 print("OK test_ui_v1700")
 os._exit(0)

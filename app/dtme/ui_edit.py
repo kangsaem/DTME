@@ -9,7 +9,7 @@ import time
 from collections import OrderedDict
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QImage, QImageReader, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (QAbstractItemView, QAbstractSpinBox, QApplication, QButtonGroup, QCheckBox, QComboBox, QFileDialog, QFrame,
                                QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
@@ -206,7 +206,6 @@ class ImageDelegate(QStyledItemDelegate):
 
 
 class EditTab(QWidget):
-    autoRenderProgress = Signal(float, bool)      # AUTO 렌더 전체 진행(0~1, 계속 중) → 시작 창
 
     def __init__(self, state: AppState, parent=None):
         super().__init__(parent)
@@ -230,8 +229,6 @@ class EditTab(QWidget):
         self._tl_img_cache = {}
         self._music_player = None
         self.pgen = 0
-        self._auto_items: set = set()               # AUTO 가 넣은 렌더 항목
-        self._auto_feeding = False                  # [보정+렌더] 분석이 덜 끝나 렌더 항목이 더 들어올 예정
         self._allow_hidden = False                  # 숨어 있어도 모니터 미리 준비([보정+편집] 누른 뒤)
 
         # ================= 소스
@@ -277,10 +274,6 @@ class EditTab(QWidget):
         self.b_auto = main_button("AUTO", "red")
         self.b_auto.setToolTip("자동 창: 보정 · 편집 · 음악 · 렌더")
         self.b_auto.clicked.connect(self.open_auto)
-        self.auto_bar = QProgressBar()
-        self.auto_bar.setTextVisible(False)
-        self.auto_bar.setFixedHeight(6)                 # v0.16.91 3 → 6px(사용자)
-        self.auto_bar.setVisible(False)
         ab = QHBoxLayout()                      # [영상 추가][AUTO][삭제] 한 줄(v0.16.41 사용자: AUTO 를 가운데)
         ab.setSpacing(4)
         self.b_auto.setMinimumWidth(64)         # 열이 좁으면(노트북) 셋이 같이 줄어듦
@@ -298,7 +291,6 @@ class EditTab(QWidget):
         left.setContentsMargins(0, 0, 0, 0)
         left.setSpacing(3)
         left.addLayout(ab)
-        left.addWidget(self.auto_bar)
         left.addWidget(self.src_list, 3)
         left.addWidget(self.img_list, 1)
         left.addWidget(self.mus_list, 1)
@@ -1694,7 +1686,8 @@ class EditTab(QWidget):
                 c["t0"], c["t1"] = a - w0, b - w0
                 tts.append(c)
         extras = {"titles": tts, "music": [], "mix": p.mix} if tts else None
-        key = (repr([({k: v for k, v in vars(c).items() if k != "id"}, p.grade_for_source(c.src, seg=c)) for c in pick])
+        skip = ("id", "loud", "why", "aud")            # 화면과 무관한 것(소리 판단은 뒤에서 채워짐 → 파일 이름이 바뀌지 않게)
+        key = (repr([({k: v for k, v in vars(c).items() if k not in skip}, p.grade_for_source(c.src, seg=c)) for c in pick])
                + orient + repr(tts))
         pdir = paths.cache_dir() / "preview"
         pdir.mkdir(parents=True, exist_ok=True)
@@ -3555,11 +3548,6 @@ class EditTab(QWidget):
         self._frame_array(g, done)
 
     # ================================================================ AUTO
-    def _set_auto_bar(self, v, color):
-        self.auto_bar.setVisible(0 <= v < 1)
-        self.auto_bar.setStyleSheet(f"QProgressBar{{background:#2a2a2a; border:none;}} QProgressBar::chunk{{background:{color};}}")
-        self.auto_bar.setValue(int(v * 100))
-
     def open_auto(self):
         """[AUTO] = 자동 창(v0.17.0): 지금 소스 전체가 들어간 채로 열림(소스 없어도 열림 — 그 창에서 넣음)."""
         self.player.pause()
@@ -3643,7 +3631,7 @@ class EditTab(QWidget):
         self._refresh_tips()
 
     def _render_progress(self, iid, v, running):
-        """AUTO 렌더 진행 → 맨 위 빨간 막대 + 소스 줄 배경."""
+        """렌더 진행 → 소스의 작업 상태(자동 창 줄 등, 소스 목록 줄에는 안 그림)."""
         p = self.state.project
         it = next((x for x in p.render_items if x.id == iid), None)
         if it is not None and it.segs:              # 렌더 진행 → 소스 줄(빨강)
@@ -3655,16 +3643,6 @@ class EditTab(QWidget):
                     w = self.state.work.get(sid)
                     if w and w[0] == "render":
                         self.state.set_work(sid, None)
-        if self._auto_items:
-            ids = [x for x in p.render_items if x.id in self._auto_items]
-            done = sum(self.render_panel.progress.get(x.id, 0.0) if not self.render_panel.status.get(x.id, "").startswith(("완료", "실패")) else 1.0
-                       for x in ids)
-            tot = done / max(1, len(ids))
-            running = running or self._auto_feeding           # 뒤 영상이 아직 분석 중이면 계속
-            self._set_auto_bar(tot if running else 1.0, "#d9604f")
-            self.autoRenderProgress.emit(tot if running else 1.0, running)
-            if not running:
-                self._auto_items = set()
         self.src_list.viewport().update()
 
     def _refresh_timeline(self):
