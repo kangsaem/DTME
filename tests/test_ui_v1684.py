@@ -64,6 +64,7 @@ assert not p.dive_on and e.player.mon.dive is None and not e.dive_off.isVisible(
 e.b_dive.click(); wait(0.2)
 assert p.dive_on
 # 자동 편집 창: 체크칸(다이빙 1개 · 기본 켬)
+from dtme.project import set_setting as _ss; _ss("autowin", {})      # 자동 창 기억한 선택 지움(시험끼리 영향 없게)
 d = e.make_auto_window(); d.dive_on.setChecked(True); d._sync()       # v0.17.0 자동 창
 print("체크:", d.dive_on.text(), d.dive_on.toolTip(), d.dive_on.isChecked())
 assert d.dive_on.isEnabled() and "다이빙 1개" in d.dive_on.toolTip() and "15초" in d.dive_on.toolTip() and d.autoedit_settings()["dive"]

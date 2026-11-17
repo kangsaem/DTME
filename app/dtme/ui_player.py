@@ -25,6 +25,9 @@ class Monitor(QWidget):
     layerSelected = Signal(str)
     cropPressed = Signal()
     cropDragged = Signal(float)        # 세로 크롭 이동량(원본 px)
+    cutPanPressed = Signal()           # v0.17.0 컷 위치 끌기 시작(실행취소 지점)
+    cutPanned = Signal(float, float)   # 컷 위치(원본 px dx, dy)
+    cutPanReset = Signal()             # 더블클릭 = 가운데
     whitePicked = Signal(float, float)   # 흰색 찍기: 영상 안 위치(0~1)
     viewChanged = Signal()               # 확대·이동 바뀜(→ 확대 영역 고화질 다시 만들기)
     splitFlipped = Signal(bool)          # 반반 선 우클릭 → 방향(True = 좌우)
@@ -55,6 +58,8 @@ class Monitor(QWidget):
         self.src_w = 3840
         self.crop_max = 540.0
         self._img_rect = QRectF()
+        self.cut_view = None           # v0.17.0 컷 줌·위치 (zoom, dx, dy, 한도 x, 한도 y, 원본 폭) — 타임라인 모드에서 보이는 컷
+        self.cut_edit = False          # 끌어서 위치 옮기기(고른 컷이 보일 때만)
         self.before: QImage | None = None      # 반반 보기: 왼쪽에 그릴 원본
         self.split_x = 0.5
         self.split_y = 0.5
@@ -423,6 +428,10 @@ class Monitor(QWidget):
             self._tdrag = None
             self.titleActivated.emit(tt["id"])
             return
+        if self._cut_pannable() and e.button() == Qt.LeftButton and self._out_rect.contains(e.position()):
+            self._drag = None
+            self.cutPanReset.emit()                    # v0.17.0 더블클릭 = 가운데
+            return
         if self.zoom > 1.0001:
             self.set_zoom(1.0)
 
@@ -444,6 +453,54 @@ class Monitor(QWidget):
     def set_crop(self, dx: float, src_w: int, max_px: float):
         self.crop_dx, self.src_w, self.crop_max = dx, max(1, src_w), max_px
         self.update()
+
+    def set_cut_view(self, view, edit: bool = False):
+        """view = (zoom, dx, dy, 한도 x, 한도 y, 원본 폭) | None."""
+        if view != self.cut_view or edit != self.cut_edit:
+            self.cut_view, self.cut_edit = view, edit
+            self.update()
+
+    def _base_crop(self, r: QRectF) -> QRectF:
+        """영상 사각형 r 안에서 출력 화면비로 자른 가운데 사각형(세로 리프레임 ◆ 이동 포함)."""
+        src_aspect = r.width() / max(1.0, r.height())
+        if abs(src_aspect - self.out_aspect) <= 0.01:
+            return QRectF(r)
+        if self.out_aspect < src_aspect:
+            cw = r.height() * self.out_aspect
+            off = self.crop_dx / self.src_w * r.width()
+            return QRectF(r.center().x() - cw / 2 + off, r.top(), cw, r.height())
+        ch = r.width() / self.out_aspect
+        return QRectF(r.left(), r.center().y() - ch / 2, r.width(), ch)
+
+    def _cut_box(self, r: QRectF) -> QRectF | None:
+        """컷 줌·위치가 가리키는 사각형(화면 좌표). 줌 ×1 · 위치 0 = None."""
+        v = self.cut_view
+        if not v or r.isEmpty():
+            return None
+        z, dx, dy = max(1.0, v[0]), v[1], v[2]
+        if z < 1.005 and abs(dx) < 0.5 and abs(dy) < 0.5:
+            return None
+        c = self._base_crop(r)
+        k = r.width() / max(1.0, v[5])                      # 화면 px / 원본 px
+        w, h = c.width() / z, c.height() / z
+        x = max(r.left(), min(r.right() - w, c.center().x() + dx * k - w / 2))
+        y = max(r.top(), min(r.bottom() - h, c.center().y() + dy * k - h / 2))
+        return QRectF(x, y, w, h)
+
+    def _cut_pannable(self) -> bool:
+        v = self.cut_view
+        return bool(self.cut_edit and v and (v[3] > 0.5 or v[4] > 0.5))
+
+    def _out_fit(self) -> QRectF:
+        """출력 화면비로 모니터에 맞춘 사각형(컷 줌·위치 결과를 그릴 자리)."""
+        W, H = float(self.width()), float(self.height())
+        if W <= 0 or H <= 0:
+            return QRectF()
+        if W / H > self.out_aspect:
+            w = H * self.out_aspect
+            return QRectF((W - w) / 2, 0, w, H)
+        h = W / self.out_aspect
+        return QRectF(0, (H - h) / 2, W, h)
 
     def _crop_mode(self) -> bool:
         return not self._img_rect.isEmpty() and self.out_aspect < self._img_rect.width() / self._img_rect.height() - 0.01
@@ -545,7 +602,13 @@ class Monitor(QWidget):
         if lay is None:
             if self.sel_layer:
                 self.layerSelected.emit("")
-            if self._crop_mode() and self._out_rect.contains(e.position()):
+            if self._cut_pannable() and self._out_rect.contains(e.position()):     # v0.17.0 컷 위치 끌기(타임라인에서 고른 컷)
+                self.cutPanPressed.emit()
+                v = self.cut_view
+                self._drag = ("pan", None, e.position(), v[1], v[2], 0)
+                self.setCursor(Qt.ClosedHandCursor)
+                self.update()
+            elif self._crop_mode() and self._out_rect.contains(e.position()):
                 self.cropPressed.emit()
                 self._drag = ("crop", None, e.position(), self.crop_dx, 0, 0)
             return
@@ -606,6 +669,16 @@ class Monitor(QWidget):
         if self._drag and (e.buttons() & Qt.LeftButton):
             mode, lay, p0, cx, cy, sc = self._drag
             c = self._out_rect
+            if mode == "pan":                           # 끄는 동안 = 원본 전체(흐리게) 위에서 상자가 움직임
+                v = self.cut_view
+                if v:
+                    k = max(1e-6, self._img_rect.width() / max(1.0, v[5]))
+                    dx = max(-v[3], min(v[3], cx + (pos.x() - p0.x()) / k))
+                    dy = max(-v[4], min(v[4], cy + (pos.y() - p0.y()) / k))
+                    self.cut_view = (v[0], dx, dy, v[3], v[4], v[5])
+                    self.update()
+                    self.cutPanned.emit(dx, dy)
+                return
             if mode == "crop":
                 px = (pos.x() - p0.x()) / max(1.0, self._img_rect.width()) * self.src_w
                 self.crop_dx = max(-self.crop_max, min(self.crop_max, cx + px))
@@ -632,7 +705,10 @@ class Monitor(QWidget):
         elif mode == "move":
             self.setCursor(Qt.SizeAllCursor)
         else:
-            self.setCursor(Qt.SizeHorCursor if self._crop_mode() and self._out_rect.contains(pos) else Qt.ArrowCursor)
+            if self._cut_pannable() and self._out_rect.contains(pos):
+                self.setCursor(Qt.OpenHandCursor)
+            else:
+                self.setCursor(Qt.SizeHorCursor if self._crop_mode() and self._out_rect.contains(pos) else Qt.ArrowCursor)
 
     def _split_tip(self, pos, on):
         """반반 선 위 = '우클릭 = 상하 반반' 알림(선에서 벗어나면 바로 숨김)."""
@@ -654,6 +730,9 @@ class Monitor(QWidget):
             self._pan = None
             self.setCursor(Qt.OpenHandCursor if self.space_pan else Qt.ArrowCursor)
             self.viewChanged.emit()
+        if self._drag and self._drag[0] == "pan":
+            self.setCursor(Qt.OpenHandCursor)
+            self.update()                              # 손 떼면 잘린 결과만
         self._drag = None
         self._split_drag = False
         self._tdrag = None
@@ -706,6 +785,19 @@ class Monitor(QWidget):
             return
         r = self._view_rect()
         p.setRenderHint(QPainter.SmoothPixmapTransform, self.smooth or self.zoom > 1)
+        # v0.17.0 컷 줌·위치: 평소 = 잘린 결과만(상자를 출력 자리에 꽉 채움) · 끄는 동안 = 원본 전체 흐리게 + 점선 상자
+        panning = bool(self._drag and self._drag[0] == "pan")
+        box = self._cut_box(r) if (self.cut_view and (self.zoom <= 1.0001 or panning)) else None
+        if panning and box is None and self.cut_view:
+            c0 = self._base_crop(r)
+            box = QRectF(c0)
+        fit = self._out_fit() if (box is not None and not panning) else None
+        if fit is not None and not fit.isEmpty():
+            k = fit.width() / max(1e-6, box.width())
+            p.save()
+            p.setClipRect(fit)
+            p.translate(fit.left() - box.left() * k, fit.top() - box.top() * k)
+            p.scale(k, k)
         p.drawImage(r, self.img)
         if self.patch is not None and self.patch_rect and not self.patch.isNull():     # 확대 영역 고화질
             x, y, w, h = self.patch_rect
@@ -726,6 +818,35 @@ class Monitor(QWidget):
             p.setPen(QPen(QColor("#1b1b1b"), 2))
             p.setBrush(QColor("#ffffff"))
             p.drawEllipse((a + b) / 2, 9, 9)
+        if fit is not None and not fit.isEmpty():            # 컷 줌·위치 결과 = 출력 자리에 꽉
+            p.restore()
+            k = fit.width() / max(1e-6, box.width())
+            self._out_rect = QRectF(fit)
+            self._img_rect = QRectF(fit.left() + (r.left() - box.left()) * k, fit.top() + (r.top() - box.top()) * k,
+                                    r.width() * k, r.height() * k)
+            self._paint_layers(p)
+            self._paint_dive(p)
+            self._paint_titles(p)
+            self._paint_scope(p)
+            self._paint_loading(p)
+            return
+        if panning and box is not None:                      # 끄는 동안
+            self._img_rect = QRectF(r)
+            self._out_rect = QRectF(box)
+            p.save()
+            p.setClipRect(r)
+            for m in (QRectF(r.left(), r.top(), r.width(), box.top() - r.top()),
+                      QRectF(r.left(), box.bottom(), r.width(), r.bottom() - box.bottom()),
+                      QRectF(r.left(), box.top(), box.left() - r.left(), box.height()),
+                      QRectF(box.right(), box.top(), r.right() - box.right(), box.height())):
+                p.fillRect(m, QColor(0, 0, 0, 150))
+            p.restore()
+            pen = QPen(QColor(255, 255, 255, 220), 1, Qt.DashLine)
+            p.setPen(pen)
+            p.setBrush(Qt.NoBrush)
+            p.drawRect(box)
+            self._paint_loading(p)
+            return
         # 출력에서 잘리는 영역
         src_aspect = r.width() / r.height()
         self._out_rect = QRectF(r)

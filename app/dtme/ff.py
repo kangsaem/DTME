@@ -1006,6 +1006,59 @@ def crop_size(w: int, h: int, orientation: str) -> tuple[int, int]:
     return int(min(w, h * 16 / 9) / 2) * 2, int(min(h, w * 9 / 16) / 2) * 2
 
 
+ZOOM_SNAPS = (1.0, 1.5, 2.0)          # v0.17.0 줌 슬라이드바 자석(±ZOOM_SNAP_TOL)
+ZOOM_SNAP_TOL = 0.04
+
+
+def zoom_max(src, orientation: str) -> float:
+    """v0.17.0 줌 한도 = 원본(출력 화면비로 자른 크기) ÷ 출력 — 4K→1080 = ×2 · 4K→1440 = ×1.5 · 1080→1080 = ×1(못 씀)."""
+    if src is None or not src.width or not src.height:
+        return 1.0
+    cw, ch = crop_size(src.width, src.height, orientation)
+    ow, oh = out_size(orientation)
+    return max(1.0, round(min(cw / ow, ch / oh), 3))
+
+
+def zoom_snap(z: float, zmax: float) -> float:
+    """슬라이드바 값 → 자석(×1.0·×1.5·×2.0 근처 ±0.04)에 붙이고 한도 안으로."""
+    z = max(1.0, min(float(zmax), float(z)))
+    for s_ in ZOOM_SNAPS:
+        if s_ <= zmax + 1e-6 and abs(z - s_) <= ZOOM_SNAP_TOL + 1e-9:
+            return s_
+    return round(z, 2)
+
+
+def pan_limits(src, zoom: float, orientation: str) -> tuple[float, float]:
+    """위치 이동 한도(원본 px, ±): 줌으로 생긴 여유(자른 화면 안) 또는 리프레임 범위(가운데 크롭으로 잘린 쪽) 중 큰 쪽,
+    화면 밖으로는 못 나감. 가로 촬영 → 세로 출력의 좌우는 예전 ◆ 리프레임과 같은 범위."""
+    if src is None or not src.width or not src.height:
+        return 0.0, 0.0
+    w, h = src.width, src.height
+    cw, ch = crop_size(w, h, orientation)
+    z = max(1.0, float(zoom or 1.0))
+    zw, zh = cw / z, ch / z
+    rm = reframe_max(max(w, h))
+    lx = min((w - zw) / 2, max((cw - zw) / 2, rm if w - cw > 2 else 0.0))
+    ly = min((h - zh) / 2, max((ch - zh) / 2, rm if h - ch > 2 else 0.0))
+    return max(0.0, lx), max(0.0, ly)
+
+
+def seg_view(src, seg, orientation: str):
+    """v0.17.0 컷의 줌·위치 → 원본에서 자를 사각형 (w, h, x, y) 짝수 px. 줌 ×1 · 위치 0 = None(예전 가운데 크롭 그대로)."""
+    z = max(1.0, float(getattr(seg, "zoom", 1.0) or 1.0))
+    dx, dy = float(getattr(seg, "dx", 0.0) or 0.0), float(getattr(seg, "dy", 0.0) or 0.0)
+    if src is None or not src.width or not src.height or (z < 1.005 and abs(dx) < 0.5 and abs(dy) < 0.5):
+        return None
+    w, h = src.width, src.height
+    cw, ch = crop_size(w, h, orientation)
+    zw, zh = max(2, int(cw / z / 2) * 2), max(2, int(ch / z / 2) * 2)
+    lx, ly = pan_limits(src, z, orientation)
+    dx, dy = max(-lx, min(lx, dx)), max(-ly, min(ly, dy))
+    x = int(round(max(0.0, min(w - zw, (w - zw) / 2 + dx))))
+    y = int(round(max(0.0, min(h - zh, (h - zh) / 2 + dy))))
+    return zw, zh, x, y
+
+
 def seg_reframe(src: Source, seg: Segment, orientation: str) -> list | None:
     """세로 출력에서 쓸 크롭 키프레임(범위 제한). 없거나 모두 0 이면 None → 기존 가운데 크롭."""
     if not is_vertical(orientation) or not seg.reframe:
@@ -1080,17 +1133,22 @@ def stab_band(src: Source, seg: Segment, orientation: str, lens: list | tuple = 
     그 안에서 움직이는 크롭. 반환 (보정 전 필터들, 보정 후 크롭 필터 또는 None, 캐시 키)."""
     sw, sh = _stab_size(orientation, src)
     keys = seg_reframe(src, seg, orientation)
-    tag = f"{sw}x{sh}|{','.join(lens)}"
+    view = seg_view(src, seg, orientation)         # v0.17.0 컷 줌·위치
+    tag = f"{sw}x{sh}|{','.join(lens)}" + (f"|v{view}" if view else "")
     if not keys:
-        return [*lens, crop_filter(orientation), f"scale={sw}:{sh}:flags=lanczos"], None, tag
+        crop = f"crop={view[0]}:{view[1]}:{view[2]}:{view[3]}" if view else crop_filter(orientation)
+        return [*lens, crop, f"scale={sw}:{sh}:flags=lanczos"], None, tag
     cw, ch = crop_size(src.width, src.height, orientation)
+    cx, cy = (src.width - cw) / 2, (src.height - ch) // 2
+    if view:
+        cw, ch, cx, cy = view
     dmin, dmax = min(k["dx"] for k in keys), max(k["dx"] for k in keys)
-    x0 = max(0, int((src.width - cw) / 2 + dmin))
+    x0 = max(0, int(cx + dmin))
     bw = min(src.width - x0, int(cw + (dmax - dmin) + 2) // 2 * 2)
     k = sh / ch
     bws = int(round(bw * k / 2)) * 2
-    pre = [*lens, f"crop={bw}:{ch}:{x0}:{(src.height - ch) // 2}", f"scale={bws}:{sh}:flags=lanczos"]
-    cx0 = (src.width - cw) / 2 - x0          # 띠 안 가운데 크롭 위치(원본 px)
+    pre = [*lens, f"crop={bw}:{ch}:{x0}:{cy}", f"scale={bws}:{sh}:flags=lanczos"]
+    cx0 = cx - x0                            # 띠 안 가운데 크롭 위치(원본 px)
     xe = reframe_expr(keys, seg.fin, float(src.fps), k)
     post = f"crop={sw}:{sh}:x='clip({cx0 * k:.3f}+{xe},0,iw-{sw})':y=0"
     return pre, post, f"{x0}x{bw}|{tag}"
@@ -2762,7 +2820,8 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orien
         total += out_sec
         lensf = lens_chain(g, src.width, src.height)
         sp = None if fast else stab_params(g)       # 미리보기 렌더는 흔들림 보정 생략(분석이 느림)
-        gs = (gpu_scale and not sp and not lensf and not seg_reframe(src, seg, orientation)
+        view = seg_view(src, seg, orientation)      # v0.17.0 컷 줌·위치(원본에서 자를 사각형)
+        gs = (gpu_scale and not sp and not lensf and not seg_reframe(src, seg, orientation) and not view
               and _crop_noop(src, orientation) and not may_rotate(src))
         cmd += [*_hw(o.gpu_decode), *(["-hwaccel_output_format", "cuda"] if gs else []),
                 "-ss", _seek(seg.fin, src.fps), "-t", f"{seg_src_sec + 0.5:.6f}", "-i", _abs(src.path)]
@@ -2784,8 +2843,15 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orien
                 cw, ch = crop_size(src.width, src.height, orientation)
                 ow, oh = out_size(orientation)
                 xe = reframe_expr(keys, seg.fin, float(src.fps) * seg.speed)
-                v += [f"crop={cw}:{ch}:x='clip((iw-{cw})/2+{xe},0,iw-{cw})':y=(ih-{ch})/2",
-                      f"scale={ow}:{oh}:flags=lanczos"]
+                if view:  # 줌·위치가 있는 컷 = 그 사각형이 ◆ 만큼 좌우로
+                    v += [f"crop={view[0]}:{view[1]}:x='clip({view[2]}+{xe},0,iw-{view[0]})':y={view[3]}",
+                          f"scale={ow}:{oh}:flags=lanczos"]
+                else:
+                    v += [f"crop={cw}:{ch}:x='clip((iw-{cw})/2+{xe},0,iw-{cw})':y=(ih-{ch})/2",
+                          f"scale={ow}:{oh}:flags=lanczos"]
+            elif view:
+                ow, oh = out_size(orientation)
+                v += [f"crop={view[0]}:{view[1]}:{view[2]}:{view[3]}", f"scale={ow}:{oh}:flags=lanczos"]
             elif gs:
                 ow, oh = out_size(orientation)
                 v += [f"scale_cuda={ow}:{oh}:interp_algo=lanczos", "hwdownload", f"format={_dl_fmt(src)}",

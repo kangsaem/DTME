@@ -52,6 +52,7 @@ print("시작 창 [AUTO] 하나 · 편집 창 [음악 자동]·[자동 편집] �
 
 # ---------------------------------------------------------------- 1) 빈 자동 창
 st.set_project(Project()); st.defer_proxy = True
+from dtme.project import set_setting as _ss; _ss("autowin", {})      # 자동 창 기억한 선택 지움(시험끼리 영향 없게)
 d = e.make_auto_window(from_edit=False); d.show(); wait(0.3)
 assert d.list.count() == 0 and not d.b_start.isEnabled() and d.sum.text() == ""
 assert all(d.stages[k].isVisible() for k in ("grade", "edit", "music", "render"))

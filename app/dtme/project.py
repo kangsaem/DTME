@@ -405,6 +405,9 @@ class Segment:
     loud: object = None                          # 자동 판단: True = 키움(말소리·수면 위) / False / None = 아직
     why: str = ""                                # 판단 이유: 말소리 | 호흡기 | 수면 위 | 물속
     log: bool = True                             # v0.16.91 이 컷 LOG(수심 그래프) — 타임라인 컷 가운데 칩
+    zoom: float = 1.0                            # v0.17.0 줌(컷 단위, ×1 ~ 원본÷출력) — 자동 편집 다시 하면 사라짐
+    dx: float = 0.0                              # v0.17.0 위치(원본 px, 가운데에서 오른쪽 +) — 모니터 끌기
+    dy: float = 0.0                              #   아래 +
 
     @property
     def frames(self) -> int:
@@ -414,7 +417,7 @@ class Segment:
         return Segment(self.src, self.fin, self.fout, self.speed, layers=copy.deepcopy(self.layers),
                        trans=dict(self.trans), reframe=copy.deepcopy(self.reframe), gkeys=copy.deepcopy(self.gkeys),
                        off=list(self.off), grade=copy.deepcopy(self.grade), aud=self.aud, loud=self.loud, why=self.why,
-                       log=self.log)
+                       log=self.log, zoom=self.zoom, dx=self.dx, dy=self.dy)
 
 
 # 세로 크롭 위치 이동(리프레이밍). 4K 기준 ±540px(그 이상은 액션캠 가장자리 왜곡)

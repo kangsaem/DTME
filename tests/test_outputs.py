@@ -67,6 +67,7 @@ print("▼:", got)
 assert got == {1920: "horizontal", 2688: "horizontal1440", 3840: "horizontal2160"}
 
 # AUTO 창
+from dtme.project import set_setting as _ss; _ss("autowin", {})      # 자동 창 기억한 선택 지움(시험끼리 영향 없게)
 d = e.make_auto_window(); d.show(); d._open_stage("render"); wait(0.3)      # v0.17.0 자동 창 렌더 단계
 IT = d._src_items()
 byw = {p.source(r.sid).width: i for i, r in enumerate(d.rows)}

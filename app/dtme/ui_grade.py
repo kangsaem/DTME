@@ -166,6 +166,8 @@ class Section(QWidget):
 
 class GradePanel(QWidget):
     gradeChanged = Signal()
+    zoomPressed = Signal()                       # v0.17.0 줌 슬라이드바 잡음(실행취소 지점)
+    zoomChanged = Signal(float)                  # 줌 값(자석 적용 뒤)
     liveChanged = Signal()                       # v0.16.40 슬라이더를 끄는 동안: 모니터만 바로바로(샘플·타임라인은 멈춘 뒤)
     viewChanged = Signal(str)                    # "grade" | "raw" | "split"
     splitDirChanged = Signal(bool)               # 반반 방향: True = 좌우 · False = 상하
@@ -329,9 +331,10 @@ class GradePanel(QWidget):
         for key, name, tip in (("sharpen", "샤픈", ""), ("nr_chroma", "색 노이즈", ""),
                                ("nr_luma", "밝기 노이즈", ""), ("wnr", "물 노이즈", "파란 물 영역의 붉은 점·색 노이즈만 정리")):
             s_det.lay.addLayout(self._row(key, name, 72, Qt.AlignRight, tip))
-        s_lens = Section("lens", "렌즈 · 흔들림")
+        s_lens = Section("lens", "렌즈 · 흔들림 · 줌")
         s_lens.lay.addLayout(self._row("lens", "렌즈 보정", 72, Qt.AlignRight, "액션캠 외곽 늘어짐 줄이기(가운데를 조금 확대)"))
         s_lens.lay.addLayout(self._row("stab", "흔들림 보정", 72, Qt.AlignRight, "렌더에만 적용"))
+        s_lens.lay.addLayout(self._zoom_row())           # v0.17.0 줌(컷 단위 — 타임라인에서 컷을 골랐을 때만 켜짐)
 
         # --- 샘플(v0.16.49): 왼쪽 패널에서 뺌 → [샘플] 을 누르면 뜨는 창(3×2, 띄워 둔 채 작업).
         # 1920×1080(125% = 1536×864)에서 왼쪽 패널에 스크롤이 생기던 원인. 창이 닫혀 있으면 샘플 화면을 만들지 않음
@@ -483,6 +486,64 @@ class GradePanel(QWidget):
     def _all_mode(self) -> bool:
         from PySide6.QtWidgets import QApplication
         return self.b_all.isChecked() or bool(QApplication.keyboardModifiers() & Qt.ShiftModifier)
+
+    def _zoom_row(self):
+        """줌 = 컷 단위(보정값 아님): 슬라이드바 ×1.00 ~ 한도(원본÷출력) · 자석 ×1.0·×1.5·×2.0 · 이름 누르면 ×1.00.
+        값·한도·켜짐은 EditTab 이 set_zoom_state 로 넣고, 바뀌면 zoomChanged(값)."""
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        self.zoom_name = NameLabel("줌")
+        self.zoom_name.setFixedWidth(72)
+        self.zoom_name.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.zoom_name.clicked.connect(self._zoom_reset)
+        self.zoom_s = QSlider(Qt.Horizontal)
+        self.zoom_s.setRange(100, 200)
+        self.zoom_s.setFocusPolicy(Qt.NoFocus)
+        self.zoom_s.sliderPressed.connect(self.zoomPressed.emit)
+        self.zoom_s.valueChanged.connect(self._zoom_moved)
+        self.zoom_s.sliderReleased.connect(lambda: self._zoom_moved(self.zoom_s.value()))     # 자석 자리로
+        self.zoom_v = QLabel("—")
+        self.zoom_v.setFixedWidth(46)
+        self.zoom_v.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        tip = "타임라인에서 고른 컷을 확대(끌어서 위치 · 더블클릭 = 가운데)"
+        for w_ in (self.zoom_name, self.zoom_s):
+            w_.setToolTip(tip)
+        row.addWidget(self.zoom_name)
+        row.addWidget(self.zoom_s, 1)
+        row.addWidget(self.zoom_v)
+        self._zoom_max, self._zoom_lock = 1.0, False
+        self.set_zoom_state(None, 1.0)
+        return row
+
+    def set_zoom_state(self, value, zmax: float = 1.0):
+        """value = 지금 값(None = 컷 안 고름 → 흐림·'—') · zmax = 한도(1.0 = 못 씀 → 흐림)."""
+        self._zoom_lock = True
+        self._zoom_max = max(1.0, float(zmax))
+        on = value is not None and self._zoom_max > 1.005
+        self.zoom_s.setRange(100, max(101, int(round(self._zoom_max * 100))))
+        self.zoom_s.setValue(int(round(float(value or 1.0) * 100)))
+        self.zoom_s.setEnabled(on)
+        self.zoom_name.setEnabled(on)
+        self.zoom_v.setEnabled(on)
+        self.zoom_v.setText("—" if value is None else f"×{float(value):.2f}")
+        self.zoom_name.setStyleSheet("" if on else "QLabel{color:#5e5e5e;}")
+        self._zoom_lock = False
+
+    def _zoom_moved(self, v):
+        if self._zoom_lock:
+            return
+        z = ff.zoom_snap(v / 100.0, self._zoom_max)
+        if abs(z * 100 - v) > 0.5 and not self.zoom_s.isSliderDown():      # 자석: 손을 뗀 값은 붙은 자리로
+            self._zoom_lock = True
+            self.zoom_s.setValue(int(round(z * 100)))
+            self._zoom_lock = False
+        self.zoom_v.setText(f"×{z:.2f}")
+        self.zoomChanged.emit(z)
+
+    def _zoom_reset(self):
+        if self.zoom_s.isEnabled():
+            self.zoomPressed.emit()
+            self.zoomChanged.emit(1.0)
 
     def _row(self, key, name, lw, align, tip=""):
         lo, hi, sc, _fmt = SLIDERS[key]

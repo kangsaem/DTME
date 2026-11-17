@@ -68,7 +68,7 @@ class SourceDelegate(QStyledItemDelegate):
         self.tab = tab
 
     def sizeHint(self, option, index):
-        return QSize(option.rect.width(), 30)
+        return QSize(option.rect.width(), 24 if index.data(Qt.UserRole) is None else 30)
 
     def paint(self, p: QPainter, option, index):
         """MOSCO 줄: 진회색, 선택 = 파란 테두리, 진행 = 단계 색으로 차오름 + 오른쪽 글자(단계 색), 오른쪽 칩 = 프리셋.
@@ -76,6 +76,17 @@ class SourceDelegate(QStyledItemDelegate):
         from . import stage as SG
         from .ui_auto import YELLOW, short_preset
         sid = index.data(Qt.UserRole)
+        if sid is None:                                 # v0.17.0 여행 묶음 머리줄(기간 · 지명) — 누르면 그 여행 클립 전체 선택
+            p.save()
+            f = p.font()
+            f.setBold(True)
+            p.setFont(f)
+            p.setPen(QColor("#9fb4cc"))
+            r = QRectF(option.rect).adjusted(8, 2, -6, 0)
+            p.drawText(r, Qt.AlignVCenter | Qt.AlignLeft,
+                       p.fontMetrics().elidedText(index.data(Qt.UserRole + 1) or "", Qt.ElideRight, int(r.width())))
+            p.restore()
+            return
         st = SG.stage_of(self.tab.state, sid, skip=("render",))     # v0.16.39 렌더 진행 = 렌더 목록 바에만(MOSCO 와 같음)
         err = st is not None and st[0] == "error"
         src = self.tab.state.project.source(sid)
@@ -231,7 +242,7 @@ class EditTab(QWidget):
         self.src_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.src_list.setStyleSheet("QListWidget{background:#1a1a1a; border:none;}")
         self.src_list.currentItemChanged.connect(self._on_src_selected)
-        self.src_list.itemClicked.connect(lambda it: self.state.prioritize(it.data(Qt.UserRole)))   # 읽기 실패 줄 = 다시 읽기
+        self.src_list.itemClicked.connect(self._src_clicked)      # 읽기 실패 줄 = 다시 읽기 · 머리줄 = 그 여행 전체 선택
         self.src_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.src_list.customContextMenuRequested.connect(self._src_menu)
         self.src_list.itemPressed.connect(lambda _it: self._set_target("src"))
@@ -316,6 +327,9 @@ class EditTab(QWidget):
         mon_w.layerSelected.connect(self._select_layer)
         mon_w.cropPressed.connect(self._crop_pressed)
         mon_w.cropDragged.connect(self._crop_dragged)
+        mon_w.cutPanPressed.connect(self._pan_pressed)       # v0.17.0 컷 위치(모니터 끌기) · 더블클릭 = 가운데
+        mon_w.cutPanned.connect(self._panned)
+        mon_w.cutPanReset.connect(self._pan_reset)
         self.sbar.keyDeleteRequested.connect(self._delete_key)
         mon = QVBoxLayout()
         mon.setSpacing(0)
@@ -524,6 +538,8 @@ class EditTab(QWidget):
         # ================= 보정 / 렌더 리스트
         self.grade = GradePanel(state)
         self.grade.gradeChanged.connect(self._on_grade_changed)
+        self.grade.zoomPressed.connect(self._zoom_pressed)      # v0.17.0 줌(컷 단위)
+        self.grade.zoomChanged.connect(self._set_zoom)
         self.grade.liveChanged.connect(self._on_grade_live)
         self._live_busy = self._live_pending = False
         self._pv_flight: dict = {}                  # 만드는 중인 보정 화면: 키 → {gen, tok, live}
@@ -787,7 +803,12 @@ class EditTab(QWidget):
         return ff.is_vertical(self.state.project.out_of(s if s is not None else self._cur()))
 
     def _apply_aspect(self):
-        self.player.set_aspect(9 / 16 if self._vert() else 16 / 9)
+        p = self.state.project
+        if self.mode == "timeline" and p.segments:        # v0.17.0 타임라인 = 많은 쪽 방향(방향 다른 클립은 가운데 크롭)
+            v = self._vert(p.tl_source())
+        else:
+            v = self._vert()
+        self.player.set_aspect(9 / 16 if v else 16 / 9)
         self._update_monitor_layers()
         self._refresh_keys()
 
@@ -814,7 +835,15 @@ class EditTab(QWidget):
         self._remove_source()
 
     def _remove_source(self):
+        """[삭제]·Del: 고른 소스(여러 개면 한 번만 물음, v0.17.0)."""
+        sids = self._selected_sids()
         s = self._cur()
+        if len(sids) > 1:
+            if ui_style.ask(self, f"소스 {len(sids)}개 삭제?"):
+                self.cur_sid = ""
+                for sid in sids:
+                    self.state.remove_source(sid)
+            return
         if not s:
             return
         if ui_style.ask(self, f"{display_name(s.path)} 삭제?"):
@@ -825,19 +854,28 @@ class EditTab(QWidget):
         p = self.state.project
         self.src_list.blockSignals(True)
         self.src_list.clear()
-        sel = None
-        for s in p.sources:
-            it = QListWidgetItem(display_name(s.path))
-            it.setData(Qt.UserRole, s.id)
-            it.setToolTip(self._src_tip(s))
-            self.src_list.addItem(it)
-            if s.id == self.cur_sid:
-                sel = it
+        sel = first = None
+        from . import autoedit
+        for head, grp in autoedit.trip_groups(p.dives, list(p.sources)):      # v0.17.0 여행별 묶음(머리줄 = 기간 · 지명)
+            if head:
+                hd = QListWidgetItem(head)
+                hd.setData(Qt.UserRole, None)
+                hd.setData(Qt.UserRole + 1, head)
+                hd.setFlags(Qt.ItemIsEnabled)
+                self.src_list.addItem(hd)
+            for s in grp:
+                it = QListWidgetItem(display_name(s.path))
+                it.setData(Qt.UserRole, s.id)
+                it.setToolTip(self._src_tip(s))
+                self.src_list.addItem(it)
+                first = first or it
+                if s.id == self.cur_sid:
+                    sel = it
         if sel:
             self.src_list.setCurrentItem(sel)
         self.src_list.blockSignals(False)
         if not sel and p.sources:
-            self.src_list.setCurrentRow(0)
+            self.src_list.setCurrentItem(first)
         elif not p.sources:
             self.cur_sid = ""
             self.player.clear("파일 추가")
@@ -867,8 +905,22 @@ class EditTab(QWidget):
             self.player.set_source(s.fps, s.frames, s.proxy, self.player.frame)
             self._pv_timer.start()
 
+    def _src_clicked(self, it):
+        sid = it.data(Qt.UserRole)
+        if sid is not None:
+            self.state.prioritize(sid)
+            return
+        i = self.src_list.row(it) + 1                     # 머리줄 = 다음 머리줄 전까지 전부 선택
+        self.src_list.clearSelection()
+        first = None
+        while i < self.src_list.count() and self.src_list.item(i).data(Qt.UserRole) is not None:
+            self.src_list.item(i).setSelected(True)
+            first = first or self.src_list.item(i)
+            i += 1
+        self._set_target("src")
+
     def _on_src_selected(self, cur, _prev):
-        if cur is None:
+        if cur is None or cur.data(Qt.UserRole) is None:
             return
         self.cur_sid = cur.data(Qt.UserRole)
         self.sel_layer = ""
@@ -1273,7 +1325,7 @@ class EditTab(QWidget):
         self.sbar.set_active(self.grade.active)
 
     def _selected_sids(self):
-        return [it.data(Qt.UserRole) for it in self.src_list.selectedItems()]
+        return [it.data(Qt.UserRole) for it in self.src_list.selectedItems() if it.data(Qt.UserRole) is not None]
 
     def showEvent(self, e):
         super().showEvent(e)
@@ -1384,8 +1436,17 @@ class EditTab(QWidget):
     def send_to_timeline(self):
         seg = self._cur_segment()
         self.state.checkpoint(label="컷 추가")
-        self.state.project.segments.append(seg)
+        p = self.state.project
+        before = p.tl_source()
+        p.segments.append(seg)
         self.state.touch("segments")
+        from .project import is_portrait                  # v0.17.0 방향 다른 클립 = 상태 줄 한 번(막는 창 없음)
+        s_new, major = p.source(seg.src), p.tl_source()
+        if before is not None and s_new is not None and major is not None and s_new.width:
+            if is_portrait(before) != is_portrait(major):
+                self._say("타임라인 방향이 바뀜 — " + ("세로" if is_portrait(major) else "가로") + " 클립이 더 많음(다른 방향은 가운데 잘라 넣음)", C_INFO)
+            elif is_portrait(s_new) != is_portrait(major):
+                self._say(("세로" if is_portrait(s_new) else "가로") + " 클립 — 가운데 잘라 넣음(컷을 고르고 화면을 끌면 위치)", C_INFO)
         QTimer.singleShot(0, lambda: self.tl_scroll.horizontalScrollBar().setValue(
             self.tl_scroll.horizontalScrollBar().maximum()))
 
@@ -1398,7 +1459,7 @@ class EditTab(QWidget):
         hs = [source_out_h(x) for x in srcs]
         h = 0 if (not hs or 0 in hs) else max(hs)
         vw = min([source_vw(x) for x in srcs] or [0])              # 세로 1440·4K = 모든 컷이 그만한 세로 원본일 때만
-        first = srcs[0] if srcs else None             # v0.16.55 출력 = 첫 컷 소스의 출력(여러 소스를 이은 타임라인도 영상 1개 = 출력 1개)
+        first = (p.tl_source(segs) if tl else None) or (srcs[0] if srcs else None)   # v0.17.0 타임라인 = 많은 쪽 방향(가로·세로)의 첫 소스 · 그 밖 = 첫 컷
         want = p.out_of(first) if first is not None else o.orientation   # v0.16.70 세로 촬영 = 돌린 크기
         # v0.16.88 타임라인 출력 칸 뺌(사용자: 산만함) → 타임라인 = 첫 컷 소스의 출력(예전 프로젝트의 tl_out 도 안 씀)
         return RenderItem(name=item_base(p, segs), segs=segs, orientation=clamp_out(want, h, vw), audio=o.audio)
@@ -1853,7 +1914,7 @@ class EditTab(QWidget):
         hs = [source_out_h(x) for x in srcs]
         h = 0 if 0 in hs else max(hs)
         vw = min(source_vw(x) for x in srcs)
-        return clamp_out(p.tl_out or p.out_of(srcs[0]), h, vw)
+        return clamp_out(p.out_of(p.tl_source(segs) or srcs[0]), h, vw)
 
     def _fill_tl_out(self):
         from .project import outputs_for, out_label, source_out_h, source_vw
@@ -1939,6 +2000,7 @@ class EditTab(QWidget):
         self.trans_prev.stop()
         self._del_target = "cut"
         self._refresh_timeline()
+        self._sync_zoom()
 
     def _on_cut_moved(self, a, b):
         segs = self.state.project.segments
@@ -2057,6 +2119,7 @@ class EditTab(QWidget):
         self.timeline.select_all()
         self._del_target = "ov"
         self._sync_dive_off()
+        self._sync_zoom()
         tl = self.timeline
         self.sel_ov = ("title", next(iter(tl.ov_multi))) if tl.ov_multi else ("music", next(iter(tl.mus_multi))) if tl.mus_multi else ("", "")
         self._say(f"타임라인 전부 고름(컷 {len(self.state.project.segments)} · 글자 등 {len(tl.ov_multi)} · 음악 {len(tl.mus_multi)})"
@@ -2220,6 +2283,7 @@ class EditTab(QWidget):
                 self.state.dive_auto_msg = None
                 self._say(f"LOG 시각 자동 {off:+.0f}초 — 카메라와 다이빙 컴퓨터 시간대가 {abs(off) / 3600:g}시간 다름", C_OK)
             if what == "dives":
+                self._refresh_sources()                    # v0.17.0 여행 머리줄의 지명
                 msg = getattr(self.state, "dive_msg", None)
                 if msg:
                     n, total, bad = msg
@@ -2494,6 +2558,8 @@ class EditTab(QWidget):
             return
         self.mode = mode
         self.player.mon.set_mode_button(mode)
+        self._apply_aspect()
+        self._sync_zoom()
         if mode == "source":
             self._tl_seg = None
             self._tl_gap = False
@@ -2504,6 +2570,85 @@ class EditTab(QWidget):
             self.timeline.update()
         elif load:
             self.show_timeline(self.tl_time)
+
+    # ---------------------------------------------------------------- v0.17.0 줌 + 위치(컷 단위)
+    def _zoom_targets(self) -> list:
+        """줌 줄이 가리키는 컷: 타임라인 모드에서만 — 전부 고름 = 모든 컷 · 고른 컷 = 그 컷 · 없음 = []."""
+        p = self.state.project
+        if self.mode != "timeline" or not p.segments:
+            return []
+        if getattr(self.timeline, "all_cuts", False):
+            return list(p.segments)
+        g = next((x for x in p.segments if x.id == self.sel_cut), None) if self.sel_cut else None
+        return [g] if g is not None else []
+
+    def _zoom_max(self, g) -> float:
+        return ff.zoom_max(self.state.project.source(g.src), self._tl_out_key())
+
+    def _sync_zoom(self):
+        """보정 패널 줌 줄 = 고른 컷의 값(서로 다르면 가장 큰 값) · 한도 = 고른 컷 중 가장 큰 한도 · 안 고름 = 흐림 '—'."""
+        tg = self._zoom_targets()
+        if not tg:
+            self.grade.set_zoom_state(None, 1.0)
+        else:
+            self.grade.set_zoom_state(max(float(g.zoom or 1.0) for g in tg), max(self._zoom_max(g) for g in tg))
+        self._update_view()
+
+    def _zoom_pressed(self):
+        if self._zoom_targets():
+            self.state.checkpoint("zoom", label="줌")
+
+    def _set_zoom(self, z: float):
+        tg = self._zoom_targets()
+        if not tg:
+            return
+        o = self._tl_out_key()
+        p = self.state.project
+        for g in tg:                                      # 각자 한도까지 · 위치는 새 줌의 한도 안으로
+            g.zoom = max(1.0, min(self._zoom_max(g), float(z)))
+            lx, ly = ff.pan_limits(p.source(g.src), g.zoom, o)
+            g.dx, g.dy = max(-lx, min(lx, g.dx)), max(-ly, min(ly, g.dy))
+        self.state.dirty = True
+        self.grade.set_zoom_state(max(g.zoom for g in tg), max(self._zoom_max(g) for g in tg))
+        self._update_view()
+        self._tp_cache.clear()
+
+    def _update_view(self):
+        """모니터에 지금 보이는 컷의 줌·위치(타임라인 모드). 끌어 옮기기 = 그 컷이 고른 컷일 때."""
+        g = self._tl_seg if self.mode == "timeline" else None
+        if g is not None:                                 # 실행취소 뒤 = 같은 id 의 새 컷
+            g = next((x for x in self.state.project.segments if x.id == g.id), None)
+        s = self.state.project.source(g.src) if g is not None else None
+        if g is None or s is None or not s.width:
+            self.player.mon.set_cut_view(None)
+            return
+        lx, ly = ff.pan_limits(s, g.zoom, self._tl_out_key())
+        self.player.mon.set_cut_view((float(g.zoom or 1.0), float(g.dx), float(g.dy), lx, ly, float(s.width)),
+                                     edit=any(x is g for x in self._zoom_targets()))
+
+    def _pan_pressed(self):
+        self.state.checkpoint("pan", label="위치")
+
+    def _cur_cut(self):
+        g = self._tl_seg
+        return next((x for x in self.state.project.segments if x.id == g.id), None) if g is not None else None
+
+    def _panned(self, dx: float, dy: float):
+        g = self._cur_cut()
+        if g is None or self.mode != "timeline":
+            return
+        g.dx, g.dy = float(dx), float(dy)
+        self.state.dirty = True
+        self._tp_cache.clear()
+
+    def _pan_reset(self):
+        g = self._cur_cut()
+        if g is None or self.mode != "timeline" or (abs(g.dx) < 0.5 and abs(g.dy) < 0.5):
+            return
+        self.state.checkpoint(label="위치")
+        g.dx = g.dy = 0.0
+        self.state.dirty = True
+        self._update_view()
 
     def _tl_locate(self, t):
         """결과 시간 t → (컷, 원본 프레임). 전환 겹침 구간은 뒤 컷(들어오는 컷)."""
@@ -2544,6 +2689,7 @@ class EditTab(QWidget):
         self._update_tl_titles(t)
         if loc is None:                                      # v0.16.80 컷이 하나도 없어도 = 검은 화면(예전 = 마지막 화면이 남음)
             self._tl_seg = None
+            self._update_view()
             self.player.pause()
             w_, h_ = self.player.mon.out_wh
             blk = QImage(max(2, w_ // 4), max(2, h_ // 4), QImage.Format_RGB32)
@@ -2556,6 +2702,7 @@ class EditTab(QWidget):
             self._gap_timer.stop()
         seg, _st, f = loc
         self._tl_seg = seg
+        self._update_view()
         if seg.src != self.cur_sid or self.player.frames == 0:
             self._pending_frame = f
             self._tl_play_after = play
@@ -2865,7 +3012,7 @@ class EditTab(QWidget):
         if m is None or not m.width:
             return
         p = self.state.project
-        ow, oh = ff.out_size("vertical" if self._vert(p.source(p.segments[0].src) if p.segments else None) else "horizontal")
+        ow, oh = ff.out_size("vertical" if self._vert(p.tl_source() if p.segments else None) else "horizontal")
         self.state.checkpoint()
         d = new_title_image(iid, 0.0, TITLE_DEFAULT_SEC, min(1.0, ow / m.width, oh / m.height))
         p.titles.append(d)
@@ -3256,7 +3403,7 @@ class EditTab(QWidget):
         trips = autoedit.trips_of(cs)
         place = st.get("place") or autoedit.trips_place(p.dives, trips)
         period = autoedit.trips_period(trips)
-        s0 = p.source(seg_of[spans[0][0]].src)
+        s0 = p.tl_source()                             # v0.17.0 많은 쪽 방향
         ow, oh = ff.out_size(p.out_of(s0)) if s0 is not None else (1920, 1080)
         wh = (1080, 1920) if ow < oh else (1920, 1080)
         if "start" in cards:
@@ -3558,6 +3705,8 @@ class EditTab(QWidget):
         self._scan_loud()
         if hasattr(self, "dive_off"):                        # v0.16.97 LOG 시각 칸 = 고른 컷의 클립 값
             self._sync_dive_off()
+        if hasattr(self, "grade"):                           # v0.17.0 줌 줄 = 고른 컷 값(실행취소 뒤에도)
+            self._sync_zoom()
 
     # ---------------------------------------------------------------- 컷 원본 소리(v0.16.66): 말소리·수면 위 = 키움
     def _loud_map(self):

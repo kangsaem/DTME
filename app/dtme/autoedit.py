@@ -326,7 +326,7 @@ def build(project, picks: list[dict], minutes: int, seed: int = 0, titles: bool 
         start = {c: t for c, t, _l in cut_spans(tmp)}
         tdur = {g.id: float((g.trans or {}).get("dur", 0) or 0) for g in segs}
         from .ff import out_size
-        o = project.out_of(picks[0]["src"]) if picks else "horizontal"
+        o = project.out_of(tmp.tl_source(segs) or picks[0]["src"]) if picks else "horizontal"     # v0.17.0 많은 쪽 방향
         wh = (1080, 1920) if out_size(o)[0] < out_size(o)[1] else (1920, 1080)     # 위치 비율 = 화면 방향만(크기 무관)
         seg_of = {g.id: g for g in segs}
         dives = list(getattr(project, "dives", []) or []) if getattr(project, "dive_on", True) else []

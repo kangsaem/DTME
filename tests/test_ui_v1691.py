@@ -118,6 +118,7 @@ sh = [dataclasses.replace(s, path=s.path.replace("_20261027104000", "_2026102709
 print("시간대 1시간 다른 카메라:", dive_draw.guess_off(p.dives, sh))
 assert dive_draw.guess_off(p.dives, sh) == 3600.0              # 카메라 필리핀(+8) · 시계 한국(+9) = +3600초(사용자 11:07 확인)
 p.output.folder = os.path.join(W, "out"); p.output.encoder = "x264"; p.output.gpu_decode = False
+from dtme.project import set_setting as _ss; _ss("autowin", {})      # 자동 창 기억한 선택 지움(시험끼리 영향 없게)
 dlg = e.make_auto_window()                           # v0.17.0 자동 창
 dlg.dive_on.setChecked(True); dlg._sync()
 print("지명:", dlg.place.text(), "| 끝 문구:", dlg.end_text.text())

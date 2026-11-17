@@ -107,6 +107,7 @@ assert [m["id"] for m in st.project.music] == [ms[1]] and tid not in {t["id"] fo
 w.undo(); wait(0.2)
 assert len(st.project.music) == 3
 # 자동 편집 창 Ctrl+A
+from dtme.project import set_setting as _ss; _ss("autowin", {})      # 자동 창 기억한 선택 지움(시험끼리 영향 없게)
 d = e.make_auto_window()                             # v0.17.0 자동 창
 for r_ in d.rows:
     r_.checked = False

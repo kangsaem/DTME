@@ -32,6 +32,7 @@ for s in st.project.sources:
     s.auto = {"preset": "shallow", "by": "user"}
 ui_style.confirm = lambda *a, **k: "ok"
 # 1) 자동 편집(v0.17.0 자동 창): 시작 = 편집 창 숨김, 자동 창 = 주인 없는 창 + [−] / 끝 = 편집 창 다시
+from dtme.project import set_setting as _ss; _ss("autowin", {})      # 자동 창 기억한 선택 지움(시험끼리 영향 없게)
 dlg = e.make_auto_window(); dlg.show(); wait(0.2)
 dlg.length.setValue(1)
 assert not dlg.b_min.isVisible()
