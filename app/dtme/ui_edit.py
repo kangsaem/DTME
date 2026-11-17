@@ -3018,12 +3018,14 @@ class EditTab(QWidget):
 
             def music_for(plan):
                 runs = autoedit.music_runs(cut_spans(p), plan["scenes"])
-                if runs and has_start:                      # 시작·끝 화면 동안에도 음악
+                if runs and has_start:                      # 시작 화면 동안에도 음악(끝 화면 = 무음, v0.16.96)
                     runs[0] = (0.0,) + tuple(runs[0][1:])
-                if runs and has_end:
-                    runs[-1] = (runs[-1][0], runs[-1][1] + autoedit.END_SEC) + tuple(runs[-1][2:])
                 vm = sum((0.75 if g == "grand" else 0.25 if g == "calm" else 0.5) * (b - a) for a, b, g in runs) / max(1e-6, sum(b - a for a, b, _g in runs))
-                return music.plan_runs(auds, infos, runs, float(p.mix.get("xfade", 2.0)), video=vm, targets=autoedit.RUN_TARGET)
+                vend = max((t + ln for _c, t, ln in cut_spans(p)), default=0.0)
+                xf = float(p.mix.get("xfade", 2.0))
+                # v0.16.96 한 곡 = 처음부터 끝까지 한 번 · 다 쓰고 30초 넘게 남으면 디졸브로 다시(사용자 11/16~17)
+                items = music.plan_whole(auds, infos, vend, xf, runs=runs, targets=autoedit.RUN_TARGET, video=vm)
+                return music.fill_tail(items, auds, infos, vend, xf)
             if auds:                                         # v0.16.73 컷 길이 = 그 자리 곡의 마디 단위 → 다시 나눔
                 items = music_for(plan)
                 starts = {c: t for c, t, _l in cut_spans(p)}
@@ -3042,8 +3044,9 @@ class EditTab(QWidget):
             beat_txt = ""
             if auds:
                 items = music_for(plan)
-                p.music = [{**new_music(x["path"], x["t0"], x["dur"]), "off": x["off"], "len": x["len"], "follow": True,
-                            "gain": music.norm_gain(infos.get(x["path"])), "boost": x.get("boost", 1.0)} for x in items]
+                # 박자 맞추는 동안 음악 = 제자리(따라감 끔) → 컷 경계만 마디로 옮김. 끝나고 따라감 켬.
+                p.music = [{**new_music(x["path"], x["t0"], x["dur"]), "off": x["off"], "len": x["len"], "follow": False,
+                            "gain": music.norm_gain(infos.get(x["path"])), "boost": 1.0} for x in items]
                 p.mix["fout"] = max(4.0, float(p.mix.get("fout", 2.0)))     # v0.16.75 끝 = 4초 동안 줄임
                 self.music_info.update(infos)
                 self.timeline.set_music_info(self.music_info)
@@ -3055,10 +3058,21 @@ class EditTab(QWidget):
                     ff.log_info(f"자동 편집 박자우선: {bl}")
                 else:
                     snapped = autoedit.snap_to_bars(p, infos)
-                tot = max((t + ln for _c, t, ln in cut_spans(p)), default=0.0) + (autoedit.END_SEC if has_end else 0.0)
-                if p.music:                                  # 마지막 곡 = 영상 끝에서 자름(끝 화면 포함)
-                    last = max(p.music, key=lambda m: float(m["t0"]))
-                    last["len"] = round(max(0.2, min(float(last["dur"]) - float(last["off"]), tot - float(last["t0"]))), 3)
+                spans_ = cut_spans(p)
+                vend = max((t + ln for _c, t, ln in spans_), default=0.0)
+                p.music = music.clip_end(p.music, vend)      # v0.16.96 음악 = 영상 끝까지(끝 화면 = 무음)
+                mend = music.music_end(p.music)
+                quiet = 0
+                if vend - mend > 0.5:                        # 곡이 모자란 뒤(30초 이하) = 음악 없이 원본 소리
+                    seg_of = {g.id: g for g in p.segments}
+                    for cid, t, ln in spans_:
+                        if t + ln / 2 >= mend:
+                            seg_of[cid].aud = "up"
+                            quiet += 1
+                for m in p.music:
+                    m["follow"] = True
+                ff.log_info(f"자동 편집 음악: 영상 끝 {vend:.1f} · 음악 끝 {mend:.1f} · 원본 소리 컷 {quiet} · "
+                            f"다시 씀 {sum(1 for x in items if x.get('reuse'))}")
             self._put_cards(cards, st, picks)
             self.sel_cut = ""
             self.state.touch("segments")
@@ -3127,7 +3141,8 @@ class EditTab(QWidget):
         if "end" in cards:
             vend = max(t + ln for _c, t, ln in spans)
             ds = autoedit.trips_dives(p.dives, trips) if st.get("dive") and p.dives else []
-            p.titles += autoedit.end_card(vend, autoedit.end_lines(bool(ds), ds, place, period, st.get("end_text", "")), wh)
+            p.titles += autoedit.end_card(vend, autoedit.end_lines(bool(ds), ds, place, period, st.get("end_text", "")), wh,
+                                          tag=not st.get("end_text", "").strip())
         p.end_fade = 0.0 if "end" in cards else max(float(p.end_fade or 0.0), autoedit.FADE_OUT_SEC)   # 끝 화면 = 페이드 없이 끝
         ff.log_info(f"시작·끝 화면: {sorted(cards)} · 지명 {place!r} · 기간 {period!r}")
 
@@ -3166,10 +3181,9 @@ class EditTab(QWidget):
             scenes = {g.id: ("surface" if g.why == "수면 위" else auto.normalize_key((p.source(g.src).auto or {}).get("preset", "")))
                       for g in p.segments if p.source(g.src)}               # v0.16.73 물 밖 = 컷 소리·장면 판단(수면 위)
             runs = autoedit.music_runs(cut_spans(p), scenes)
-            if any(g != "mid" for _a, _b, g in runs):      # v0.16.68 장면별 곡(블루워터 = 웅장·신남, 얕은·산호 = 잔잔)
-                items = music.plan_runs(auds, infos, runs, float(p.mix.get("xfade", 2.0)), video=vm["mood"], targets=autoedit.RUN_TARGET)
-            else:
-                items = music.plan(auds, infos, total, vm["mood"], float(p.mix.get("xfade", 2.0)))
+            xf = float(p.mix.get("xfade", 2.0))             # v0.16.96 자동 편집과 같은 규칙(한 곡 처음~끝)
+            items = music.plan_whole(auds, infos, total, xf, runs=runs, targets=autoedit.RUN_TARGET, video=vm["mood"])
+            items = music.clip_end(music.fill_tail(items, auds, infos, total, xf), total)
             if not items:
                 self._say("쓸 수 있는 음악이 없음", C_WARN)
                 return

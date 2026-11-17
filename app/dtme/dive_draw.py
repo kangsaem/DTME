@@ -28,6 +28,18 @@ def _sm(x: float) -> float:
     return x * x * (3 - 2 * x)
 
 
+FILL_FADE = 0.4                        # v0.16.96 선 아래 파란 색 = 긁지 않고, 선이 절반 그려진 때(컷 시작 3.0초)부터 0.4초 디졸브(사용자 11/16)
+
+
+def fill_in(rv: float) -> float:
+    """그래프 드러남(rv, 긁기 0~1) → 선 아래 색 투명도 0~1. rv = smoothstep(u) 의 u(시간 비율)를 되구해
+    u 0.5(= 컷 시작 G_IN + G_WIPE/2)부터 FILL_FADE 초 동안 디졸브 — 미리보기·렌더 같은 함수."""
+    import math
+    rv = max(0.0, min(1.0, rv))
+    u = 0.5 - math.sin(math.asin(1 - 2 * rv) / 3)
+    return _sm((u - 0.5) / (FILL_FADE / G_WIPE))
+
+
 def _wins(L: float, tail: float):
     """(애니메이션 구간들, 글자 아웃 시작, 그래프 아웃 시작). 글자 = 1초~(1+표시) · 그래프 = 2초~(2+표시)에 다 사라짐."""
     show = max(SHOW_MIN, L - SHOW_LESS)
@@ -75,7 +87,8 @@ def wipe_mask(W: int, rv: float) -> np.ndarray:
 
 BLUE = (14, 140, 230)          # DTMD 그래프 아래 색
 DOT = "#E31B3F"
-DOT_FLASH = "#FF6FB5"         # v0.16.93 소나가 퍼지기 시작하는 첫 그림(1/12초)만 밝은 분홍(사용자)
+DOT_FLASH = "#FF6FB5"         # v0.16.93 소나가 퍼지기 시작할 때 점 = 밝은 분홍 · v0.16.96 1/12초 → 1초 동안(사용자 11/17)
+FLASH_SEC = 1.0
 RATE = 2                       # 렌더 그림 바꾸는 횟수(초당) — 점은 1초에 1px 도 안 움직임
 FADE_MIN = 220                 # 점 앞 색이 사라지는 최소 길이(1080 기준 px) — 다이빙 초반에도 색이 보이게
 
@@ -220,8 +233,8 @@ def _dot(p: QPainter, c: QPointF, k: float, color: str):
 
 
 def is_flash(phase: float) -> bool:
-    """소나 주기의 첫 그림(1/PULSE_FPS 초) = 점 분홍."""
-    return (phase % 1.0) < 1.0 / (PULSE_SEC * PULSE_FPS)
+    """소나 주기의 처음 FLASH_SEC 초 = 점 분홍."""
+    return (phase % 1.0) < FLASH_SEC / PULSE_SEC - 1e-9
 
 
 def paint_flash(p: QPainter, cx: float, cy: float, k: float, phase: float):
@@ -353,8 +366,9 @@ def fill_alpha(W: int, H: int, dive: dict, t: float, rv: float = 1.0, ga: float 
     f = np.clip((xp - xs) / L, 0, 1)
     f = f * f * (3 - 2 * f)
     a = a * f[None, :] * under
-    if rv < 0.999 or ga < 0.999:
-        a = a * (wipe_mask(W, rv) * ga)[None, :]
+    fa = fill_in(rv) * ga                                   # v0.16.96 긁기 없음 = 전체가 같이 디졸브
+    if fa < 0.999:
+        a = a * np.float32(fa)
     return a, y0
 
 
@@ -392,11 +406,12 @@ _FILL: dict = {}
 
 def paint_fill(p: QPainter, rect: QRectF, W: int, H: int, dive: dict, t: float, mode: str, rv: float = 1.0, ga: float = 1.0):
     """미리보기: 출력 화면 rect 위에 직접 멀티플라이/애드(그림 크기 = rect 크기)."""
-    if rv <= 0.002 or ga <= 0.002:
+    fa = fill_in(rv)
+    if fa <= 0.002 or ga <= 0.002:
         return
     w, h = max(2, int(rect.width())), max(2, int(rect.height()))
     px, _py = _xy(dive, w, h)
-    key = (w, h, dive["id"], round(px(max(0.0, min(DL.dur(dive), t)))), mode, round(rv * 100), round(ga * 50))
+    key = (w, h, dive["id"], round(px(max(0.0, min(DL.dur(dive), t)))), mode, round(fa * 50), round(ga * 50))
     hit = _FILL.get("k") == key
     if hit:                                            # v0.16.91 같은 그림 = 다시 안 계산(재생 중 매 장면 numpy 계산이 무거움)
         img, y0 = _FILL["v"]
@@ -640,8 +655,9 @@ def render_layers(project, dives: list, off: float, spans: list, total: float, W
         gk = (dive["id"], round(xp * 2), round(rv * 200), round(ga * 100)) if ga > 0.002 and rv > 0.002 else "none"
         put("gr", gk, mk_gr, dur)
         mode = cut_mode(src, seg, W, H)
-        on = ga > 0.002 and rv > 0.002
-        fk = (dive["id"], round(xp), mode, round(rv * 200), round(ga * 100))
+        fa = fill_in(rv)
+        on = ga > 0.002 and fa > 0.002
+        fk = (dive["id"], round(xp), mode, round(fa * 100), round(ga * 100))
         need = on and (("mul", fk) not in files or ("add", fk) not in files)
         a_ = fill_alpha(W // fs, H // fs, dive, t, rv, ga)[0] if need else None
         if a_ is not None and a_.shape != (fh, fw):

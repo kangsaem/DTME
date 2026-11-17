@@ -2719,6 +2719,18 @@ def post_graph(fparts: list, cmd: list, project: Project, extras: dict, total: f
         fparts.append("[ab]anull[ao]")
     else:
         fparts.append(f"{''.join(labs)}amix=inputs={len(labs)}:duration=first:normalize=0:dropout_transition=0[ao]")
+    ew = end_white_at(extras.get("titles") or [])
+    if ew is not None and ew[0] < total:          # v0.16.96 끝 화면: 흰색으로 바뀌는 동안 소리 내림 → 하얗게 되면 0 · 끝 화면 = 무음(사용자 11/16)
+        fparts[-1] = fparts[-1][:-4] + "[aew]"
+        fparts.append(f"[aew]afade=t=out:st={ew[0]:.4f}:d={max(0.05, ew[1]):.4f}[ao]")
+
+
+def end_white_at(titles) -> tuple[float, float] | None:
+    """끝 화면 흰 사각형의 (시작 시각, 페이드 길이) — 없으면 None. 렌더·미리보기 소리 내림이 같이 씀."""
+    for t in titles or []:
+        if t.get("card") == "end" and t.get("kind") == "rect":
+            return float(t["t0"]), float(t.get("fade", 1.0) or 1.0)
+    return None
 
 
 def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orientation: str | None = None,

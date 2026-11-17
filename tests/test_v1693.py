@@ -26,8 +26,8 @@ assert abs(top - 540) < 1e-6 and abs(top + gh - (2160 - 146)) < 1e-6
 
 # 소나 첫 그림만 분홍
 nfr = int(D.PULSE_SEC * D.PULSE_FPS)
-assert D.is_flash(0.0) and D.is_flash(3.0) and not D.is_flash(1 / nfr) and not D.is_flash(0.5)
-assert [D.is_flash(j / nfr) for j in range(nfr)].count(True) == 1
+assert D.is_flash(0.0) and D.is_flash(3.0) and D.is_flash(1 / nfr) and not D.is_flash(0.5)      # v0.16.96 분홍 = 1초
+assert [D.is_flash(j / nfr) for j in range(nfr)].count(True) == D.PULSE_FPS
 
 
 def center(phase):

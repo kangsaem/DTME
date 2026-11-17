@@ -26,7 +26,7 @@ tr = A.trips_of([(T(2025, 10, 20), T(2025, 10, 20, 10)), (T(2025, 10, 21), T(202
 assert len(tr) == 2 and tr[0][0] == T(2025, 10, 20) and tr[1][1] == T(2026, 3, 26, 10), tr      # 6일 뒤(3/26) = 같은 여행
 assert len(A.trips_of([(T(2026, 3, 20), T(2026, 3, 20, 10)), (T(2026, 3, 27, 10), T(2026, 3, 27, 11))])) == 2   # 7일 = 새 여행
 print("기간:", A.trips_period(tr))
-assert A.trips_period(tr) == "2025.10.20 ~ 10.21 · 2026.03.20 ~ 03.26"
+assert A.trips_period(tr) == "2025.10.20 ~ 2026.03.26"                  # v0.16.96 처음 ~ 끝 하나로
 
 # 2) DTMD 메모 '위치:' → loc(뒤 두 부분) + city(앞 부분)
 obj = {"logs": [
@@ -64,13 +64,13 @@ assert len(A.trips_dives(dv, oki2)) == 4                                        
 assert A.START_SEC == 5.0 and A.START_DARK == 2.0
 sc = A.start_card("오키나와현, 일본", "2025.10.20", A.START_SEC, (1920, 1080))
 txt = [x for x in sc if x["kind"] == "text"]
-assert [x["size"] for x in txt] == [100, 50] and all(x["ain"] == "cut" and x["t0"] == 0.0 and "tdelay" not in x for x in txt)
+assert [x["size"] for x in txt] == [160, 80] and all(x["ain"] == "cut" and x["t0"] == 0.0 and "tdelay" not in x for x in txt)
 assert sc[0]["kind"] == "rect" and sc[0]["fade"] == 2.0 and sc[0]["t1"] == 5.0
 longp = "미야코지마시 · 이시가키시, 오키나와현, 일본"
 sv = [x for x in A.start_card(longp, "2025.10.20 ~ 10.21 · 2026.03.20 ~ 03.23", 5.0, (1080, 1920)) if x["kind"] == "text"]
 sh = [x for x in A.start_card(longp, "2025.10.20 ~ 10.21 · 2026.03.20 ~ 03.23", 5.0, (1920, 1080)) if x["kind"] == "text"]
 print("세로 줄인 크기:", [x["size"] for x in sv], "가로:", [x["size"] for x in sh])
-assert sv[0]["size"] < 100 and sh[0]["size"] <= 100
+assert sv[0]["size"] < 160 and sh[0]["size"] <= 160
 for x in sv:
     w = A._metrics(x)[0]
     assert w <= 0.85 * 1080 + 2, (x["text"], w)

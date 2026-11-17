@@ -81,7 +81,7 @@ mg = divelog.merge([a_], [f_])
 assert len(mg) == 1 and mg[0]["src"] == "fit" and mg[0]["loc"] == "보홀주, 필리핀"
 t0 = divelog._naive(2026, 10, 27, 9, 0)
 assert autoedit.period_text(t0, t0 + 3600) == "2026.10.27" and autoedit.period_text(t0, t0 + 6 * 86400) == "2026.10.27 ~ 11.02"
-assert autoedit.end_lines(False, [], "", "")[0][0] == "See You Underwater"
+assert autoedit.end_lines(False, [], "", "") == [] and autoedit.END_TAG == "See You Underwater"   # v0.16.96 아래 줄 따로
 # 클립이 너무 많음(1분에 20개): 가능한 많이(13개 = 4.5초씩) · 흐림·흔들림 먼저 뺌
 from dtme.project import Project, Source  # noqa: E402
 pj = Project()
@@ -126,7 +126,7 @@ assert dlg.settings()["end_text"] == ""                       # 안 고침 = 자
 from PySide6.QtTest import QTest as _QT  # noqa: E402
 dlg.end_text.setFocus(); dlg.end_text.end(False); _QT.keyClicks(dlg.end_text, "!")
 assert dlg.settings()["end_text"].endswith("2026.10.27!")
-assert [x[0] for x in autoedit.end_lines(True, [], "", "", dlg.settings()["end_text"])][1].endswith("!")
+assert [x[0] for x in autoedit.end_lines(True, [], "", "", dlg.settings()["end_text"])][-1].endswith("!")
 dlg._end_auto = True; dlg._end_hint()
 from PySide6.QtWidgets import QApplication as _QA  # noqa: E402
 _orig_mods = _QA.keyboardModifiers
@@ -160,9 +160,9 @@ print("시작 화면:", [(x["kind"], x.get("text")) for x in cards["start"]])
 print("끝 화면:", [(x["kind"], x.get("text")) for x in cards["end"]])
 assert [x["kind"] for x in cards["start"]] == ["rect", "text", "text"] and cards["start"][1]["text"] == "보홀주, 필리핀"   # v0.16.92 스틸 없음
 assert cards["start"][2]["text"] == "2026.10.27"
-assert cards["end"][1]["text"].startswith("1 DIVE · MAX 22.0m") and cards["end"][2]["text"] == "보홀주, 필리핀 · 2026.10.27"
+assert cards["end"][1]["text"].startswith("1 DIVE · MAX 22.0m") and [x["text"] for x in cards["end"][2:]] == ["보홀주, 필리핀", "2026.10.27", "See You Underwater"]   # v0.16.96 3줄 + 아래 줄
 assert not [m for m in p.images if os.path.basename(m.path).startswith("DTME_")]
-assert [x["kind"] for x in cards["end"]] == ["rect", "text", "text"]
+assert [x["kind"] for x in cards["end"]] == ["rect", "text", "text", "text", "text"] and cards["end"][-1].get("tag")
 vend = max(tt + ln for _c, tt, ln in cut_spans(p))
 assert abs(p.tail_of() - autoedit.END_SEC) < 1e-3 and autoedit.END_SEC == 8.0
 sw = cards["start"][0]
@@ -172,7 +172,7 @@ assert wr["color"] == "#ffffff" and abs(wr["t0"] - (vend - 1.0)) < 1e-3 and abs(
 assert (wr["ain"], wr["aout"]) == ("fade", "cut")
 st_t = [x for x in cards["start"] if x["kind"] == "text"]
 assert all(x["ain"] == "cut" and x["aout"] == "fade" and x["fade"] == 2.0 and x["t0"] == 0.0 and x["t1"] == 5.0 for x in st_t)   # v0.16.95 0초부터 글자(타이핑 없음)
-assert [x["size"] for x in st_t] == [autoedit.START_PLACE, autoedit.START_PERIOD] == [100, 50]
+assert [x["size"] for x in st_t] == [autoedit.START_PLACE, autoedit.START_PERIOD] == [160, 80]
 assert all(x["ain"] == "fade" and x["aout"] == "cut" and abs(x["t0"] - (vend + 2.0)) < 1e-3 and x["fade"] == 1.0
            for x in cards["end"] if x["kind"] == "text")
 bars = [x for x in p.titles if x.get("datebar") and x["kind"] == "text" and x["size"] == autoedit.DB_TIME]

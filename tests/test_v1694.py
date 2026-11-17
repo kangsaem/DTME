@@ -102,7 +102,7 @@ st = AppState()
 st.project.sources.append(Source(path="/x/a.mp4", fps_num=30, fps_den=1, frames=900, width=1920, height=1080))
 d = AutoEditDialog(st, {st.project.sources[0].id})
 assert d.beat_on.text() == "박자우선"
-assert not d.beat_on.isChecked(), "올린 곡 없음 = 기본 끔"
+assert d.beat_on.isChecked(), "v0.16.96 기본 = 늘 켬"
 st.project.audios.append({"path": "/x/song.mp3", "dur": 300.0})
 d = AutoEditDialog(st, {st.project.sources[0].id})
 assert d.beat_on.isChecked() and d.beat_on.isEnabled() and d.settings()["beat"]

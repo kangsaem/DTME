@@ -154,6 +154,9 @@ jobs:
           $o_v1695 = python tests/test_v1695.py 2>&1 | Out-String
           Write-Output $o_v1695
           if ($o_v1695 -notmatch "OK test_v1695") { exit 1 }
+          $o_v1696 = python tests/test_v1696.py 2>&1 | Out-String
+          Write-Output $o_v1696
+          if ($o_v1696 -notmatch "OK test_v1696") { exit 1 }
           $global:LASTEXITCODE = 0
           python tests/test_titles.py test4k.mp4 titles_test
           if ($LASTEXITCODE -ne 0) { exit 1 }

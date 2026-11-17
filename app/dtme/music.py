@@ -735,3 +735,99 @@ def plan_runs(audios: list[dict], infos: dict, runs: list, xfade: float = 2.0, v
             out.append(x)
         last = items[-1]["path"]
     return out
+
+
+# ------------------------------------------------------------------ v0.16.96 한 곡 처음~끝(사용자 11/16~17)
+# 예전(plan_runs) = 장면 구간마다 곡을 새로 골라 같은 자리부터 → 곡이 적으면 같은 곡 도입부가 되풀이됨.
+# 지금 = 곡은 처음부터 끝까지 한 번, 끝나면 다음 곡(xfade 초 겹침). 곡이 다 떨어졌을 때:
+#   남은 영상 > TAIL_FILL(30초) = 디졸브로 다시 씀(횟수 최소, 다른 소절 = 곡 뒷부분) · 아니면 음악 없이 원본 소리.
+TAIL_FILL = 30.0
+
+
+def run_roles(runs: list) -> list:
+    """장면 구간 [(시작, 끝, 묶음)] → 역할(맨 앞 edge_first · 맨 끝 edge_last · 첫 블루워터 grand_first · surface = calm)."""
+    roles, seen = [], False
+    for k, (_a, _b, grp) in enumerate(runs):
+        if k == 0:
+            roles.append("edge_first")
+        elif k == len(runs) - 1:
+            roles.append("edge_last")
+        elif grp == "grand" and not seen:
+            roles.append("grand_first")
+            seen = True
+        else:
+            roles.append("calm" if grp == "surface" else grp)
+    return [(a, b, r) for (a, b, _g), r in zip(runs, roles)]
+
+
+def _usable(audios: list[dict], infos: dict) -> list:
+    return [(a, infos[a["path"]]) for a in audios if infos.get(a["path"]) and float(infos[a["path"]].get("dur", 0)) >= 5]
+
+
+def plan_whole(audios: list[dict], infos: dict, total: float, xfade: float = 2.0, runs: list | None = None,
+               targets: dict | None = None, video: float = 0.5) -> list[dict]:
+    """곡마다 처음(앞 조용한 곳 다음)부터 끝까지 한 번씩, total 을 채울 때까지 → [{"path","t0","off","dur","len"}].
+    곡 순서 = 올린 곡 먼저(기본 음악은 뒤) · 그 안에서는 곡이 시작하는 자리의 장면 분위기에 가까운 순.
+    곡이 다 떨어지면 거기서 끝(뒤는 fill_tail 이 정함). total 을 넘는 곡은 자르지 않음(clip_end 가 자름)."""
+    pool = _usable(audios, infos)
+    roles = run_roles(runs or [])
+    targets = targets or {}
+    out, t = [], 0.0
+    while pool and t < total - 0.05:
+        role = next((r for a, b, r in roles if a - 1e-6 <= t < b), roles[-1][2] if roles else "")
+        mt, gt = targets.get(role, (None, None))
+        mt = target_mood(video) if mt is None else mt
+        a, inf = min(pool, key=lambda c: (bool(c[0].get("builtin")), fit_score(c[1], mt, gt, role, c[0].get("kind", ""))))
+        pool = [c for c in pool if c[0] is not a]
+        dur = float(inf["dur"])
+        off = min(float(inf.get("lead", 0)), max(0.0, dur - 1.0))
+        ln = dur - off
+        out.append({"path": a["path"], "t0": round(t, 3), "off": round(off, 3), "dur": dur, "len": round(ln, 3)})
+        t += ln - min(xfade, ln / 2)
+    return out
+
+
+def music_end(items: list[dict]) -> float:
+    return max((float(x["t0"]) + float(x["len"]) for x in items), default=0.0)
+
+
+def fill_tail(items: list[dict], audios: list[dict], infos: dict, total: float, xfade: float = 2.0,
+              tail: float = TAIL_FILL) -> list[dict]:
+    """곡을 다 쓰고도 영상이 tail 초 넘게 남으면 = 디졸브(xfade)로 다시 씀: 되도록 한 번에 끝까지 닿는 곡의 뒷부분
+    (마디 첫 박에서 시작 → 곡 끝이 영상 끝 근처). 안 닿으면 가장 긴 곡을 처음부터 한 번 더 → 반복. tail 이하 = 그대로(뒤는 음악 없음)."""
+    pool = _usable(audios, infos)
+    out = list(items)
+    if not pool or not out:
+        return out
+    guard = 0
+    while total - music_end(out) > tail and guard < 50:
+        guard += 1
+        last = out[-1]
+        t = float(last["t0"]) + float(last["len"]) - min(xfade, float(last["len"]) / 2)
+        need = total - t
+        others = [c for c in pool if c[0]["path"] != last["path"]] or pool
+        a, inf = max(others, key=lambda c: (not c[0].get("builtin"), float(c[1]["dur"]) - float(c[1].get("lead", 0))))
+        dur, lead = float(inf["dur"]), float(inf.get("lead", 0))
+        if dur - lead > need + 4.0:                      # 뒷부분만 = 다른 소절부터, 곡 끝 ≈ 영상 끝
+            off = dur - need
+            if float(inf.get("conf", 0)) >= 0.3:
+                bars = [b for b in (inf.get("bars") or []) if lead <= b <= off + 1e-6]
+                if bars:
+                    off = float(bars[-1])
+        else:
+            off = min(lead, max(0.0, dur - 1.0))
+        out.append({"path": a["path"], "t0": round(t, 3), "off": round(off, 3), "dur": dur, "len": round(dur - off, 3), "reuse": True})
+    return out
+
+
+def clip_end(items: list[dict], end: float) -> list[dict]:
+    """영상 끝(end)에서 음악을 자름: 그 뒤에 시작하는 곡은 빼고, 걸친 곡은 길이를 줄임."""
+    out = []
+    for x in items:
+        t0 = float(x["t0"])
+        if t0 >= end - 0.5:
+            continue
+        if t0 + float(x["len"]) > end:
+            x["len"] = round(max(0.2, end - t0), 3)
+        out.append(x)
+    return out

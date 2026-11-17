@@ -608,13 +608,17 @@ def beat_lock(project, music_info: dict) -> dict:
                     dur = float(m.get("dur", inf.get("dur", 0)) or 0)
                     if dur:
                         m["len"] = round(max(0.2, min(float(m["len"]), dur - no)), 3)
+    def _mid(i, spans):
+        d = float((p.segments[i].trans or {}).get("dur", 0) or 0) if p.segments[i].trans else 0.0
+        return spans[i][1] + d / 2
+    sp0 = cut_spans(p)
+    want_at = {i: _mid(i, sp0) for i in range(1, min(len(p.segments), len(sp0)))}   # v0.16.96 맞추기 전 경계 시각 = 목표(밀림이 쌓이지 않게)
     for i in range(1, len(p.segments)):                  # ② 경계마다
         spans = cut_spans(p)
         if i >= len(spans):
             break
-        _cid, t, _ln = spans[i]
-        d = float((p.segments[i].trans or {}).get("dur", 0) or 0) if p.segments[i].trans else 0.0
-        T = t + d / 2
+        T = _mid(i, spans)
+        Tw = want_at.get(i, T)
         g = p.segments[i - 1]
         s = p.source(g.src)
         fps = float(s.fps)
@@ -622,18 +626,20 @@ def beat_lock(project, music_info: dict) -> dict:
         lo = DIVE_MIN if dive_src(p, s) else CUT_MIN
         lo = min(lo, cur)
         hi = max(cur, min(CUT_MAX, s.frames / fps))
-        bars, beats = [], []
+        bars, beats, per = [], [], 0.0
         for m in p.music:
             inf = music_info.get(m["path"])
-            if not _beat_ok(inf) or not (float(m["t0"]) - 0.01 <= T <= float(m["t0"]) + float(m["len"]) + 0.01):
+            if not _beat_ok(inf) or not (float(m["t0"]) - 0.01 <= Tw <= float(m["t0"]) + float(m["len"]) + 0.01):
                 continue
             bars += beats_on_timeline(m, inf, bars=True)
             beats += beats_on_timeline(m, inf)
+            per = max(per, bar_len(inf) or float(np.median(np.diff(inf["bars"]))))
         best, kind = None, ""
-        for pts, k in ((bars, "bar"), (beats, "beat")):
-            ok = [b for b in pts if lo - 1e-6 <= cur + (b - T) <= hi + 1e-6]
+        # v0.16.96 목표 시각(Tw)에 가장 가까운 것 · 너무 먼 것(마디 2개 넘게 = 곡 도입부처럼 마디가 안 잡힌 곳)은 안 씀
+        for pts, k, far in ((bars, "bar", 2.0 * per), (beats, "beat", 0.5 * per)):
+            ok = [b for b in pts if lo - 1e-6 <= cur + (b - T) <= hi + 1e-6 and abs(b - Tw) <= far + 1e-6]
             if ok:
-                best, kind = min(ok, key=lambda b: abs(b - T)), k
+                best, kind = min(ok, key=lambda b: abs(b - Tw)), k
                 break
         if best is None:
             if bars or beats:
@@ -660,7 +666,10 @@ def beat_lock(project, music_info: dict) -> dict:
 START_SEC = 5.0                     # v0.16.95 6 → 5초(사용자 11/15): 글자 그대로 3초 + 어두워짐 2초
 TYPE_DELAY, TYPE_TOTAL = 0.5, 2.0   # (끝 화면 등 타이핑을 쓸 때)
 START_DARK = 2.0                    # 시작 화면 끝 2초 = 흰 화면·글자 같이 검게
-START_PLACE, START_PERIOD = 100, 50  # v0.16.95 지명 · 기간 글자(1080 기준, 지금 76 · 40 → 미리보기 그림에서도 읽히게)
+START_PLACE, START_PERIOD = 160, 80  # v0.16.96 지명 · 기간 글자(1080 기준, 사용자 11/16: 카톡 재생 버튼 너머로도 읽히게)
+START_PERIOD_CY = 0.80              # 기간 = 화면 높이 80%(재생 버튼·길이 표시에 안 가림) · 지명 = 가운데 그대로
+END_TAG = "See You Underwater"      # v0.16.96 끝 화면 맨 아래 한 줄(직접 쓴 문구 없을 때, LOG 있든 없든 · 'DTME' 줄 뺌)
+END_TAG_COLOR, END_TAG_SIZE, END_TAG_CY = "#4FB3E8", 28, 0.93
 CARD_FIT = 0.85                     # 글자 줄 폭 = 화면 폭의 85% 넘으면 줄임
 WHITE_SEC = 1.0                     # 끝: 마지막 컷 → 흰색(1초)
 END_TEXT_AT, END_TEXT_FADE, END_HOLD = 2.0, 1.0, 5.0
@@ -679,6 +688,13 @@ def _white(t0: float, t1: float, which: str, fade: float, ain: str, aout: str) -
     wr.update(cx=0.5, cy=0.5, w=1.0, h=1.0, color="#ffffff", opacity=1.0, radius=0, fade=fade, ain=ain, aout=aout,
               auto_edit=True, card=which)
     return wr
+
+
+def _card_text(text: str, size: int, cy: float, t0: float, t1: float, which: str, fade: float, ain: str, aout: str) -> dict:
+    tx = new_text(t0, t1, text)
+    tx.update(font=card_font(text), size=size, bold=True, color=CARD_COLOR, bg="none", ain=ain, aout=aout, fade=fade,
+              cx=0.5, cy=round(cy, 4), auto_edit=True, card=which)
+    return tx
 
 
 def card_texts(lines: list[tuple[str, int, bool]], t0: float, t1: float, which: str, typing: bool,
@@ -727,14 +743,26 @@ def start_card(place: str, period: str, lead: float = START_SEC, out_wh: tuple[i
     """시작 화면: [흰 사각형, 글자…] — v0.16.95 0초부터 글자 다 보임(타이핑 없음 = 첫 프레임이 PC·카톡 미리보기) ·
     끝 2초 = 같이 검게(검은 바탕으로 페이드 아웃)."""
     lines = fit_lines([(place, START_PLACE, True), (period, START_PERIOD, True)], out_wh)
-    return [_white(0.0, lead, "start", START_DARK, "cut", "fade")] + \
-        card_texts(lines, 0.0, lead, "start", False, START_DARK, "cut", "fade")
+    out = [_white(0.0, lead, "start", START_DARK, "cut", "fade")]
+    for (text, size, _b), cy in zip(lines, (0.5, START_PERIOD_CY)):       # v0.16.96 지명 = 가운데 · 기간 = 높이 80%
+        if text:
+            out.append(_card_text(text, size, cy, 0.0, lead, "start", START_DARK, "cut", "fade"))
+    return out
 
 
-def end_card(video_end: float, lines: list[tuple[str, int, bool]], out_wh: tuple[int, int] = (1920, 1080)) -> list[dict]:
-    """끝 화면: [흰 사각형(영상 끝 1초 전부터 페이드 인, 끝까지), 글자…(+2초부터 1초 디졸브)] · 페이드 아웃 없음."""
-    return [_white(video_end - WHITE_SEC, video_end + END_SEC, "end", WHITE_SEC, "fade", "cut")] + \
-        card_texts(fit_lines(lines, out_wh), video_end + END_TEXT_AT, video_end + END_SEC, "end", False, END_TEXT_FADE, "fade", "cut")
+def end_card(video_end: float, lines: list[tuple[str, int, bool]], out_wh: tuple[int, int] = (1920, 1080),
+             tag: bool = False) -> list[dict]:
+    """끝 화면: [흰 사각형(영상 끝 1초 전부터 페이드 인, 끝까지), 글자…(+2초부터 1초 디졸브)] · 페이드 아웃 없음.
+    tag = 맨 아래 하늘색 'See You Underwater' 한 줄(가운데 글자와 같이 디졸브 인)."""
+    t0, t1 = video_end + END_TEXT_AT, video_end + END_SEC
+    out = [_white(video_end - WHITE_SEC, video_end + END_SEC, "end", WHITE_SEC, "fade", "cut")] + \
+        card_texts(fit_lines(lines, out_wh), t0, t1, "end", False, END_TEXT_FADE, "fade", "cut")
+    if tag:
+        (text, size, _b), = fit_lines([(END_TAG, END_TAG_SIZE, True)], out_wh)
+        tx = _card_text(text, size, END_TAG_CY, t0, t1, "end", END_TEXT_FADE, "fade", "cut")
+        tx.update(color=END_TAG_COLOR, tag=True)
+        out.append(tx)
+    return out
 
 
 def _ymd(t: float):
@@ -823,8 +851,10 @@ def trips_place(dives: list, trips: list[tuple[float, float]]) -> str:
 
 
 def trips_period(trips: list[tuple[float, float]]) -> str:
-    """여행마다 기간 → ' · ' 로 이어 붙임."""
-    return " · ".join(x for x in (period_text(a, b) for a, b in trips) if x)
+    """v0.16.96 기간 = 가장 빠른 날 ~ 가장 늦은 날 하나로(여행이 여럿이어도, 사용자 11/16)."""
+    if not trips:
+        return ""
+    return period_text(min(a for a, _b in trips), max(b for _a, b in trips))
 
 
 def dive_line(dives: list) -> str:
@@ -838,11 +868,11 @@ def dive_line(dives: list) -> str:
 
 
 def end_lines(log: bool, dives: list, place: str, period: str, text: str = "") -> list[tuple[str, int, bool]]:
-    """끝 문구: 직접 쓴 문구(줄바꿈 = 줄) · LOG = 다이빙 요약 + 지명 · 날짜 · 아니면 'See You Underwater' / 'DTME'."""
+    """끝 화면 가운데 줄: 직접 쓴 문구(줄바꿈 = 줄) · LOG = 다이빙 요약 / 지명 / 기간(3줄) · LOG 없음 = 지명 / 기간.
+    (v0.16.96 'See You Underwater' = 맨 아래 따로 → end_card(tag=True), 직접 쓴 문구가 있으면 없음.)"""
     if text.strip():
         import re as _re
         ls = [x.strip() for x in _re.split(r"\n| / ", text.strip()) if x.strip()]     # 한 줄 칸 = ' / ' 가 줄바꿈
         return [(ls[0], 64, True)] + [(x, 40, True) for x in ls[1:]]
-    if log and dives:
-        return [(dive_line(dives), 52, True), (" · ".join(x for x in (place, period) if x), 36, True)]
-    return [("See You Underwater", 72, True), ("DTME", 40, True)]
+    top = [(dive_line(dives), 52, True)] if log and dives else []
+    return top + [(x, 36, True) for x in (place, period) if x]

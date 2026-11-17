@@ -146,7 +146,7 @@ class AutoEditDialog(DragMove, QDialog):
         self.music_on.setChecked(bool(user_auds) or bool(n_def))
         self.music_on.setEnabled(bool(user_auds) or bool(n_def))
         self.beat_on = QCheckBox("박자우선")                 # v0.16.94 컷 경계 = 마디 첫 박(컷 길이 마디 단위) · 올린 곡 있으면 기본 켬(사용자 11:46)
-        self.beat_on.setChecked(bool(user_auds))
+        self.beat_on.setChecked(True)                      # v0.16.96 기본 = 늘 켬(컷 = 마디 단위가 기본, 사용자 11/17)
         self.music_on.toggled.connect(lambda _v: self._beat_enable())
         self.mix_default = QCheckBox(f"기본 음악도 같이 쓰기 ({n_all}곡)")   # 올린 곡이 있을 때만 · 기본 끔(사용자 14:44)
         self.mix_default.setChecked(False)
