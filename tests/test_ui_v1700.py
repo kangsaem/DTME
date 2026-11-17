@@ -71,6 +71,7 @@ assert heads == ["2025.10.20 ~ 10.21", "2026.03.20 ~ 03.21"], heads
 assert d.list.count() == 6 and len(d.rows) == 4
 tags = [d.odd_tag(s) for s in (st.project.source(r.sid) for r in d.rows)]
 assert tags == ["", "", "세로", ""], tags
+assert [r.out for r in d.rows] == ["horizontal", "horizontal", "vertical", "horizontal"], [r.out for r in d.rows]   # 세로 촬영 = 돌린 크기(정보가 읽힌 뒤)
 assert d.note.isVisible() and d.note.text().startswith("가로 3 · 세로 1"), d.note.text()
 assert d.music_box.isVisible() and "calm instrumental" in d.music_box.text()
 assert d.sum.text().startswith("영상 4개 0:32"), d.sum.text()

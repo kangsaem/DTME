@@ -63,6 +63,7 @@ class AutoRow:
         self.error = ""
         self.running = False
         self.retried = False
+        self.out_set = False          # 출력 크기를 직접 고름(아니면 파일 정보가 읽힐 때 다시 계산)
 
 
 # ------------------------------------------------------------------ 목록 줄
@@ -693,9 +694,14 @@ class AutoWindow(DragMove, QDialog):
     def _sources(self):
         return list(self.state.project.sources)
 
+    def _list_sig(self):
+        p = self.state.project
+        return (tuple((s.id, bool(s.frames), s.width, s.height, s.ctime) for s in p.sources), len(p.dives))
+
     def _fill_list(self):
         p = self.state.project
         srcs = self._sources()
+        self._sig = self._list_sig()
         keep_sel = {it.data(Qt.UserRole) for it in self.list.selectedItems()}
         old = self.row_by
         self.rows, self.row_by = [], {}
@@ -711,6 +717,8 @@ class AutoWindow(DragMove, QDialog):
                 self.list.addItem(it)
             for s in grp:
                 r = old.get(s.id)
+                if r is not None and not r.out_set:
+                    r.out = p.out_of(s)                    # 크기·방향이 읽힌 뒤 값으로(세로 촬영 = 돌린 크기)
                 if r is None:
                     bad = self.state.status.get(s.id) in ("읽기 오류", "원본 없음")
                     rec = s.auto or {}
@@ -806,6 +814,7 @@ class AutoWindow(DragMove, QDialog):
             s = p.source(r.sid)
             key = ROT.get(k, k) if is_portrait(s) else k
             r.out = clamp_src(key, s)
+            r.out_set = True
         self._sync()
 
     def _choose(self, key):
@@ -1287,7 +1296,7 @@ class AutoWindow(DragMove, QDialog):
             self.list.viewport().update()
             s = self.state.project.source(sid)
             if s is not None and s.frames:
-                if not self._refill.isActive():
+                if self._list_sig() != getattr(self, "_sig", None) and not self._refill.isActive():
                     self._refill.start()              # 길이·방향·촬영 시각이 읽힘 → 묶음·알림 다시
                 if self._step == "grade":
                     self.analyze_all()
@@ -1447,6 +1456,9 @@ class AutoWindow(DragMove, QDialog):
         if self._plan["edit"]:
             self._step = "edit"
             sids = [r.sid for r in self.rows if r.checked and (p.source(r.sid) is not None and p.source(r.sid).frames)]
+            if not sids:
+                self._fail("영상 없음")
+                return
             st = self.edit_settings(sids)
             st["no_prep"] = True
             self._show("edit", 0.0)
