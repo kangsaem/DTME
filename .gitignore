@@ -15,3 +15,6 @@ test_out/
 *.tif
 presets/
 fonts_user/
+
+# v0.17.3 시작 창 영상은 저장소에 넣음
+!assets/start.mp4
