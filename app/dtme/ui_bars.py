@@ -418,8 +418,8 @@ class SeqTimeline(QWidget):
     zoomStep = Signal(int)             # v0.17.1 Ctrl+휠 = 확대(+)·축소(−) 칸 수
 
     EDGE = 40        # v0.17.1 끌다가 화면 좌우 끝 이 폭 안 = 그 방향으로 자동으로 넘어감
-    BAR_MARK = QColor(242, 201, 76)   # 마디에 맞은 컷 경계 표시(노랑)
-    BAR_STYLE = "tri"                 # 'tri' 위아래 작은 세모(기본) | 'line' 노랑 세로선 — 사용자에게 시안으로 물음(11/18)
+    BAR_MARK = QColor(255, 255, 255)  # 마디에 맞은 컷 경계 표시(흰색 — 노랑은 전환 나비에 묻힘)
+    BAR_STYLE = "dia"                 # 'dia' 경계 가운데 흰 마름모(기본) | 'line' 흰 세로선 — 사용자에게 시안으로 물음(11/18)
 
     WING = 9         # 전환 없는 경계·맨 앞·맨 뒤 날개 폭(px)
 
@@ -460,6 +460,7 @@ class SeqTimeline(QWidget):
         self._pan = None                  # (누른 화면 x, 그때 스크롤 값)
         self._last = None                 # 끄는 중 마지막 (화면 안 x, y)
         self._edge_snap = None            # 컷 인·아웃 끌기: (처음 뒤 경계 시각, 마디 첫 박들)
+        self._on_bar = []                 # 마디에 맞은 컷 경계 시각(그릴 때 계산)
         self._auto = QTimer(self)
         self._auto.setInterval(30)
         self._auto.timeout.connect(self._auto_tick)
@@ -904,24 +905,26 @@ class SeqTimeline(QWidget):
                 p.setPen(QPen(QColor(255, 255, 255, 70 if big else 30), 1.6 if big else 1))
                 p.drawLine(QPointF(x, vid.top()), QPointF(x, vid.bottom()))
             tol = 0.05
-            for bt in self._bounds():
-                if min(abs(bt - t) for t in ts) <= tol:
-                    x = self._x(bt)
-                    if self.BAR_STYLE == "line":            # 시안 ②: 경계에 노랑 세로선
-                        p.setPen(QPen(self.BAR_MARK, 2))
-                        p.drawLine(QPointF(x, vid.top()), QPointF(x, vid.bottom()))
-                        continue
-                    p.setPen(Qt.NoPen)
-                    p.setBrush(self.BAR_MARK)
-                    for yy, up in ((vid.top(), False), (vid.bottom(), True)):       # 시안 ①: 작은 세모 2개(위 = 아래로, 아래 = 위로)
-                        d = -6 if up else 6
-                        p.drawPolygon(QPolygonF([QPointF(x - 5, yy), QPointF(x + 5, yy), QPointF(x, yy + d)]))
+            self._on_bar = [bt for bt in self._bounds() if min(abs(bt - t) for t in ts) <= tol]
+        else:
+            self._on_bar = []
         if self._press is not None and self._drag_x is not None:
             j = self._drop_index(self._drag_x)
             xs = [r.left() for r in rects] + [rects[-1].right() + 2 if rects else 4]
             x = xs[min(j, len(xs) - 1)] - 1
             p.setPen(QPen(QColor("#f2c94c"), 3))
             p.drawLine(QPointF(x, vid.top()), QPointF(x, vid.bottom()))
+        for bt in self._on_bar:                         # v0.17.1 마디에 맞은 컷 경계 = 가운데 흰 마름모(나비 노랑·하늘색 위에서도 보이게)
+            x, ym = self._x(bt), vid.top() + vid.height() / 2
+            if self.BAR_STYLE == "line":                # 시안 ②: 흰 세로선
+                p.setPen(QPen(QColor(0, 0, 0, 150), 4))
+                p.drawLine(QPointF(x, vid.top()), QPointF(x, vid.bottom()))
+                p.setPen(QPen(self.BAR_MARK, 2))
+                p.drawLine(QPointF(x, vid.top()), QPointF(x, vid.bottom()))
+                continue
+            p.setPen(QPen(QColor(0, 0, 0, 200), 1.5))
+            p.setBrush(self.BAR_MARK)
+            p.drawPolygon(QPolygonF([QPointF(x, ym - 6), QPointF(x + 5, ym), QPointF(x, ym + 6), QPointF(x - 5, ym)]))
         # 글자·이미지·음악
         f.setBold(False)
         f.setPointSizeF(8)

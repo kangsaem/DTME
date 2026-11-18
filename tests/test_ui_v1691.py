@@ -157,9 +157,9 @@ print("시작 화면:", [(x["kind"], x.get("text")) for x in cards["start"]])
 print("끝 화면:", [(x["kind"], x.get("text")) for x in cards["end"]])
 assert [x["kind"] for x in cards["start"]] == ["rect", "text", "text"] and cards["start"][1]["text"] == "보홀주, 필리핀"   # v0.16.92 스틸 없음
 assert cards["start"][2]["text"] == "2026.10.27"
-assert cards["end"][1]["text"].startswith("1 DIVE · MAX 22.0m") and [x["text"] for x in cards["end"][2:]] == ["보홀주, 필리핀", "2026.10.27", "See You Underwater"]   # v0.16.96 3줄 + 아래 줄
+assert cards["end"][1]["text"].startswith("1 DIVE · MAX 22.0m") and [x["text"] for x in cards["end"][2:]] == ["보홀주, 필리핀", "2026.10.27"]   # v0.17.1 3줄(아래 줄 없앰)
 assert not [m for m in p.images if os.path.basename(m.path).startswith("DTME_")]
-assert [x["kind"] for x in cards["end"]] == ["rect", "text", "text", "text", "text"] and cards["end"][-1].get("tag")
+assert [x["kind"] for x in cards["end"]] == ["rect", "text", "text", "text"] and not any(x.get("tag") for x in cards["end"])
 vend = max(tt + ln for _c, tt, ln in cut_spans(p))
 assert abs(p.tail_of() - autoedit.END_SEC) < 1e-3 and autoedit.END_SEC == 8.0
 sw = cards["start"][0]
