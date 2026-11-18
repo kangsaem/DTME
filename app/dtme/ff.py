@@ -2694,6 +2694,8 @@ def post_graph(fparts: list, cmd: list, project: Project, extras: dict, total: f
         cur, ii = "[dvx]", ii + nin
     for t in titles:
         nxt = f"[tv{k}]"
+        if t.get("card") == "end":               # v0.17.1 끝 화면 = 영상 맨 끝 프레임까지(끝 시각이 프레임에 딱 안 맞으면 마지막 1프레임이 검게 나옴 —
+            t = {**t, "t1": float(t["t1"]) + 1.0}     # 직접 지정 길이(1:00 등)·29.97fps 에서 드러남, test_ui_v1691)
         if t.get("kind") == "text":
             f = text_filter(t, ow, oh)
             if not f:
