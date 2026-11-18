@@ -46,16 +46,18 @@ ui_style.confirm = lambda *a, **k: "ok"
 
 # ---------------------------------------------------------------- 1) 전체 길이 칸
 assert parse_mmss("1:30") == 90 and parse_mmss("90") == 90 and parse_mmss("1.5") == 90 and parse_mmss("x") is None
-lb = LengthBox("", 180)
-assert lb.mode() == "manual" and lb.seconds() == 180 and not lb.seg.btns["song"].isEnabled() and lb.edit.text() == "3:00"
-lb.set_song_ok(True, prefer=True)
-assert lb.mode() == "song" and not lb.edit.isEnabled()                  # 직접 고른 적 없음 + 올린 곡 = 곡에 맞춤이 기본
+lb = LengthBox("", 180)                                                 # v0.17.2 = 직접 지정 + '곡 길이에 맞춤' 체크
+assert lb.mode() == "manual" and lb.seconds() == 180 and not lb.song.isEnabled() and lb.edit.text() == "3:00"
+lb.set_song_ok(True, song_sec=340.0)
+assert lb.mode() == "manual" and lb.song.isEnabled() and lb.edit.text() == "3:00"   # 올린 곡이 있어도 저절로 안 켜짐
+lb.song.setChecked(True)
+assert lb.mode() == "song" and not lb.edit.isEnabled() and lb.edit.text() == "5:40"  # 켜면 칸 숫자 = 곡 길이
 lb.set_song_ok(False)
-assert lb.mode() == "manual" and lb.picked() == "song"                  # 못 쓰면 직접 지정으로 동작(고른 것은 기억)
+assert lb.mode() == "manual" and lb.edit.text() == "3:00" and lb.edit.isEnabled()   # 못 쓰면 직접 지정 숫자로
+lb.set_song_ok(True); lb.song.setChecked(False)
 lb.edit.setText("1:30"); lb._typed()
 assert lb.seconds() == 90
-lb.setValue(2); assert lb.mode() == "manual" and lb.value() == 2 and lb.user
-lb.set_song_ok(True, prefer=True); assert lb.mode() == "manual"         # 직접 고른 뒤에는 안 바꿈
+lb.setValue(2); assert lb.mode() == "manual" and lb.value() == 2
 
 # ---------------------------------------------------------------- 2) 자동 창: LOG 칸 · 지명 안내 글 · 음악·렌더 규칙
 st.set_project(Project()); st.defer_proxy = True
@@ -79,9 +81,11 @@ d._dive_want = True
 d.add_paths([song])
 assert wait(30, lambda: any(float(a.get("dur") or 0) not in (0.0, 600.0) for a in st.project.audios if not a.get("builtin")))
 wait(0.6); d._sync()
-assert d.length.mode() == "song" and "(곡)" in d.sum.text(), d.sum.text()                   # 올린 곡 1개 = 곡에 맞춤
+assert d.length.mode() == "manual" and d.length.song.isEnabled() and d.sum.text().endswith("→ 3:00"), d.sum.text()   # v0.17.2 저절로 안 켜짐
+d.length.song.setChecked(True); d._sync()
+assert d.length.mode() == "song" and "(곡)" in d.sum.text() and d.length.edit.text() == d.sum.text().split("→ ")[1][:-3], d.sum.text()
 d.stages["music"].set_on(False); d._sync()
-assert d.length.mode() == "manual" and not d.length.seg.btns["song"].isEnabled()            # 음악 끔 = 곡에 맞춤 흐림
+assert d.length.mode() == "manual" and not d.length.song.isEnabled()                      # 음악 끔 = 곡에 맞춤 흐림
 d.stages["music"].set_on(True); d.stages["edit"].set_on(False); d._sync()
 assert not d.stages["music"].active() and d.stages["music"].summary == "편집을 켜야 함"
 d.stages["render"].set_on(True); d._sync()
@@ -97,6 +101,7 @@ for k, on in (("grade", True), ("edit", True), ("music", True), ("render", False
 d._sync()
 assert d.length.mode() == "song"
 big = d.size()
+assert big.width() == d.BIG[0] and all(d.stages[k].body.isVisible() for k in d.stages)
 d.b_start.click()
 assert d.running and d.width() == d.SMALL_W and d.height() < 200 and not d.lw.isVisible() and not d.rw.isVisible() and not d.ver_lab.isVisible()
 said = []
@@ -121,12 +126,13 @@ texts = [x.get("text") for x in p.titles if x.get("card")]
 assert texts.count("DTME") == 2, texts                                  # 지명 없음 = 시작·끝 화면에 DTME
 assert not any(x.get("text") == "See You Underwater" for x in p.titles)
 cfg = get_setting("autowin", {})
-assert cfg["len_mode"] == "" and cfg["len_sec"] == 180                  # 직접 고르지 않음 = 기본 규칙 그대로
+assert "len_mode" not in cfg and cfg["len_sec"] == 180                 # v0.17.2 '곡 길이에 맞춤'은 기억 안 함
 # 다시 열면 큰 창 · 직접 지정 0:40 = 시작 5 + 본문 27 + 끝 8
 w.show(); wait(0.3); e.after_auto(); wait(0.5)
 d2 = e.make_auto_window(from_edit=True); d2.show(); wait(0.3)
 assert d2.size() == big
-d2.length.seg.btns["manual"].click(); d2.length.edit.setText("0:40"); d2.length._typed()
+assert d2.length.mode() == "manual" and not d2.length.song.isChecked()
+d2.length.edit.setText("0:40"); d2.length._typed()
 for k, on in (("grade", False), ("edit", True), ("music", True), ("render", False)):
     d2.stages[k].set_on(on)
 d2._sync()
@@ -139,7 +145,7 @@ tend = max(float(x["t1"]) for x in p.titles if x.get("card") == "end")
 print("직접 지정 0:40: 파일", round(tend, 2), "· 본문", round(p.out_seconds(), 2), "· 음악", [(round(m["t0"], 1), round(m["len"], 1)) for m in p.music])
 assert abs(tend - 40.0) < 0.05 and abs(p.out_seconds() - 27.0) < 0.05, (tend, p.out_seconds())     # 시작 5 + 본문 27 + 끝 8
 assert abs(music.music_end(p.music) - (40.0 - autoedit.END_SEC)) < 0.2         # 곡이 더 김 = 영상 끝에서 자름(줄임)
-assert get_setting("autowin", {})["len_mode"] == "manual" and get_setting("autowin", {})["len_sec"] == 40
+assert get_setting("autowin", {})["len_sec"] == 40
 
 # ---------------------------------------------------------------- 4) 파일 줄 = 글자 + 가는 선
 r = ItemRow("DTME_2025 1020.mp4"); r.resize(600, 26); r.set(0.5, "인코딩 50%")

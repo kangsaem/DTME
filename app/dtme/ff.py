@@ -2825,9 +2825,26 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orien
         view = seg_view(src, seg, orientation)      # v0.17.0 컷 줌·위치(원본에서 자를 사각형)
         gs = (gpu_scale and not sp and not lensf and not seg_reframe(src, seg, orientation) and not view
               and _crop_noop(src, orientation) and not may_rotate(src))
-        cmd += [*_hw(o.gpu_decode), *(["-hwaccel_output_format", "cuda"] if gs else []),
-                "-ss", _seek(seg.fin, src.fps), "-t", f"{seg_src_sec + 0.5:.6f}", "-i", _abs(src.path)]
-        v = [f"trim=end_frame={seg.frames}", "setpts=PTS-STARTPTS"]
+        pvf = None
+        if fast and not audio and not sp and not lensf and not view and not seg_reframe(src, seg, orientation) \
+                and not may_rotate(src) and g.get("lut"):
+            # v0.17.2 미리보기 렌더(전환 미리보기 등) = 카메라 프리뷰(LRF — 판정 통과·색 'lut' = 원본과 같은 로그)에서 읽음.
+            #   예전 = 4K 원본(§0-114 '무엇을 읽나' 표에서 찾음). 판정이 저장된 것만(여기서 새로 판정 안 함) · 소리 없음 · 줌·리프레임·렌즈 없음.
+            pv = preview_info(src, g.get("lut", ""), judge=False)
+            if pv and pv.get("color") == "lut":
+                pvf = pv
+        if pvf:
+            k0 = preview_pos(pvf, seg.fin)
+            cmd += ["-ss", f"{max(0.0, float((Fraction(k0) - Fraction(1, 2)) / preview_fps(pvf))):.6f}",
+                    "-t", f"{seg_src_sec + 0.5:.6f}", "-i", _abs(pvf["path"])]
+            v = [f"trim=duration={seg_src_sec:.6f}", "setpts=PTS-STARTPTS"]
+            fast_pv = getattr(_ctx, "fast_pv", None)
+            if isinstance(fast_pv, list):
+                fast_pv.append(Path(pvf["path"]).suffix[1:].upper())
+        else:
+            cmd += [*_hw(o.gpu_decode), *(["-hwaccel_output_format", "cuda"] if gs else []),
+                    "-ss", _seek(seg.fin, src.fps), "-t", f"{seg_src_sec + 0.5:.6f}", "-i", _abs(src.path)]
+            v = [f"trim=end_frame={seg.frames}", "setpts=PTS-STARTPTS"]
         if sp:
             ow, oh = out_size(orientation)
             trf = stab_file(src, seg, orientation, sp[0], lensf)
@@ -2972,7 +2989,7 @@ def build_render_cmd(project: Project, segs: list[Segment], out_file: str, orien
                                       root / uuid.uuid4().hex[:10], dv.get("cancel"))
         if lay:
             extras = {**extras, "dive_layers": lay}
-            log_info(f"수심 그래프: {lay['txt']} · 그림 만들기 {_tm.monotonic() - _t_dv:.1f}초")
+            log_info(f"수심 그래프: {lay['txt']} · 그림 만들기 {_tm.monotonic() - _t_dv:.1f}초 — {lay.get('stat', '')}")
     if extras and (extras.get("titles") or extras.get("music") or extras.get("loud") or extras.get("duck")
                    or extras.get("dive_layers")):
         fparts[:] = [f.replace("[vo]", "[vm]").replace("[ao]", "[am]") for f in fparts]

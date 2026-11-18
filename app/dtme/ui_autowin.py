@@ -72,36 +72,40 @@ LEN_MIN, LEN_MAX = 20, 3600          # 직접 지정 길이(초) 범위 — 시�
 
 
 class LengthBox(QWidget):
-    """v0.17.1 전체 길이(사용자 11/17 시안 ①): [곡에 맞춤 | 직접 지정] + 분:초 칸.
-    곡에 맞춤 = 올린 곡이 1~2개이고 음악 단계가 켜졌을 때만(아니면 흐림 → 직접 지정으로 동작, 고른 것은 기억).
-    직접 지정 = 시작·끝 화면까지 넣은 파일 전체 길이."""
+    """전체 길이(v0.17.2, 사용자 11/18): 늘 직접 지정 = 분:초 칸(시작·끝 화면까지 넣은 파일 전체 길이) + [곡 길이에 맞춤] 체크.
+    체크 = 칸 숫자가 곡 길이로 바뀌고 흐림(끄면 원래 숫자) · 올린 곡이 1~2개이고 음악 단계가 켜졌을 때만 켤 수 있음.
+    체크는 기억하지 않음(창을 열 때마다 꺼짐 — v0.17.1 은 올린 곡이 있으면 저절로 곡에 맞춤이 되어 '3분'이 곡 길이로 나옴)."""
     changed = Signal()
 
-    def __init__(self, mode: str, sec: int, parent=None):
+    def __init__(self, mode: str = "", sec: int = 180, parent=None):
         super().__init__(parent)
-        self.seg = Seg([("song", "곡에 맞춤"), ("manual", "직접 지정")], mode if mode in ("song", "manual") else "manual", 28)
         self.edit = QLineEdit()
         self.edit.setFixedSize(64, 28)
         self.edit.setAlignment(Qt.AlignCenter)
         self.sec = int(max(LEN_MIN, min(LEN_MAX, sec or 180)))
         self.edit.setText(mmss(self.sec))
+        self.song = QCheckBox("곡 길이에 맞춤")
+        self.song.setChecked(mode == "song")
         self.song_ok = False
-        self.user = False                 # 이 창에서 직접 골랐나(아니면 기본 규칙: 올린 곡 있으면 곡에 맞춤)
-        self.seg.changed.connect(self._picked)
+        self.song_sec = 0.0               # 곡 길이에 맞춤일 때 칸에 보일 파일 길이(초, 0 = 아직 모름)
+        self.user = False                 # (예전 이름 — 시험 호환)
+        self.song.toggled.connect(self._picked)
         self.edit.editingFinished.connect(self._typed)
         h = QHBoxLayout(self)
         h.setContentsMargins(0, 0, 0, 0)
-        h.setSpacing(8)
-        h.addWidget(self.seg, 1)
+        h.setSpacing(10)
         h.addWidget(self.edit)
+        h.addWidget(self.song)
+        h.addStretch(1)
         self._paint()
 
-    def _picked(self, _k):
-        self.user = True
+    def _picked(self, _v):
         self._paint()
         self.changed.emit()
 
     def _typed(self):
+        if self.mode() == "song":
+            return
         v = parse_mmss(self.edit.text())
         if v is not None:
             self.sec = int(max(LEN_MIN, min(LEN_MAX, v)))
@@ -109,22 +113,26 @@ class LengthBox(QWidget):
         self.changed.emit()
 
     def _paint(self):
-        self.seg.btns["song"].setEnabled(self.song_ok)
-        self.seg.btns["song"].setStyleSheet(SEG_BTN + "QPushButton:disabled{color:#666666;}")
-        self.edit.setEnabled(self.mode() == "manual")
+        self.song.setEnabled(self.song_ok)
+        on = self.mode() == "song"
+        self.edit.setEnabled(not on)
+        if on:
+            self.edit.setText(mmss(self.song_sec) if self.song_sec > 0 else "—")
+        elif not self.edit.hasFocus():
+            self.edit.setText(mmss(self.sec))
 
-    def set_song_ok(self, ok: bool, prefer: bool = False):
-        """prefer = 직접 고른 적이 없으면 곡에 맞춤으로(올린 곡이 있을 때의 기본)."""
+    def set_song_ok(self, ok: bool, prefer: bool = False, song_sec: float | None = None):
+        """ok = 곡 길이에 맞춤을 켤 수 있나 · song_sec = 그때 칸에 보일 길이. (prefer = 예전 인자, 안 씀)"""
         self.song_ok = bool(ok)
-        if ok and prefer and not self.user:
-            self.seg.set_value("song")
+        if song_sec is not None:
+            self.song_sec = float(song_sec)
         self._paint()
 
     def picked(self) -> str:
-        return self.seg.value() or "manual"
+        return "song" if self.song.isChecked() else "manual"
 
     def mode(self) -> str:
-        return "song" if (self.song_ok and self.picked() == "song") else "manual"
+        return "song" if (self.song_ok and self.song.isChecked()) else "manual"
 
     def seconds(self) -> int:
         return self.sec
@@ -132,8 +140,7 @@ class LengthBox(QWidget):
     # 예전 '분' 슬라이드바와 같은 이름(시험·다른 코드): 분 단위로 넣고 읽기 = 직접 지정
     def setValue(self, minutes: float):
         self.sec = int(max(LEN_MIN, min(LEN_MAX, round(float(minutes) * 60))))
-        self.edit.setText(mmss(self.sec))
-        self.seg.set_value("manual")
+        self.song.setChecked(False)
         self.user = True
         self._paint()
         self.changed.emit()
@@ -280,7 +287,7 @@ class SourceList(QListWidget):
 
 # ------------------------------------------------------------------ 단계 줄
 class StageRow(QFrame):
-    """[✓] 이름  요약 …  ▸ — 체크 칸 = 켬/끔, 줄 나머지 = 펼침."""
+    """[✓] 이름  요약 — 머리 줄 아무 데나 누름 = 켬/끔. v0.17.2 설정 칸 = 늘 펼침(사용자 11/18 B안), 끈 단계 = 설정 흐림."""
     toggled = Signal(str, bool)
     clicked = Signal(str)
 
@@ -299,21 +306,25 @@ class StageRow(QFrame):
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(0)
         v.addWidget(self.head)
-        body.setVisible(False)
         v.addWidget(body)
+        self.open_ = True
 
     def set_on(self, on: bool):
         self.on = bool(on)
-        self.head.update()
+        self._dim()
 
     def set_can(self, can: bool):
         self.can = bool(can)
+        self._dim()
+
+    def _dim(self):
+        self.body.setEnabled(self.active())
         self.head.update()
 
     def set_open(self, on: bool):
-        self.open_ = bool(on)
-        self.body.setVisible(self.open_)
-        self.head.update()
+        """(v0.17.2 늘 펼침 — 예전 이름만 남김)"""
+        self.open_ = True
+        self.body.setVisible(True)
 
     def set_summary(self, text: str):
         if text != self.summary:
@@ -326,13 +337,10 @@ class StageRow(QFrame):
     def eventFilter(self, obj, e):
         if obj is self.head:
             if e.type() == QEvent.MouseButtonPress and e.button() == Qt.LeftButton:
-                if e.position().x() < 38:
-                    if self.can:
-                        self.on = not self.on
-                        self.head.update()
-                        self.toggled.emit(self.key, self.on)
-                else:
-                    self.clicked.emit(self.key)
+                if self.can:
+                    self.on = not self.on
+                    self._dim()
+                    self.toggled.emit(self.key, self.on)
                 return True
             if e.type() == QEvent.Paint:
                 self._paint_head()
@@ -361,11 +369,9 @@ class StageRow(QFrame):
         f.setBold(False)
         p.setFont(f)
         p.setPen(QColor(SUB if act else "#6f6f6f"))
-        w = r.width() - 88 - 26
+        w = r.width() - 88 - 10
         p.drawText(QRectF(88, 0, w, r.height()), Qt.AlignVCenter | Qt.AlignLeft,
                    p.fontMetrics().elidedText(self.summary, Qt.ElideRight, int(w)))
-        p.setPen(QColor("#8a8a8a"))
-        p.drawText(QRectF(r.width() - 24, 0, 16, r.height()), Qt.AlignCenter, "▾" if self.open_ else "▸")
         p.end()
 
 
@@ -444,7 +450,8 @@ class StepBar(QWidget):
 # ------------------------------------------------------------------ 자동 창
 class AutoWindow(DragMove, QDialog):
     """outcome: 'edit'(편집 화면으로) | 'close'(닫음 — 렌더 끝 [닫기]) | ''(취소)."""
-    BIG = (1040, 720)             # 설정 화면
+    BIG = (1400, 720)             # 설정 화면(v0.17.2 두 줄 다 펼침 — 예전 1040)
+    COL_W = 470                   # 설정 한 줄 폭
     SMALL_W = 640                 # 작업 팝업 폭(렌더 작업 창과 같음)
 
     def __init__(self, edit, parent=None, from_edit: bool = False):
@@ -542,11 +549,19 @@ class AutoWindow(DragMove, QDialog):
         right.addWidget(self.photo_box)
         right.addWidget(self.sum)
         right.addStretch(1)
-        for key in ("grade", "edit", "music", "render"):
-            right.addWidget(self.stages[key])
+        two = QHBoxLayout()                                  # v0.17.2 B안: 왼쪽 보정·편집 · 오른쪽 음악·렌더(다 펼침, 사용자 11/18)
+        two.setSpacing(10)
+        for keys in (("grade", "edit"), ("music", "render")):
+            col = QVBoxLayout()
+            col.setSpacing(8)
+            for key in keys:
+                col.addWidget(self.stages[key])
+            col.addStretch(1)
+            two.addLayout(col, 1)
+        right.addLayout(two)
         self.rw = QWidget()
         self.rw.setLayout(right)
-        self.rw.setFixedWidth(470)
+        self.rw.setFixedWidth(self.COL_W * 2 + 10)
         # ---- 작업 중: 막대 · 항목 줄 · 글자
         self.step_bar = StepBar()
         self.run_lab = QLabel("")
@@ -595,9 +610,6 @@ class AutoWindow(DragMove, QDialog):
         lay.addLayout(mid, 1)
         lay.addLayout(bot)
         self.resize(*self.BIG)
-        op = cfg.get("open", "")
-        if op in self.stages:
-            self.stages[op].set_open(True)
 
     def _line(self):
         f = QFrame()
@@ -673,8 +685,7 @@ class AutoWindow(DragMove, QDialog):
 
     def _edit_body(self, cfg):
         # v0.17.1 전체 길이 = [곡에 맞춤 | 직접 지정] + 분:초(시작·끝 화면 포함 = 파일 전체 길이). 예전 기억(분) = 그 분 수
-        self.length = LengthBox(cfg.get("len_mode", ""), int(cfg.get("len_sec") or float(cfg.get("minutes", 3)) * 60))
-        self.length.user = cfg.get("len_mode") in ("song", "manual")
+        self.length = LengthBox("", int(cfg.get("len_sec") or float(cfg.get("minutes", 3)) * 60))     # v0.17.2 '곡 길이에 맞춤' = 기억 안 함
         self.length.changed.connect(self._sync)
         self.title_on = QCheckBox("날짜 바")
         self.title_on.setChecked(bool(cfg.get("title", True)))
@@ -1226,7 +1237,9 @@ class AutoWindow(DragMove, QDialog):
                                                             f"올린 곡 {len(user)}곡" if user else f"기본 음악 {n_def}곡",
                                                             "기본 음악도" if user and self.mix_default.isChecked() else "") if x))
         # 전체 길이: 곡에 맞춤 = 올린 곡 1~2개 + 음악 켬일 때만(기본 음악만 · 3곡 이상 · 음악 끔 = 흐림 → 직접 지정)
-        self.length.set_song_ok(st["music"].active() and 1 <= len(user) <= 2, prefer=True)
+        ok = st["music"].active() and 1 <= len(user) <= 2
+        sg = self.song_seconds() if ok else 0.0
+        self.length.set_song_ok(ok, song_sec=sg + (autoedit.END_SEC if self.card["end"].value() == "auto" else 0.0) if sg > 0 else 0.0)
         ltxt = self.length_text()
         parts = []
         if p.dives:
@@ -1270,10 +1283,7 @@ class AutoWindow(DragMove, QDialog):
         self.b_start.setEnabled(bool(rows) and not self.running)
 
     def _open_stage(self, key):
-        """줄 누름 = 펼침(한 번에 하나)."""
-        was = self.stages[key].open_
-        for k, sr in self.stages.items():
-            sr.set_open(k == key and not was)
+        """(v0.17.2 늘 펼침 — 예전 이름만 남김)"""
 
     def _pick_folder(self):
         d = QFileDialog.getExistingDirectory(self, "저장 폴더", self.folder.text().strip() or get_setting("last_folder", "") or "")
@@ -1293,10 +1303,9 @@ class AutoWindow(DragMove, QDialog):
     def config(self) -> dict:
         """마지막 선택 기억(단계 체크 + 각 단계 설정)."""
         return {"on": {k: sr.on for k, sr in self.stages.items()},
-                "open": next((k for k, sr in self.stages.items() if sr.open_), ""),
                 "strength": self.strength.value(), "lut": self.lut_combo.currentData(),
                 "lens": self.lens_s.value(), "stab": self.stab_s.value(),
-                "len_mode": self.length.picked() if self.length.user else "", "len_sec": self.length.seconds(),
+                "len_sec": self.length.seconds(),
                 "title": self.title_on.isChecked(), "dive": self._dive_want,
                 "start": self.card["start"].value(), "end": self.card["end"].value(),
                 "beat": self.beat_on.isChecked(), "mix_default": self.mix_default.isChecked(),

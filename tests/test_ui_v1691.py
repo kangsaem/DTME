@@ -284,13 +284,15 @@ st.touch("segments"); wait(0.1)
 assert not e._tp_cache
 
 # ---------------------------------------------------------------- 7) 렌더: 시작 = 바로 · 끝 = 흰색 → 끝 화면(페이드 없이 끝) · 시작 화면 = 흰빛 + 남색 글자
+import shutil as _sh  # noqa: E402
+_sh.rmtree(os.path.join(W, "out"), ignore_errors=True); os.makedirs(os.path.join(W, "out"), exist_ok=True)   # v0.17.2 지난번 결과 파일을 읽지 않게(로컬에서 여러 번 돌릴 때)
 e.timeline_to_render(); it = p.render_items[-1]
 assert it.lead == autoedit.START_SEC and it.end_fade == 0.0
 e.render_panel.render(); assert wait(1500, lambda: not e.render_panel.running)
 outs = [f for f in os.listdir(os.path.join(W, "out")) if f.endswith(".mp4")]
 print("출력:", outs, e.render_panel.status.get(it.id, "")[:60])
 assert outs
-out = os.path.join(W, "out", outs[0])
+out = max((os.path.join(W, "out", f) for f in outs), key=os.path.getmtime)
 dur = float(ff.probe(out)["frames"]) / 29.97
 exp = p.lead + p.out_seconds() + p.tail_of()
 print("길이", round(dur, 2), "기대", round(exp, 2))

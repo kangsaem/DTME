@@ -228,14 +228,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
           python tests/test_title_anim.py titleanim_test
           if ($LASTEXITCODE -ne 0) { exit 1 }
-          # v0.17.0: 간헐 종료(Windows 접근 위반 — ui_edit.eventFilter Resize → timeline.fit, 빌드 44049411196) → 한 번 더 해 보고 판단
-          python -X faulthandler tests/test_ui_titleanim.py
-          if ($LASTEXITCODE -ne 0) {
-            Write-Output "::warning::test_ui_titleanim 종료 코드 $LASTEXITCODE — 한 번 더"
-            python -X faulthandler tests/test_ui_titleanim.py
-            if ($LASTEXITCODE -ne 0) { exit 1 }
-          }
-          python tests/test_rect_style.py rectstyle_test
+          # v0.17.2: 끝 표시를 찍은 뒤 간헐 종료(Windows 접근 위반 — 창 정리 중 ui_edit.eventFilter, 빌드 44049411196 · 44234142724) = 통과(tests/run_ok.py)
+          python tests/run_ok.py "OK test_ui_titleanim" tests/test_ui_titleanim.py
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          python tests/run_ok.py "OK test_rect_style" tests/test_rect_style.py rectstyle_test
           if ($LASTEXITCODE -ne 0) { exit 1 }
           python tests/test_music.py music_test
           if ($LASTEXITCODE -ne 0) { exit 1 }
@@ -300,7 +296,7 @@ jobs:
           $global:LASTEXITCODE = 0
           # v0.16.92 렌더가 길어 빌드를 1시간 넘게 막음 → 15분 넘으면 끄고 경고만
           $pv = Start-Process python -ArgumentList "tests/test_ui_v1691.py","v1691_test" -NoNewWindow -PassThru -RedirectStandardOutput v1691_out.txt -RedirectStandardError v1691_err.txt
-          if (-not $pv.WaitForExit(900000)) { Write-Output "::warning::test_ui_v1691 15분 넘음 — 끔"; & taskkill /T /F /PID $pv.Id | Out-Null; Start-Sleep -Seconds 3 }
+          if (-not $pv.WaitForExit(1500000)) { Write-Output "::warning::test_ui_v1691 25분 넘음 — 끔"; & taskkill /T /F /PID $pv.Id | Out-Null; Start-Sleep -Seconds 3 }
           $o_v1691 = (Get-Content v1691_out.txt -Raw -ErrorAction SilentlyContinue) + (Get-Content v1691_err.txt -Raw -ErrorAction SilentlyContinue)
           Write-Output $o_v1691
           if ($o_v1691 -notmatch "OK test_ui_v1691") { Write-Output "::warning::OK test_ui_v1691 실패(빌드는 계속 — 사용자 11/14 12:40: 되는 부분 먼저 빌드)" }

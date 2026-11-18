@@ -386,7 +386,16 @@ def build(project, picks: list[dict], minutes: int, seed: int = 0, titles: bool 
         fps = float(s.fps)
         dur = s.frames / fps
         L = min(max(lens), dur)
-        starts = best_windows(p["score"], L, len(lens)) if p.get("score") is not None else [0.0]
+        starts = best_windows(p["score"], L, len(lens)) if p.get("score") is not None else []
+        if len(starts) < len(lens):
+            # v0.17.2 구간을 다 못 찾음(컷 합이 클립 길이에 가까워 안 겹치는 구간이 모자람 · 점수 없음) = 클립을 차례로 나눠 씀(남는 곳은 고르게 띄움).
+            #   예전 = 찾은 구간 수만큼만 컷 → 정한 길이보다 짧아짐(시험: 20초 클립 3개 · 곡 85초 → 본문 37초)
+            free = max(0.0, dur - sum(min(x, dur) for x in lens))
+            gap = free / (len(lens) + 1)
+            starts, t_ = [], gap
+            for x in lens:
+                starts.append(t_)
+                t_ += min(x, dur) + gap
         for j, (st, ln) in enumerate(zip(starts, lens)):
             ln = min(ln, dur)
             st = max(0.0, min(st, dur - ln))
@@ -1098,6 +1107,10 @@ def end_lines(log: bool, dives: list, place: str, period: str, text: str = "") -
     if text.strip():
         import re as _re
         ls = [x.strip() for x in _re.split(r"\n| / ", text.strip()) if x.strip()]     # 한 줄 칸 = ' / ' 가 줄바꿈
-        return [(ls[0], 64, True)] + [(x, 40, True) for x in ls[1:]]
+        # v0.17.2 직접 쓴(고친) 문구도 자동과 같은 크기 규칙(예전 64·40 — 자동 문구를 칸에서 고치면 갑자기 작아짐, 사용자 11/18 결과 영상):
+        #   다이빙 요약 줄('DIVE' 들어감) = 80 · 그 밖 = 64 · 한 줄뿐 = 80
+        if len(ls) == 1:
+            return [(ls[0], END_DIVE, True)]
+        return [(x, END_DIVE if "DIVE" in x.upper() else END_LINE, True) for x in ls]
     ls = ([(dive_line(dives), END_DIVE, True)] if log and dives else []) + [(x, END_LINE, True) for x in (place, period) if x]
     return [(ls[0][0], END_DIVE, True)] if len(ls) == 1 else ls

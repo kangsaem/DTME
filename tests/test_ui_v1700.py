@@ -57,10 +57,8 @@ d = e.make_auto_window(from_edit=False); d.show(); wait(0.3)
 assert d.list.count() == 0 and not d.b_start.isEnabled() and d.sum.text() == ""
 assert all(d.stages[k].isVisible() for k in ("grade", "edit", "music", "render"))
 assert not d.music_box.isVisible() and not d.photo_box.isVisible() and not d.note.isVisible()
-d._open_stage("edit"); assert d.stages["edit"].open_ and d.stages["edit"].body.isVisible()
-d._open_stage("render"); assert d.stages["render"].open_ and not d.stages["edit"].open_, "한 번에 하나"
-d._open_stage("render"); assert not d.stages["render"].open_
-print("빈 창: 단계 4줄 보임 · 펼침 한 번에 하나 · [AUTO] 흐림")
+assert all(d.stages[k].body.isVisible() for k in d.stages), "v0.17.2 늘 다 펼침(B안)"
+print("빈 창: 단계 4줄 다 펼침 · [AUTO] 흐림")
 
 # ---------------------------------------------------------------- 2) 넣기 = 파일 정보만
 d.add_paths(vids + [song])
@@ -114,7 +112,7 @@ assert not getattr(w, "_rwin", None), "렌더 작업 창은 안 뜸(자동 창 �
 it = p.render_items[-1]
 assert it.orientation == "horizontal", it.orientation        # 가로 3 · 세로 1 → 많은 쪽 = 가로
 cfg = get_setting("autowin", {})
-assert cfg["on"] == {"grade": True, "edit": True, "music": True, "render": True} and cfg["len_sec"] == 60 and cfg["len_mode"] == "manual", cfg
+assert cfg["on"] == {"grade": True, "edit": True, "music": True, "render": True} and cfg["len_sec"] == 60 and "len_mode" not in cfg, cfg
 import json  # noqa: E402
 mp4 = os.path.join(OUT, [f for f in files if f.endswith(".mp4")][0])
 info = json.loads(subprocess.run([paths.ffprobe(), "-v", "error", "-show_entries", "stream=codec_type,width,height:format=duration",

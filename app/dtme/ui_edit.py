@@ -1,6 +1,7 @@
 """편집·보정 화면: 소스 | 모니터·소스 바·조작·타임라인 | 보정 | 렌더 리스트."""
 from __future__ import annotations
 
+import math
 import copy
 import json
 import os
@@ -1790,6 +1791,7 @@ class EditTab(QWidget):
                     raise ff.Cancelled()
                 t1 = _tm.monotonic()
                 tmp = sp["out"].with_suffix(".part.mp4")
+                ff._ctx.fast_pv = []                     # v0.17.2 컷마다 프리뷰(LRF)에서 읽었나
                 try:
                     ff.render_video(p, sp["pick"], str(tmp), lambda v, k=k: prog((k + v) / n), cancel, sp["orient"], False,
                                     fast=True, extras=sp["extras"])
@@ -1801,7 +1803,9 @@ class EditTab(QWidget):
                 cnt[0] = k + 1
                 prog((k + 1) / n)
                 # v0.17.1 어느 전환이 느린지(사용자 로그 11/17: 5개 중 2개가 2분씩 — 원인 미확인 → 종류·걸린 시간을 남김)
-                took.append(f"{(sp['pick'][-1].trans or {}).get('type', '-')} {_tm.monotonic() - t1:.0f}초")
+                took.append(f"{(sp['pick'][-1].trans or {}).get('type', '-')} {_tm.monotonic() - t1:.0f}초"
+                            f"(LRF {len(ff._ctx.fast_pv or [])}/{len(sp['pick'])})")
+                ff._ctx.fast_pv = None
             ff.log_info(f"편집 준비: 전환 미리보기 {n}개 {_tm.monotonic() - t0:.1f}초 — " + " · ".join(took))
             return n
         job = jobs.Job(work, with_progress=True)
@@ -3354,7 +3358,9 @@ class EditTab(QWidget):
             snapped = 0
             beat_txt = ""
             want_end = p.lead + body                         # 영상 끝(끝 화면 앞) 목표
+            stage_end = [("나눔", tl_end())]                  # v0.17.2 단계마다 영상 끝(곡 끝 잘림 원인 찾기 — 사용자 11/18 로그: 338.9 목표 → 324.1)
             autoedit.end_at(p, want_end)                     # 음악을 놓기 전에 한 번(사각 파동 전환 1초 등으로 조금 어긋난 것) → 곡 끝 = 영상 끝
+            stage_end.append(("끝 맞춤1", tl_end()))
             if auds:
                 vend = tl_end()
                 # v0.17.1 곡 넘어가는 자리 = 장면이 바뀌는 컷 경계 · 마지막 곡 = 끝이 영상 끝에 · 다 쓰고 15초 넘게 남으면 다시
@@ -3375,11 +3381,29 @@ class EditTab(QWidget):
                     ff.log_info(f"자동 편집 박자우선: {bl}")
                 else:
                     snapped = autoedit.snap_to_bars(p, infos)
+                stage_end.append(("박자", tl_end()))
                 if song_mode:                                # 곡에 맞춤 = 마지막 컷이 곡 끝에서 끝남(영상이 모자라면 영상 길이에서)
                     want_end = music.music_end(p.music)
             got_end = autoedit.end_at(p, want_end)           # v0.17.1 마지막 컷만 길이를 고쳐 정한 시각에 끝냄
+            late = 0.0
+            if song_mode and p.music and got_end < want_end - 0.3:
+                # v0.17.2 영상이 모자람(마지막 클립을 다 씀) = 곡(마지막 곡)을 그만큼 늦게 시작 → 곡 끝 = 영상 끝(도입부가 조금 빠짐).
+                #   마디 수만큼 옮겨 박자 맞춘 경계가 그대로 마디에 남게 · 조금 더 옮긴 만큼 마지막 컷을 줄임
+                m = p.music[-1]
+                bl_ = autoedit.bar_len(infos.get(m["path"])) or 0.0
+                need = want_end - got_end
+                late = math.ceil(need / bl_ - 1e-6) * bl_ if bl_ > 0 else need
+                late = min(late, max(0.0, float(m["len"]) - 1.0))
+                m["off"] = round(float(m["off"]) + late, 3)
+                m["len"] = round(float(m["len"]) - late, 3)
+                want2 = music.music_end(p.music)
+                got_end = autoedit.end_at(p, want2)
+                want_end = want2
+            stage_end.append(("끝 맞춤2", got_end))
             ff.log_info(f"자동 편집 길이: {'곡에 맞춤' if song_mode else '직접 지정'} · 본문 목표 {body:.1f}초 · 영상 끝 목표 {want_end:.1f} → "
-                        f"{got_end:.1f}초" + (f" · 긴 소스 {plan['extra']}" if plan.get("extra") else ""))
+                        f"{got_end:.1f}초" + (f" · 곡을 {late:.1f}초 늦게 시작(영상 모자람)" if late else "")
+                        + " · 단계별 영상 끝 " + " → ".join(f"{k} {v:.1f}" for k, v in stage_end)
+                        + (f" · 긴 소스 {plan['extra']}" if plan.get("extra") else ""))
             if auds:
                 spans_ = cut_spans(p)
                 vend = max((t + ln for _c, t, ln in spans_), default=0.0)

@@ -596,6 +596,8 @@ def render_layers(project, dives: list, off, spans: list, total: float, W: int, 
             return None
         return m_[0], m_[1], m_[2], seg, src, T - a, b - a, tail
 
+    import time as _tm
+    t_0 = _tm.monotonic()
     times, T = [], 0.0
     any_dive = False
     while T < total + 1e-6:
@@ -611,6 +613,8 @@ def render_layers(project, dives: list, off, spans: list, total: float, W: int, 
     if not any_dive:
         return None
     ensure_fonts()
+    t_1 = _tm.monotonic()
+    t_fill = [0.0]
     files: dict = {}
     lists = {"txt": [], "gr": [], "mul": [], "add": []}
     from concurrent.futures import ThreadPoolExecutor
@@ -672,7 +676,9 @@ def render_layers(project, dives: list, off, spans: list, total: float, W: int, 
         on = ga > 0.002 and fa > 0.002
         fk = (dive["id"], round(xp), mode, round(fa * 100), round(ga * 100))
         need = on and (("mul", fk) not in files or ("add", fk) not in files)
+        t_f = _tm.monotonic()
         a_ = fill_alpha(W // fs, H // fs, dive, t, rv, ga)[0] if need else None
+        t_fill[0] += _tm.monotonic() - t_f
         if a_ is not None and a_.shape != (fh, fw):
             a_ = np.ascontiguousarray(np.pad(a_, ((0, max(0, fh - a_.shape[0])), (0, max(0, fw - a_.shape[1]))))[:fh, :fw])
         if a_ is not None:
@@ -695,6 +701,7 @@ def render_layers(project, dives: list, off, spans: list, total: float, W: int, 
         f = folder / f"pulse_{j:03d}.png"
         futs.append(pool.submit(im.save, str(f), "PNG", 80))
         pulse.append(f)
+    t_2 = _tm.monotonic()
     cmds, wins, on0 = [], [], None
     for i, (T, st) in enumerate(times):
         vis = False
@@ -712,10 +719,17 @@ def render_layers(project, dives: list, off, spans: list, total: float, W: int, 
             on0 = None
     if on0 is not None:
         wins.append((on0, total))
+    t_3 = _tm.monotonic()
     for f_ in futs:
         f_.result()
     pool.shutdown()
+    t_4 = _tm.monotonic()
     out = {}
+    # v0.17.2 어디가 오래 걸리나(사용자 로그 11/18: 5:32 영상 · 그림 만들기 115초)
+    out["stat"] = (f"시점 {len(times)}개(애니 {sum(1 for _T, st in times if st is not None and anim_busy(st[5], st[6], st[7]))}) · "
+                   f"그림 {len(files)}장(" + " ".join(f"{k} {sum(1 for kk in files if kk[0] == k)}" for k in lists) + ") · "
+                   f"시점 계산 {t_1 - t_0:.1f}초 · 그리기(본 스레드) {t_2 - t_1:.1f}초(띠 계산 {t_fill[0]:.1f}) · 점 {t_3 - t_2:.1f}초 · "
+                   f"저장 기다림 {t_4 - t_3:.1f}초")
     if wins:
         txt = ["ffconcat version 1.0"]
         n_loop = int(np.ceil(total / PULSE_SEC)) + 1
