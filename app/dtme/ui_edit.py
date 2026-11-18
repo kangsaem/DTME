@@ -499,6 +499,7 @@ class EditTab(QWidget):
         self.timeline.cutEdgeStart.connect(self._cut_edge_start)
         self.timeline.cutEdgeDragged.connect(self._cut_edge_drag)
         self.timeline.cutEdgeEnd.connect(self._cut_edge_end)
+        self.timeline.zoomStep.connect(self._zoom_step)                     # v0.17.1 Ctrl+휠
         self._edge_drag = None
         self.timeline.transDurEdited.connect(self._trans_dur)
         from .ui_trans import TransPreview
@@ -619,7 +620,10 @@ class EditTab(QWidget):
             mon = self.player.mon
             mon.space_pan = False
             mon.setCursor(Qt.ArrowCursor)
-            if not mon.space_moved:
+            tl = self.timeline                     # v0.17.1 타임라인도 Space 누른 채 끌기 = 화면 이동
+            tl.space_pan = False
+            tl.setCursor(Qt.ArrowCursor)
+            if not mon.space_moved and not tl.space_moved:
                 self._key("space")
             return True
         if e.type() != QEvent.KeyPress or not self.isVisible() or not self.window().isActiveWindow():
@@ -678,6 +682,8 @@ class EditTab(QWidget):
             self._space_down = True
             self.player.mon.space_pan = True
             self.player.mon.space_moved = False
+            self.timeline.space_pan = True
+            self.timeline.space_moved = False
             return True
         self._key(name, shift=bool(e.modifiers() & Qt.ShiftModifier))
         return True
@@ -1871,7 +1877,27 @@ class EditTab(QWidget):
         if not getattr(self, "_zoom_auto", False):         # 사용자가 움직임 = 맞춤 끔
             self._tl_fit = False
             self._paint_fit()
-        self.timeline.set_zoom(float(v))
+        # v0.17.1 확대·축소 = 재생 위치(빨간 선)가 화면의 같은 자리에 남게(화면 밖이면 화면 가운데 기준) — 예전 = 보던 곳이 달아남
+        tl, sb = self.timeline, self.tl_scroll.horizontalScrollBar()
+        vw = self.tl_scroll.viewport().width()
+        sx = tl._x(tl.t) - sb.value()
+        t_anchor = tl.t
+        if not (0 <= sx <= vw):
+            sx = vw / 2
+            t_anchor = tl._t(sb.value() + sx)
+        tl.set_zoom(float(v))
+        if not getattr(self, "_zoom_auto", False):
+            want = int(round(tl._x(t_anchor) - sx))
+            sb.setValue(want)
+            QTimer.singleShot(0, lambda: sb.setValue(want))      # 스크롤 범위가 넓어진 뒤 한 번 더
+
+    def _zoom_step(self, n: int):
+        """Ctrl+휠: 한 칸 = 15%(적어도 1)."""
+        v = self.zoom.value()
+        nv = int(round(v * (1.15 ** n)))
+        if nv == v:
+            nv = v + (1 if n > 0 else -1)
+        self.zoom.setValue(max(self.zoom.minimum(), min(self.zoom.maximum(), nv)))
 
     def set_tl_fit(self, on: bool = True):
         self._tl_fit = on

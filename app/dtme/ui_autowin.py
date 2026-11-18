@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFileDialog, QFram
 from . import auto, autoedit, ff, jobs, solo, stage as SG, ui_style
 from .project import (ROT, ROT_BACK, VIDEO_EXT, RenderItem, Segment, auto_lut, clamp_src, display_name,
                       get_setting, has_clip_grade, is_portrait, outputs_for, set_setting, short_name, source_out_h, source_vw)
-from .ui_auto import OUT_BTNS, Grip, PresetGrid, Seg, cached_samples, choice_args, grab_job, labeled, main_button
+from .ui_auto import OUT_BTNS, SEG_BTN, Grip, PresetGrid, Seg, cached_samples, choice_args, grab_job, labeled, main_button
 from .ui_render import DragMove, Popup, file_name, open_file, out_dir, took_text, unique
 from .ui_renderwin import ItemRow
 
@@ -110,6 +110,7 @@ class LengthBox(QWidget):
 
     def _paint(self):
         self.seg.btns["song"].setEnabled(self.song_ok)
+        self.seg.btns["song"].setStyleSheet(SEG_BTN + "QPushButton:disabled{color:#666666;}")
         self.edit.setEnabled(self.mode() == "manual")
 
     def set_song_ok(self, ok: bool, prefer: bool = False):

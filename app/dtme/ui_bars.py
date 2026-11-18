@@ -3,9 +3,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPolygonF
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QAbstractScrollArea, QWidget
 
 SPEED_COLOR = {2.0: QColor("#d9822b"), 1.0: QColor("#5b7fa6"), 0.5: QColor("#3d9a8b")}
 WING_DUR = QColor(242, 201, 76, 225)      # v0.16.67 나비 위 = 전환 길이(노랑)
@@ -415,6 +415,11 @@ class SeqTimeline(QWidget):
     logToggled = Signal(str)          # v0.16.91 컷 가운데 LOG 칩 클릭 = 그 컷 LOG 켜고 끄기
     shiftAll = Signal(float)           # v0.16.91 Ctrl+A 뒤 컷 끌기 = 전체 밀기(초)
     ovMenu = Signal(str, str, object)  # v0.16.91 글자·사각형 우클릭 = 메뉴(삭제·맨 위로·맨 아래로·따라감)
+    zoomStep = Signal(int)             # v0.17.1 Ctrl+휠 = 확대(+)·축소(−) 칸 수
+
+    EDGE = 40        # v0.17.1 끌다가 화면 좌우 끝 이 폭 안 = 그 방향으로 자동으로 넘어감
+    BAR_MARK = QColor(242, 201, 76)   # 마디에 맞은 컷 경계 표시(노랑)
+    BAR_STYLE = "tri"                 # 'tri' 위아래 작은 세모(기본) | 'line' 노랑 세로선 — 사용자에게 시안으로 물음(11/18)
 
     WING = 9         # 전환 없는 경계·맨 앞·맨 뒤 날개 폭(px)
 
@@ -449,6 +454,93 @@ class SeqTimeline(QWidget):
         self._edge = None             # 컷 인·아웃 끌기: (컷 id, 'in'|'out', 누른 x, 시작함?)
         self.setMouseTracking(True)
         self.setAcceptDrops(True)
+        # v0.17.1 화면 이동(가운데 버튼 · Space 누른 채 끌기) · 끌 때 좌우 끝 자동 넘김 · 컷 인·아웃 마디 자석
+        self.space_pan = False            # Space 누르는 중(EditTab 이 켬)
+        self.space_moved = False          # 그 사이 끌었나(끌었으면 재생/정지 안 함)
+        self._pan = None                  # (누른 화면 x, 그때 스크롤 값)
+        self._last = None                 # 끄는 중 마지막 (화면 안 x, y)
+        self._edge_snap = None            # 컷 인·아웃 끌기: (처음 뒤 경계 시각, 마디 첫 박들)
+        self._auto = QTimer(self)
+        self._auto.setInterval(30)
+        self._auto.timeout.connect(self._auto_tick)
+
+    # ---------------------------------------------------------------- v0.17.1 화면 이동 · 휠 · 자동 넘김
+    def _hbar(self):
+        """이 타임라인을 담은 스크롤 영역의 가로 막대(없으면 None)."""
+        w = self.parentWidget()
+        while w is not None and not isinstance(w, QAbstractScrollArea):
+            w = w.parentWidget()
+        return w.horizontalScrollBar() if w is not None else None
+
+    def _view_w(self) -> int:
+        w = self.parentWidget()
+        return w.width() if w is not None else self.width()
+
+    def wheelEvent(self, e):
+        """휠 = 앞뒤 이동 · Ctrl+휠 = 확대·축소(재생 위치 중심 — EditTab 이 슬라이드바와 같이 처리)."""
+        dy = e.angleDelta().y() or e.angleDelta().x()
+        if not dy:
+            return
+        if e.modifiers() & Qt.ControlModifier:
+            self.zoomStep.emit(1 if dy > 0 else -1)
+        else:
+            sb = self._hbar()
+            if sb is not None:
+                sb.setValue(sb.value() - int(dy))
+        e.accept()
+
+    def _dragging(self) -> bool:
+        return bool(self._shift is not None or self._tdur or self._edge or self._ov is not None
+                    or (self._press is not None and self._drag_x is not None))
+
+    def _auto_tick(self):
+        """끄는 중 화면 좌우 끝(EDGE px) = 그 방향으로 넘어감(끝에 가까울수록 빠르게) — 마우스는 화면 안 같은 자리."""
+        sb = self._hbar()
+        if sb is None or self._last is None:
+            self._auto.stop()
+            return
+        scrub = self._press is None and not (self._shift is not None or self._tdur or self._edge or self._ov is not None)
+        if not (self._dragging() or scrub):               # 컷을 누르기만 한 것(아직 안 끎) = 안 넘김
+            return
+        vx, y = self._last
+        vw = self._view_w()
+        if vx < self.EDGE:
+            step = -int(4 + 26 * min(1.0, (self.EDGE - vx) / self.EDGE))
+        elif vx > vw - self.EDGE:
+            step = int(4 + 26 * min(1.0, (vx - (vw - self.EDGE)) / self.EDGE))
+        else:
+            return
+        if step > 0 and sb.value() >= sb.maximum() and self._ov is not None:
+            self.setMinimumWidth(self.width() + step)      # 글자·음악을 끝 너머로 = 타임라인을 늘림
+            self.resize(self.width() + step, self.height())
+        v0 = sb.value()
+        sb.setValue(v0 + step)
+        if sb.value() != v0:
+            self._move(QPointF(sb.value() + vx, y), Qt.LeftButton)
+
+    def _bars_all(self) -> list:
+        """리듬이 뚜렷한 곡들의 마디 첫 박(타임라인 초) + 4마디째 여부 → [(시각, 굵은 선?)]."""
+        from .music import beats_on_timeline
+        out = []
+        for m in self.music:
+            inf = self.music_info.get(m.get("path", ""))
+            if not inf or float(inf.get("conf", 0)) < 0.3 or not inf.get("bars"):
+                continue
+            off, ln, t0 = float(m.get("off", 0)), float(m["len"]), float(m["t0"])
+            for k, b in enumerate(inf["bars"]):
+                if off - 1e-6 <= b <= off + ln + 1e-6:
+                    out.append((t0 + b - off, k % 4 == 0))
+        return out
+
+    def _bounds(self) -> list:
+        """컷 경계(전환 가운데) 시각 — 맨 앞 컷 시작·맨 뒤 컷 끝 포함."""
+        out = []
+        for i, it in enumerate(self.items):
+            d = it[5][1] if (len(it) > 5 and it[5] and i > 0) else 0.0
+            out.append(it[6] + d / 2)
+        if self.items:
+            out.append(self.items[-1][6] + self.items[-1][1])
+        return out
 
     # ---------------------------------------------------------------- 음악 끌어다 놓기(v0.16.75)
     def dragEnterEvent(self, e):
@@ -798,6 +890,32 @@ class SeqTimeline(QWidget):
             else:
                 pts = [QPointF(r.right(), y0), QPointF(r.right(), y1), QPointF(r.left(), y1)]
             p.drawPolygon(QPolygonF(pts))
+        # v0.17.1 마디선 = 영상 줄까지 얇게(4마디마다 굵게) · 마디에 맞은 컷 경계 = 위아래 노랑 표시
+        bars = self._bars_all()
+        if bars:
+            ts = sorted(t for t, _b in bars)
+            gap = min((b - a for a, b in zip(ts, ts[1:]) if b - a > 0.2), default=0.0) * self.pps
+            for t, big in bars:
+                if not big and gap < 6:                 # 축소했을 때 = 4마디 선만
+                    continue
+                if big and gap * 4 < 6:
+                    continue
+                x = self._x(t)
+                p.setPen(QPen(QColor(255, 255, 255, 70 if big else 30), 1.6 if big else 1))
+                p.drawLine(QPointF(x, vid.top()), QPointF(x, vid.bottom()))
+            tol = 0.05
+            for bt in self._bounds():
+                if min(abs(bt - t) for t in ts) <= tol:
+                    x = self._x(bt)
+                    if self.BAR_STYLE == "line":            # 시안 ②: 경계에 노랑 세로선
+                        p.setPen(QPen(self.BAR_MARK, 2))
+                        p.drawLine(QPointF(x, vid.top()), QPointF(x, vid.bottom()))
+                        continue
+                    p.setPen(Qt.NoPen)
+                    p.setBrush(self.BAR_MARK)
+                    for yy, up in ((vid.top(), False), (vid.bottom(), True)):       # 시안 ①: 작은 세모 2개(위 = 아래로, 아래 = 위로)
+                        d = -6 if up else 6
+                        p.drawPolygon(QPolygonF([QPointF(x - 5, yy), QPointF(x + 5, yy), QPointF(x, yy + d)]))
         if self._press is not None and self._drag_x is not None:
             j = self._drop_index(self._drag_x)
             xs = [r.left() for r in rects] + [rects[-1].right() + 2 if rects else 4]
@@ -985,6 +1103,16 @@ class SeqTimeline(QWidget):
 
     def mousePressEvent(self, e):
         pos = e.position()
+        if e.button() == Qt.MiddleButton or (e.button() == Qt.LeftButton and self.space_pan):
+            sb = self._hbar()                               # v0.17.1 가운데 버튼 · Space 누른 채 끌기 = 화면 이동
+            if sb is not None:
+                self._pan = (e.globalPosition().x(), sb.value())
+                self.setCursor(Qt.ClosedHandCursor)
+            return
+        if e.button() == Qt.LeftButton:
+            sb = self._hbar()
+            self._last = (pos.x() - (sb.value() if sb is not None else 0), pos.y())
+            self._auto.start()
         if e.button() == Qt.LeftButton and self.log_state:          # v0.16.91 LOG 칩
             for it, r in zip(self.items, self._rects()):
                 lr = self._log_rect(QRectF(r)) if it[0] in self.log_state else None
@@ -1005,6 +1133,10 @@ class SeqTimeline(QWidget):
                 self.transSelected.emit(cid)
             else:                                    # 아래 하늘색 = 컷 아웃·인 끌기
                 self._edge = (cid, kind, pos.x(), False)
+                # v0.17.1 마디 자석: 끌면 움직이는 것 = 이 컷 뒤 경계(아웃 = 끈 만큼, 인 = 반대로) → 그 경계가 마디 첫 박에 붙음
+                i = next((k for k, x in enumerate(self.items) if x[0] == cid), -1)
+                bs = self._bounds()
+                self._edge_snap = (bs[i + 1], sorted(t for t, _b in self._bars_all())) if 0 <= i < len(bs) - 1 else None
             self.update()
             return
         tid = self._trans_at(pos)
@@ -1084,12 +1216,26 @@ class SeqTimeline(QWidget):
         self.update()
 
     def mouseMoveEvent(self, e):
-        pos = e.position()
-        if self._shift is not None and (e.buttons() & Qt.LeftButton):
+        if self._pan is not None:
+            sb = self._hbar()
+            dx = e.globalPosition().x() - self._pan[0]
+            if abs(dx) > 2:
+                self.space_moved = True
+            if sb is not None:
+                sb.setValue(int(self._pan[1] - dx))
+            return
+        if e.buttons() & Qt.LeftButton:
+            sb = self._hbar()
+            self._last = (e.position().x() - (sb.value() if sb is not None else 0), e.position().y())
+        self._move(e.position(), e.buttons())
+
+    def _move(self, pos, buttons):
+        """마우스 이동 처리(자동 넘김도 같은 길로)."""
+        if self._shift is not None and (buttons & Qt.LeftButton):
             self._shift = (self._shift[0], pos.x())
             self.update()
             return
-        if self._tdur and (e.buttons() & Qt.LeftButton):
+        if self._tdur and (buttons & Qt.LeftButton):
             cid, x0, d0, left, started = self._tdur
             dx = pos.x() - x0
             if not started:
@@ -1100,7 +1246,7 @@ class SeqTimeline(QWidget):
             d = d0 + (-dx if left else dx) / self.pps
             self.transDurEdited.emit(cid, round(max(0.0, d) * 10) / 10)      # 0.1초 단위(범위는 받는 쪽이 맞춤)
             return
-        if self._edge and (e.buttons() & Qt.LeftButton):
+        if self._edge and (buttons & Qt.LeftButton):
             cid, kind, x0, started = self._edge
             dx = pos.x() - x0
             if not started:
@@ -1108,9 +1254,17 @@ class SeqTimeline(QWidget):
                     return
                 self._edge = (cid, kind, x0, True)
                 self.cutEdgeStart.emit(cid, kind)
-            self.cutEdgeDragged.emit(cid, kind, dx / self.pps)
+            dt = dx / self.pps
+            if self._edge_snap and self._edge_snap[1]:        # 뒤 경계가 마디 첫 박 가까이(8px) = 붙음
+                b0, bars = self._edge_snap
+                sg = 1.0 if kind == "out" else -1.0
+                want = b0 + sg * dt
+                nb = min(bars, key=lambda t: abs(t - want))
+                if abs(nb - want) * self.pps <= self.SNAP:
+                    dt = sg * (nb - b0)
+            self.cutEdgeDragged.emit(cid, kind, dt)
             return
-        if self._ov is not None and (e.buttons() & Qt.LeftButton):
+        if self._ov is not None and (buttons & Qt.LeftButton):
             kind, d, mode, x0, o = self._ov
             dt = (pos.x() - x0) / self.pps
             tg = self._snap_targets(d)
@@ -1145,7 +1299,7 @@ class SeqTimeline(QWidget):
             self._resize()
             self.update()
             return
-        if not e.buttons():
+        if not buttons:
             hit = self._ov_at(pos)
             hd = self._handle_at(pos)
             tid = self._trans_at(pos)
@@ -1154,11 +1308,11 @@ class SeqTimeline(QWidget):
                            Qt.OpenHandCursor if hit else Qt.ArrowCursor)
             self.setToolTip(self._handle_tip(hd) if hd else self._trans_tip(tid) if tid else
                             self.tooltip_at(pos.x()) if not hit else "")
-        if self._press is not None and (e.buttons() & Qt.LeftButton):
+        if self._press is not None and (buttons & Qt.LeftButton):
             if self._drag_x is not None or abs(pos.x() - self._press[1]) > 6:
                 self._drag_x = pos.x()
                 self.update()
-        elif e.buttons() & Qt.LeftButton and self._press is None:
+        elif buttons & Qt.LeftButton and self._press is None:
             self.t = self._t(pos.x())
             self.timeChanged.emit(self.t)
             self.update()
@@ -1171,6 +1325,12 @@ class SeqTimeline(QWidget):
                 g["t1"] = float(go["t1"]) + dt
 
     def mouseReleaseEvent(self, e):
+        self._auto.stop()
+        self._last = None
+        if self._pan is not None:
+            self._pan = None
+            self.setCursor(Qt.OpenHandCursor if self.space_pan else Qt.ArrowCursor)
+            return
         if self._shift is not None:
             x0, x1 = self._shift
             self._shift = None
@@ -1184,6 +1344,7 @@ class SeqTimeline(QWidget):
         if self._edge:
             started = self._edge[3]
             self._edge = None
+            self._edge_snap = None
             if started:
                 self.cutEdgeEnd.emit()
             return

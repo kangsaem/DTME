@@ -165,6 +165,9 @@ jobs:
           $o_v1700e = python tests/test_v1700.py v1700e_test 2>&1 | Out-String
           Write-Output $o_v1700e
           if ($o_v1700e -notmatch "OK test_v1700") { exit 1 }
+          $o_v1710e = python tests/test_v1710.py v1710e_test 2>&1 | Out-String
+          Write-Output $o_v1710e
+          if ($o_v1710e -notmatch "OK test_v1710") { exit 1 }
           $o_single = python tests/test_single.py 2>&1 | Out-String
           Write-Output $o_single
           if ($o_single -notmatch "SINGLE OK") { exit 1 }
@@ -283,6 +286,9 @@ jobs:
           $o_v1700 = python tests/test_ui_v1700.py v1700_test 2>&1 | Out-String
           Write-Output $o_v1700
           if ($o_v1700 -notmatch "OK test_ui_v1700") { exit 1 }
+          $o_v1710 = python tests/test_ui_v1710.py v1710_test 2>&1 | Out-String
+          Write-Output $o_v1710
+          if ($o_v1710 -notmatch "OK test_ui_v1710") { exit 1 }
           $o_v1700z = python tests/test_ui_v1700z.py 2>&1 | Out-String
           Write-Output $o_v1700z
           if ($o_v1700z -notmatch "OK test_ui_v1700z") { exit 1 }

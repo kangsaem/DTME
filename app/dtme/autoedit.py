@@ -153,7 +153,7 @@ def scores(f: dict, scene: str) -> np.ndarray:
 
 def ranked_windows(sc: np.ndarray, length: float, k: int) -> list[float]:
     """점수 합이 큰 구간 k개(안 겹침) → 시작 초(좋은 순)."""
-    L = max(1, int(round(length / STEP)))
+    L = max(1, int(math.ceil(length / STEP - 1e-9)))    # v0.17.1 올림(예전 = 반올림 → 길이가 칸에 안 맞으면 이웃 구간과 조금 겹침)
     n = len(sc)
     if n <= L:
         return [0.0]
@@ -216,6 +216,12 @@ def allot(durs: list[float], total: float, cut_max: list | None = None, cut_min:
     live = [i for i in range(n) if usable[i] >= 1.0]
     cnt = {i: max(1, min(1 + ex[i], int(usable[i] // max(mn[i], 0.1)) or 1)) for i in live}     # 꼭 넣을 컷 수
     floor = {i: min(usable[i], cnt[i] * mn[i]) for i in live}
+    while sum(floor.values()) > total + 1e-6:        # 더 넣을 컷(extra) 때문에 최소만으로 넘침 = 더 넣는 것부터 줄임
+        j = max((i for i in live if cnt[i] > 1), key=lambda i: cnt[i], default=None)
+        if j is None:
+            break
+        cnt[j] -= 1
+        floor[j] = min(usable[j], cnt[j] * mn[j])
     w = np.sqrt(np.maximum(usable, 0.01))
     share = {i: floor[i] for i in live}
     left, free = float(total), list(live)
@@ -385,6 +391,8 @@ def build(project, picks: list[dict], minutes: int, seed: int = 0, titles: bool 
             ln = min(ln, dur)
             st = max(0.0, min(st, dur - ln))
             fin = int(round(st * fps))
+            if j and segs and segs[-1].src == s.id and fin < segs[-1].fout:      # v0.17.1 같은 클립 앞 컷과 원본에서 안 겹치게
+                fin = min(segs[-1].fout, max(0, s.frames - max(1, int(round(ln * fps)))))
             fout = min(s.frames, fin + max(1, int(round(ln * fps))))
             g = Segment(s.id, fin, fout, 1.0)
             if segs:
