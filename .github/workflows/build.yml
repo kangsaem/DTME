@@ -291,6 +291,9 @@ jobs:
           $o_v1720 = python tests/test_ui_v1720.py v1720_test 2>&1 | Out-String
           Write-Output $o_v1720
           if ($o_v1720 -notmatch "OK test_ui_v1720") { exit 1 }
+          $o_v1730 = python tests/test_ui_v1730.py 2>&1 | Out-String
+          Write-Output $o_v1730
+          if ($o_v1730 -notmatch "OK test_ui_v1730") { exit 1 }
           $o_v1700z = python tests/test_ui_v1700z.py 2>&1 | Out-String
           Write-Output $o_v1700z
           if ($o_v1700z -notmatch "OK test_ui_v1700z") { exit 1 }

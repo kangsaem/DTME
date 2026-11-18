@@ -1,12 +1,14 @@
 """시작 창(v0.16.52 틀 · v0.17.0 [AUTO] 하나): 제목 표시줄·테두리 없는 400×560, 위 = 정사각형 그림(assets/start.png)
 + 왼쪽 위 'DTME'·버전 + 오른쪽 위 ✕(종료) + 오른쪽 아래 세로 글자, 아래(#262626) = [AUTO] 160×48. 빈 곳을 끌어 옮김.
 [AUTO] = 빈 자동 창(ui_autowin) · 끌어다 놓기 = 그 파일이 들어간 자동 창 · 프로젝트 파일 = 바로 편집 화면.
-자동 창 [취소] = 넣은 영상 버리고 이 창으로 · 렌더 끝 [닫기] = 프로그램 종료 · 그 밖 = 편집 화면."""
+자동 창 [취소] = 넣은 영상 버리고 이 창으로 · 렌더 끝 [닫기] = 프로그램 종료 · 그 밖 = 편집 화면.
+v0.17.3: 그림 자리 = 시작 영상(assets/start.mp4, 4초 · 소리 없음). 처음 = 첫 장면(start.png)에 멈춤 → [AUTO] = 재생(버튼 흐림),
+끝나면 자동 창 · 재생 중 그림을 누르면 바로 자동 창 · 끌어다 놓기 = 재생 없이 바로 · [취소]로 돌아오면 다시 첫 장면."""
 from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer, QUrl
 from PySide6.QtGui import QColor, QFont, QPainter, QPixmap
 from PySide6.QtWidgets import QLabel, QPushButton, QVBoxLayout, QWidget
 
@@ -40,6 +42,7 @@ def collect_videos(paths) -> list[str]:
 
 
 IMG = 400                                      # 그림 한 변(논리 px). 그림 파일은 800×800(고배율 화면용)
+INTRO_MAX = 10.0                               # 시작 영상이 이 초 안에 안 끝나면(재생 안 됨 등) 그냥 자동 창으로
 W, H = IMG, IMG + 160
 SIDE_TEXT = "Diving Tour Movie Editor"
 
@@ -84,14 +87,9 @@ class Launcher(QWidget):
         self.img = QLabel(self)
         self.img.setFixedSize(IMG, IMG)
         self.img.setAlignment(Qt.AlignCenter)
-        pm = QPixmap(str(paths.asset("start.png")))
-        if pm.isNull():
-            self.img.setStyleSheet("background:#3a3a3a;")
-        else:
-            dpr = self.devicePixelRatioF() or 1.0
-            pm = pm.scaled(round(IMG * dpr), round(IMG * dpr), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
-            pm.setDevicePixelRatio(dpr)
-            self.img.setPixmap(pm)
+        self.player = None                          # 시작 영상 재생기(재생할 때만 만듦)
+        self.playing = False
+        self._show_still()
         head = QWidget(self.img)
         head.setAttribute(Qt.WA_TransparentForMouseEvents, True)     # 글자 위를 잡아도 창이 끌림
         hl = QVBoxLayout(head)
@@ -133,7 +131,7 @@ class Launcher(QWidget):
         f.setPointSizeF(f.pointSizeF() * 1.3)
         f.setBold(True)
         self.b_auto.setFont(f)
-        self.b_auto.clicked.connect(lambda: self.run_auto([]))
+        self.b_auto.clicked.connect(self.play_intro)
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(0)
@@ -142,12 +140,88 @@ class Launcher(QWidget):
         v.addWidget(self.b_auto, 0, Qt.AlignHCenter)
         v.addStretch(1)
 
+    # ------------------------------------------------------------ 시작 영상(v0.17.3)
+    def _set_pix(self, pm: QPixmap):
+        dpr = self.devicePixelRatioF() or 1.0
+        pm = pm.scaled(round(IMG * dpr), round(IMG * dpr), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+        pm.setDevicePixelRatio(dpr)
+        self.img.setPixmap(pm)
+
+    def _show_still(self):
+        """첫 장면(start.png — 시작 영상 첫 프레임)."""
+        pm = QPixmap(str(paths.asset("start.png")))
+        if pm.isNull():
+            self.img.setStyleSheet("background:#3a3a3a;")
+        else:
+            self._set_pix(pm)
+
+    def play_intro(self):
+        """[AUTO] = 시작 영상 재생 → 끝나면 자동 창. 영상이 없거나 재생이 안 되면 바로 자동 창."""
+        import os
+        if self.playing:
+            return
+        clip = paths.asset("start.mp4")
+        if not clip.exists() or os.environ.get("DTME_NO_INTRO"):
+            self.run_auto([])
+            return
+        try:
+            from PySide6.QtMultimedia import QMediaPlayer, QVideoSink
+        except Exception:  # noqa: BLE001 — 재생 모듈 없음 = 바로
+            self.run_auto([])
+            return
+        self.playing = True
+        self.b_auto.setEnabled(False)
+        self.player = QMediaPlayer(self)
+        self.sink = QVideoSink(self)
+        self.player.setVideoSink(self.sink)            # 소리 출력 없음(영상에 소리도 없음)
+        self.sink.videoFrameChanged.connect(self._frame)
+        self.player.mediaStatusChanged.connect(
+            lambda st: self._intro_done() if st in (QMediaPlayer.EndOfMedia, QMediaPlayer.InvalidMedia) else None)
+        self.player.errorOccurred.connect(lambda *_a: self._intro_done())
+        self._guard = QTimer(self)
+        self._guard.setSingleShot(True)
+        self._guard.timeout.connect(self._intro_done)
+        self._guard.start(int(INTRO_MAX * 1000))
+        self.player.setSource(QUrl.fromLocalFile(str(clip)))
+        self.player.play()
+
+    def _frame(self, fr):
+        if not self.playing:
+            return
+        im = fr.toImage()
+        if not im.isNull():
+            self._set_pix(QPixmap.fromImage(im))
+
+    def _intro_done(self):
+        """재생 끝 · 그림 누름 · 오류 · 시간 넘음 → (한 번만) 자동 창."""
+        if not self.playing:
+            return
+        self.playing = False
+        self._guard.stop()
+        pl, self.player = self.player, None
+        if pl is not None:
+            try:
+                pl.stop()
+            except RuntimeError:
+                pass
+            pl.deleteLater()
+        QTimer.singleShot(0, self._after_intro)
+
+    def _after_intro(self):
+        self.run_auto([])
+        if self.isVisible():                            # [취소]로 돌아옴 = 다시 첫 장면에 멈춤
+            self._show_still()
+            self.b_auto.setEnabled(True)
+
     def _style(self, hot):
         self.setStyleSheet("#Launcher{background:#262626; border:none;}" if not hot else
                            "#Launcher{background:#262a30; border:2px dashed #4a8fe0;}")     # 끌어 놓는 동안만 점선
 
     # ------------------------------------------------------------ 빈 곳을 끌어 옮김(제목 표시줄이 없음)
     def mousePressEvent(self, e):
+        if self.playing and e.button() == Qt.LeftButton and self.img.geometry().contains(e.position().toPoint()):
+            self._intro_done()                          # 재생 중 그림 누름 = 바로 자동 창
+            return
         if e.button() == Qt.LeftButton:
             self._drag = e.globalPosition().toPoint() - self.frameGeometry().topLeft()
         super().mousePressEvent(e)

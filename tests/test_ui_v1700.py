@@ -214,7 +214,9 @@ def poke(what):
 
 poke.last = d6
 QTimer.singleShot(100, lambda: poke("cancel"))
-L2.b_auto.click()                                   # 빈 자동 창
+poke.seen = None
+L2.b_auto.click()                                   # 빈 자동 창(v0.17.3 = 시작 영상 4초 뒤)
+wait(20, lambda: poke.seen is not None and L2.isVisible() and not L2.playing)
 assert poke.seen == (0, False, True), poke.seen
 assert L2.isVisible() and not w.isVisible() and not quits, "[취소] = 시작 창으로"
 QTimer.singleShot(100, lambda: poke("edit"))

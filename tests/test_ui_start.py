@@ -13,7 +13,7 @@ from dtme.ui_launch import Launcher
 app = QApplication(sys.argv); M.dark(app)
 mw = MainWindow()
 la = Launcher(mw); la.show(); app.processEvents()
-assert paths.asset("start.png").exists() and paths.asset("dtme.ico").exists(), "assets 없음"
+assert paths.asset("start.png").exists() and paths.asset("dtme.ico").exists() and paths.asset("start.mp4").exists(), "assets 없음"
 assert la.windowFlags() & Qt.FramelessWindowHint, "제목 표시줄 없음"
 assert (la.width(), la.height()) == (400, 560)
 assert (la.img.width(), la.img.height()) == (400, 400) and not la.img.pixmap().isNull()
