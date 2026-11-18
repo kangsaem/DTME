@@ -130,8 +130,8 @@ tot = p.out_seconds()
 print("컷", len(segs), [round(x, 2) for x in lens], "결과", round(tot, 2), "음악", [(os.path.basename(m["path"]), m["t0"], m["len"]) for m in p.music], flush=True)
 assert len(st._undo) == nu + 1                       # 실행취소 1번
 assert _mine_t["id"] not in {x["id"] for x in p.titles} and _mine_m["id"] not in {m["id"] for m in p.music}
-assert len(segs) >= 4 and all(autoedit.CUT_MIN - 0.05 <= x <= autoedit.CUT_MAX + 0.05 for x in lens)
-assert abs(tot - 60) < 3.0, tot
+assert len(segs) >= 4 and all(3.0 <= x <= autoedit.CUT_MAX + 0.05 for x in lens)      # v0.17.1 최소 = 5초에 가장 가까운 마디 수
+assert abs(tot - 60) < 0.1, tot                      # v0.17.1 마지막 컷이 정한 시각에 끝남
 names = [os.path.basename(p.source(g.src).path) for g in segs]
 assert names == sorted(names), names                 # 목록순(이름에 날짜 없음)
 assert segs[0].trans == {"type": "fadeblack", "dur": autoedit.FADE_IN_SEC} and all(g.trans.get("dur") == (1.0 if g.trans["type"].startswith("ripple") else 0.5) for g in segs[1:])   # v0.16.91 첫 컷 = 검정에서 · 사각 파동 = 1초

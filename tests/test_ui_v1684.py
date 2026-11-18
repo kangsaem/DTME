@@ -67,19 +67,18 @@ assert p.dive_on
 from dtme.project import set_setting as _ss; _ss("autowin", {})      # 자동 창 기억한 선택 지움(시험끼리 영향 없게)
 d = e.make_auto_window(); d.dive_on.setChecked(True); d._sync()       # v0.17.0 자동 창
 print("체크:", d.dive_on.text(), d.dive_on.toolTip(), d.dive_on.isChecked())
-assert d.dive_on.isEnabled() and "다이빙 1개" in d.dive_on.toolTip() and "15초" in d.dive_on.toolTip() and d.autoedit_settings()["dive"]
+assert d.dive_on.isEnabled() and "다이빙 1개" in d.dive_on.toolTip() and "12초" in d.dive_on.toolTip() and d.autoedit_settings()["dive"]
 assert d.sum.text().startswith("다이빙 기록 1개") and "LOG" in d.stages["edit"].summary
 d.reject()
 # 컷 최소 10초(다이빙 소스) · 다이빙 밖은 그대로
-assert autoedit.dive_lens([6.0, 7.0, 8.0, 10.0], 40.0) == [15.5, 15.5]          # v0.16.88 최소 15초
-assert autoedit.dive_lens([16.0], 40.0) == [16.0] and autoedit.dive_lens([6.0], 12.0) == [12.0]
+assert autoedit.DIVE_MIN == 12.0 and not hasattr(autoedit, "dive_lens")         # v0.17.1 최소 12초 · 길이 맞추기 안에서 같이 풂(allot cut_min)
 import numpy as np  # noqa: E402
 picks = [{"src": s1, "scene": "", "score": np.ones(80), "surface": None},
          {"src": s2, "scene": "", "score": np.ones(80), "surface": None}]
 plan = autoedit.build(p, picks, 1, seed=3, titles=True, cut_max=[6.0, 6.0])
 lens = [((g.fout - g.fin) / 30.0, g.src) for g in plan["segs"]]
 print("컷:", [(round(a, 1), "다이빙" if s == s1.id else "밖") for a, s in lens])
-assert all(a >= 14.99 for a, s in lens if s == s1.id) and any(a < 9.99 for a, s in lens if s == s2.id)
+assert all(a >= 11.99 for a, s in lens if s == s1.id) and any(a < 9.99 for a, s in lens if s == s2.id)
 assert all(t.get("text") != "2026 1027 1040" for t in plan["titles"])     # 다이빙 컷 = 날짜 사각형 안 넣음
 # 회전 줌: 최대 2번 · 연달아 안 씀
 for seed in range(30):

@@ -598,8 +598,8 @@ def ramp_expr(spans, r: float = 0.5, weights=None) -> str:
 # ------------------------------------------------------------------ v0.16.96 한 곡 처음~끝(사용자 11/16~17)
 # 예전(plan_runs) = 장면 구간마다 곡을 새로 골라 같은 자리부터 → 곡이 적으면 같은 곡 도입부가 되풀이됨.
 # 지금 = 곡은 처음부터 끝까지 한 번, 끝나면 다음 곡(xfade 초 겹침). 곡이 다 떨어졌을 때:
-#   남은 영상 > TAIL_FILL(30초) = 디졸브로 다시 씀(횟수 최소, 다른 소절 = 곡 뒷부분) · 아니면 음악 없이 원본 소리.
-TAIL_FILL = 30.0
+#   남은 영상 > TAIL_FILL = 디졸브로 다시 씀(횟수 최소, 다른 소절 = 곡 뒷부분) · 아니면 음악 없이 원본 소리.
+TAIL_FILL = 15.0                  # v0.17.1 30 → 15초(사용자 11/17·11/18): '한 곡으로 거의 끝까지'의 기준과 같은 값
 
 
 def run_roles(runs: list) -> list:
@@ -675,6 +675,70 @@ def fill_tail(items: list[dict], audios: list[dict], infos: dict, total: float, 
         else:
             off = min(lead, max(0.0, dur - 1.0))
         out.append({"path": a["path"], "t0": round(t, 3), "off": round(off, 3), "dur": dur, "len": round(dur - off, 3), "reuse": True})
+    return out
+
+
+def _bar_at(inf: dict, pos: float, lo: float, floor: bool = True) -> float | None:
+    """곡 안 시각 pos 근처의 마디 첫 박(lo 이상): floor = pos 이하에서 가장 뒤 / 아니면 pos 이상에서 가장 앞. 리듬이 흐리면 None."""
+    if not inf or float(inf.get("conf", 0)) < 0.3:
+        return None
+    bars = [float(b) for b in (inf.get("bars") or []) if b >= lo - 1e-6]
+    if floor:
+        ok = [b for b in bars if b <= pos + 1e-6]
+        return ok[-1] if ok else None
+    ok = [b for b in bars if b >= pos - 1e-6]
+    return ok[0] if ok else None
+
+
+def handover(items: list[dict], infos: dict, vend: float, xfade: float = 2.0, bounds: list | None = None,
+             tail: float = TAIL_FILL) -> list[dict]:
+    """v0.17.1 곡이 둘 이상일 때 넘어가는 자리(사용자 11/17): 앞 곡 끝까지 기다리지 않고 장면이 바뀌는 컷 경계에서 디졸브.
+    - 범위 = [영상 끝 − 뒤 곡들 길이, 앞 곡 끝] · 그 안에서 여행 바뀜 → 날짜 바뀜 → 물 밖 컷 → 없으면 범위 가운데에 가장 가까운 컷 경계
+      (bounds = [(시각, 등급 0~3)] — autoedit.cut_bounds). 범위가 없으면(곡이 모자라거나 딱 맞음) 앞 곡 끝 그대로.
+    - 한 곡으로 거의 끝까지(앞 곡이 끝난 뒤 남는 구간 ≤ tail) = 그 곡만(뒤는 원본 소리).
+    - 마지막 곡 = 곡 끝이 영상 끝에 오게 중간(마디 첫 박)부터(도입부 건너뜀) · 가운데 곡 = 넘어가는 자리에 마디 첫 박이 오게 반 마디 안에서 맞춤.
+    items = plan_whole 결과(다시 쓴 곡 reuse 는 빼고 봄). → 새 목록(뒤는 fill_tail · clip_end 가 마무리)."""
+    its = [dict(x) for x in items if not x.get("reuse")]
+    if len(its) < 2:
+        return its
+    bounds = sorted(bounds or [])
+
+    def full(x):
+        return float(x["dur"]) - float(infos[x["path"]].get("lead", 0) if infos.get(x["path"]) else x.get("off", 0))
+    out = [its[0]]
+    for k in range(1, len(its)):
+        prev = out[-1]
+        pend = float(prev["t0"]) + float(prev["len"])
+        if vend - pend <= tail:                          # 한 곡으로 거의 끝까지 = 뒤 곡 안 씀
+            break
+        nxt = its[k]
+        inf = infos.get(nxt["path"]) or {}
+        dur, lead = float(nxt["dur"]), min(float(inf.get("lead", 0)), max(0.0, float(nxt["dur"]) - 1.0))
+        xf = min(xfade, float(prev["len"]) / 2, (dur - lead) / 2)
+        rest = sum(full(x) for x in its[k:]) - xfade * (len(its) - k - 1)
+        hi = pend - xf / 2
+        lo = max(float(prev["t0"]) + tail, vend - rest + xf / 2)
+        X = hi
+        if hi - lo > 0.5:
+            mid = (lo + hi) / 2
+            inr = [(t, r) for t, r in bounds if lo - 1e-6 <= t <= hi + 1e-6]
+            if inr:
+                best = min(r for _t, r in inr)
+                X = min((t for t, r in inr if r == (best if best < 3 else r)), key=lambda t: abs(t - mid))
+        t0 = X - xf / 2
+        last = k == len(its) - 1 or t0 + (dur - lead) >= vend - tail
+        if last and t0 + (dur - lead) > vend + 0.5:      # 마지막 곡: 곡 끝 = 영상 끝 → 중간부터
+            b = _bar_at(inf, dur - (vend - t0) + xf / 2, lead + xf / 2)
+            off = (b - xf / 2) if b is not None else max(lead, dur - (vend - t0))
+        else:                                            # 처음부터: 넘어가는 자리에 마디 첫 박
+            b = _bar_at(inf, lead + xf / 2, 0.0, floor=False)
+            bar = 60.0 / float(inf["bpm"]) * int(inf.get("meter", 4)) if float(inf.get("bpm", 0) or 0) > 0 else 0.0
+            off = (b - xf / 2) if (b is not None and b - xf / 2 <= lead + bar + 1e-6) else lead
+        off = max(0.0, min(off, dur - 1.0))
+        prev["len"] = round(max(0.2, X + xf / 2 - float(prev["t0"])), 3)
+        out.append({**nxt, "t0": round(t0, 3), "off": round(off, 3), "len": round(dur - off, 3)})
+        if last:
+            break
     return out
 
 

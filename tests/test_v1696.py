@@ -40,20 +40,17 @@ print("시작 화면:", [(x["text"], x["size"], x["cy"]) for x in tx], "· 세�
 # ---------------------------------------------------------------- 2) 끝 화면
 dv = [{"id": "a", "start": T(2025, 10, 20), "pts": [[0, 0], [1200, 22.0], [2400, 0]], "max": 22.0}]
 ls = A.end_lines(True, dv, "보홀주, 필리핀", "2025.10.20")
-assert [(x[0][:6], x[1]) for x in ls] == [("1 DIVE", 52), ("보홀주, 필", 36), ("2025.1", 36)], ls     # 3줄
+assert [(x[0][:6], x[1]) for x in ls] == [("1 DIVE", 80), ("보홀주, 필", 64), ("2025.1", 64)], ls     # 3줄(v0.17.1 80·64·64)
 assert [x[0] for x in A.end_lines(False, [], "보홀주, 필리핀", "2025.10.20")] == ["보홀주, 필리핀", "2025.10.20"]
 assert [x[0] for x in A.end_lines(False, [], "", "2025.10.20")] == ["2025.10.20"] and A.end_lines(False, [], "", "") == []
 assert [x[0] for x in A.end_lines(True, dv, "p", "d", "Bye / 2025")] == ["Bye", "2025"]         # 직접 쓴 문구 = 그것만
-ec = A.end_card(100.0, ls, tag=True)
-tg = [x for x in ec if x.get("tag")]
-assert len(tg) == 1 and ec[-1] is tg[0] and tg[0]["text"] == "See You Underwater" and tg[0]["color"] == "#4FB3E8"
-assert tg[0]["size"] == 84 and tg[0]["cy"] == 0.88                                   # v0.16.97 3배 and tg[0]["ain"] == "fade" and abs(tg[0]["t0"] - 102.0) < 1e-6
-assert not any("DTME" == x.get("text") for x in ec)
-mid = [x for x in ec if x["kind"] == "text" and not x.get("tag")]
-assert len(mid) == 3 and all(x["color"] == A.CARD_COLOR for x in mid) and mid[0]["cy"] < mid[1]["cy"] < mid[2]["cy"] < 0.7
-assert not [x for x in A.end_card(100.0, A.end_lines(True, dv, "p", "d", "Bye")) if x.get("tag")]   # 직접 쓴 문구 = 아래 줄 없음
-e0 = A.end_card(100.0, [], tag=True)
-assert [x["kind"] for x in e0] == ["rect", "text"] and e0[1].get("tag")                          # 가운데 비움 + 아래 줄
+ec = A.end_card(100.0, ls)
+assert not [x for x in ec if x.get("tag")] and not hasattr(A, "END_TAG")             # v0.17.1 맨 아래 'See You Underwater' 없앰
+assert not any(x.get("text") in ("DTME", "See You Underwater") for x in ec)
+mid = [x for x in ec if x["kind"] == "text"]
+assert len(mid) == 3 and all(x["color"] == A.CARD_COLOR for x in mid) and mid[0]["cy"] < mid[1]["cy"] < mid[2]["cy"] < 0.75
+e0 = A.end_card(100.0, [])
+assert [x["kind"] for x in e0] == ["rect"]                                           # 가운데 비움 = 흰 화면만
 assert all(x.get("card") == "end" for x in ec)
 print("끝 화면:", [(x.get("text"), x.get("size"), x.get("cy")) for x in ec if x["kind"] == "text"])
 
@@ -72,7 +69,7 @@ import re  # noqa: E402
 import subprocess  # noqa: E402
 import tempfile  # noqa: E402
 from dtme import paths  # noqa: E402
-ec2 = A.end_card(10.0, A.end_lines(False, [], "Bohol", "2025.10.20"), tag=True)
+ec2 = A.end_card(10.0, A.end_lines(False, [], "Bohol", "2025.10.20"))
 outf = os.path.join(tempfile.mkdtemp(prefix="dtme_v1696_"), "endfade.mp4")
 c2 = [paths.ffmpeg(), "-v", "error", "-y", "-f", "lavfi", "-t", "18", "-i", "color=c=blue:s=320x180:r=30",
       "-f", "lavfi", "-t", "18", "-i", "sine=f=440:r=48000"]
@@ -112,7 +109,7 @@ assert sum(D.is_flash(j / nfr) for j in range(nfr)) == D.PULSE_FPS == 12 and D.i
 print("색 디졸브:", [round(x, 2) for x in fi], "· 분홍", sum(D.is_flash(j / nfr) for j in range(nfr)), "장/주기")
 
 
-# ---------------------------------------------------------------- 5) 음악: 한 곡 처음~끝 한 번 · 30초 규칙
+# ---------------------------------------------------------------- 5) 음악: 한 곡 처음~끝 한 번 · 15초 규칙(v0.17.1 30 → 15)
 def info(dur, bpm=120.0, lead=0.0, mood=0.5):
     bl = 60.0 / bpm
     beats = [round(lead + i * bl, 4) for i in range(int((dur - lead) / bl))]
@@ -130,9 +127,9 @@ for x in it:
 assert it[0]["t0"] == 0.0 and abs(it[1]["t0"] - (it[0]["len"] - 2.0)) < 1e-6    # 2초 겹쳐 이어짐
 end2 = M.music_end(it)                                                          # 59 - 2 + 50 = 107
 assert abs(end2 - 107.0) < 1e-6
-# 남은 영상 20초(≤ 30) = 그대로(뒤는 음악 없음)
-assert M.fill_tail(it, auds, infos, end2 + 20.0, 2.0) == it
-# 남은 영상 40초(> 30) = 한 번 더, 다른 소절(곡 뒷부분, 마디 첫 박)부터 · 곡 끝 ≈ 영상 끝
+# 남은 영상 10초(≤ 15) = 그대로(뒤는 음악 없음)
+assert M.TAIL_FILL == 15.0 and M.fill_tail(it, auds, infos, end2 + 10.0, 2.0) == it
+# 남은 영상 40초(> 15) = 한 번 더, 다른 소절(곡 뒷부분, 마디 첫 박)부터 · 곡 끝 ≈ 영상 끝
 f = M.fill_tail(it, auds, infos, end2 + 40.0, 2.0)
 assert len(f) == 3 and f[2].get("reuse") and f[2]["path"] != it[1]["path"]
 ri = infos[f[2]["path"]]
@@ -143,7 +140,7 @@ assert abs(M.music_end(c) - (end2 + 40.0)) < 1e-3 and len(c) == 3
 # 한 곡 · 영상이 훨씬 긺 = 되풀이 횟수 최소(매번 통째로, 마지막만 뒷부분)
 one = [{"path": "/m/b.mp3"}]
 f1 = M.fill_tail(M.plan_whole(one, infos, 170.0, 2.0), one, infos, 170.0, 2.0)
-assert len(f1) == 3 and 170.0 - M.music_end(f1) <= 30.0 + 1e-6, [(x["t0"], x["off"], x["len"]) for x in f1]
+assert len(f1) >= 3 and 170.0 - M.music_end(f1) <= M.TAIL_FILL + 1e-6, [(x["t0"], x["off"], x["len"]) for x in f1]
 starts = [x["off"] for x in f1]
 assert starts[0] == 0.0 and all(M.music_end(f1[:k + 1]) > M.music_end(f1[:k]) for k in range(1, len(f1)))
 # 영상이 곡보다 짧음 = 한 곡을 처음부터, 영상 끝에서 자름

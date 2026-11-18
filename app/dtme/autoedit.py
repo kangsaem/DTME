@@ -13,6 +13,8 @@ import math
 import random
 import subprocess
 
+from pathlib import Path
+
 import numpy as np
 
 from . import ff, paths
@@ -29,20 +31,44 @@ GRAND = ("bluewater",)
 
 
 # ------------------------------------------------------------------ 화면 읽기
-def scan(src, cancel=None) -> np.ndarray:
-    """→ (n, 54, 96, 3) float32 0~1, 0.5초마다. 프록시가 있으면 프록시(LUT 입힘), 없으면 원본(LUT 없음 — 비교용이라 충분)."""
-    path = src.proxy if getattr(src, "proxy", "") and __import__("os").path.exists(src.proxy) else src.path
+def scan_src(src, cancel=None, lut: str = "") -> tuple[np.ndarray, str]:
+    """→ ((n, 54, 96, 3) float32 0~1 — 0.5초마다, 무엇으로 읽었나 '프록시'|'LRF'|'원본').
+    v0.17.1 읽는 순서 = 프록시(있으면, LUT 입혀 있음) → 카메라 프리뷰(LRF 등, 판정 통과) → 원본.
+    LRF·원본 = 96×54 로 줄인 뒤 LUT 입힘(프록시와 같은 색 → 물 밖 판정이 같게).
+    (v0.17.0 은 프록시가 없으면 늘 원본 4K 를 읽어 영상 1분에 ≈ 40초 — 사용자 로그 11/17.)"""
+    import os
+    path, kind, ref = src.path, "원본", None
+    if getattr(src, "proxy", "") and os.path.exists(src.proxy):
+        path, kind = src.proxy, "프록시"
+    else:
+        pv = None
+        try:
+            pv = ff.preview_info(src, lut or "")
+        except ff.Cancelled:
+            raise
+        except Exception as e:  # noqa: BLE001 — 판정 실패 = 원본
+            ff.log_error("화면 읽기 프리뷰 판정", str(e)[-200:])
+        if pv:
+            path, kind = pv["path"], Path(pv["path"]).suffix[1:].upper() or "LRF"
+            ref = ff.lut_ref(lut) if (lut and pv.get("color") == "lut") else None
+        else:
+            ref = ff.lut_ref(lut) if lut else None
+    color = f"format=gbrp16le,lut3d=file={ref[1]}," if ref else ""
     cmd = [paths.ffmpeg(), "-hide_banner", "-v", "error", "-skip_frame", "nokey", "-i", ff._abs(path), "-an",
-           "-vf", f"fps={1 / STEP:g},scale={SW}:{SH}:flags=area,format=rgb24", "-f", "rawvideo", "-"]
+           "-vf", f"fps={1 / STEP:g},scale={SW}:{SH}:flags=area,{color}format=rgb24", "-f", "rawvideo", "-"]
     with ff._slots(cmd):
-        pr = ff._popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        pr = ff._popen(cmd, cwd=ref[0] if ref else None, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         raw, err = pr.communicate()
     if cancel is not None and cancel.is_set():
         raise ff.Cancelled()
     n = len(raw) // (SW * SH * 3)
     if n == 0:
         raise ff.FFError(err.decode("utf-8", "replace")[-300:] or "화면을 못 읽음")
-    return np.frombuffer(raw[:n * SW * SH * 3], np.uint8).reshape(n, SH, SW, 3).astype(np.float32) / 255.0
+    return np.frombuffer(raw[:n * SW * SH * 3], np.uint8).reshape(n, SH, SW, 3).astype(np.float32) / 255.0, kind
+
+
+def scan(src, cancel=None, lut: str = "") -> np.ndarray:
+    return scan_src(src, cancel, lut)[0]
 
 
 def features(a: np.ndarray) -> dict:
@@ -125,8 +151,8 @@ def scores(f: dict, scene: str) -> np.ndarray:
     return (s - s.min() + 0.1) * w
 
 
-def best_windows(sc: np.ndarray, length: float, k: int) -> list[float]:
-    """점수 합이 큰 구간 k개(안 겹침) → 시작 초(시간 순)."""
+def ranked_windows(sc: np.ndarray, length: float, k: int) -> list[float]:
+    """점수 합이 큰 구간 k개(안 겹침) → 시작 초(좋은 순)."""
     L = max(1, int(round(length / STEP)))
     n = len(sc)
     if n <= L:
@@ -142,7 +168,22 @@ def best_windows(sc: np.ndarray, length: float, k: int) -> list[float]:
             break
         out.append(i * STEP)
         used[max(0, i - L + 1):i + L] = True
-    return sorted(out)
+    return out
+
+
+def best_windows(sc: np.ndarray, length: float, k: int) -> list[float]:
+    """점수 합이 큰 구간 k개(안 겹침) → 시작 초(시간 순)."""
+    return sorted(ranked_windows(sc, length, k))
+
+
+def window_q(sc: np.ndarray, start: float, length: float) -> float:
+    """구간 점수 = (구간 평균 − 클립 평균) ÷ 클립 표준편차 — 클립끼리 견줄 수 있게(점수 자체는 클립 안에서만 뜻이 있음)."""
+    a = int(start / STEP)
+    b = max(a + 1, int((start + length) / STEP))
+    seg = sc[a:b]
+    if not len(seg):
+        return 0.0
+    return float((seg.mean() - sc.mean()) / (sc.std() + 1e-9))
 
 
 # ------------------------------------------------------------------ 계획
@@ -154,42 +195,55 @@ def shoot_order(sources) -> list:
     return list(sources)
 
 
-def allot(durs: list[float], total: float, cut_max: list | None = None) -> list[list[float]]:
-    """소스마다 컷 길이 목록. 전체(전환 겹침 포함)가 total 이 되게, 긴 소스에 더(√길이). 원본이 모자라면 원본 길이까지.
-    cut_max(v0.16.73) = 소스마다 컷 최대 길이(곡 마디 단위) — 넘으면 컷을 여러 개로."""
-    cm = [min(CUT_MAX, max(CUT_MIN, float(x))) for x in (cut_max or [CUT_MAX] * len(durs))]
+def allot(durs: list[float], total: float, cut_max: list | None = None, cut_min: list | None = None,
+          extra: list | None = None) -> list[list[float]]:
+    """소스마다 컷 길이 목록. 컷 합 = total 이 되게, 긴 소스에 더(√길이). 원본이 모자라면 원본 길이까지.
+    cut_max(v0.16.73) = 소스마다 컷 최대 길이(곡 마디 단위) — 넘으면 컷을 여러 개로.
+    v0.17.1: cut_min = 소스마다 컷 최소 길이(LOG 다이빙 = 12초쯤, 그 밖 5초쯤) — 몫이 모자란 소스를 최소로 올리면
+    **그만큼 다른 소스가 줄어듦**(예전 = 올리기만 해서 합이 설정보다 길어짐, 사용자 로그 11/17: 3분 설정 → 본문 213초).
+    extra = 소스마다 꼭 더 넣을 컷 수(긴 소스, 최소 단위 길이씩)."""
+    n = len(durs)
     usable = [max(0.0, d - 0.2) for d in durs]
+    mn = [min(float(m), u) for m, u in zip(cut_min or [CUT_MIN] * n, usable)]
+    cm = [max(min(CUT_MAX, max(CUT_MIN, float(x))), m) for x, m in zip(cut_max or [CUT_MAX] * n, mn)]
+    ex = [max(0, int(x)) for x in (extra or [0] * n)]
     if sum(usable) <= total:
         out = []
         for i, u in enumerate(usable):
             k = max(1, math.ceil(u / cm[i]))
             out.append([u / k] * k if u >= 1.0 else [])
         return out
+    live = [i for i in range(n) if usable[i] >= 1.0]
+    cnt = {i: max(1, min(1 + ex[i], int(usable[i] // max(mn[i], 0.1)) or 1)) for i in live}     # 꼭 넣을 컷 수
+    floor = {i: min(usable[i], cnt[i] * mn[i]) for i in live}
     w = np.sqrt(np.maximum(usable, 0.01))
-    share = [0.0] * len(durs)
-    left, free = total, list(range(len(durs)))
-    for _ in range(4):                               # 소스보다 긴 몫은 소스 길이로 묶고 남은 것을 다시 나눔
-        ws = sum(w[i] for i in free)
-        for i in free:
-            share[i] = left * w[i] / ws
-        over = [i for i in free if share[i] > usable[i]]
-        if not over:
-            break
-        for i in over:
-            share[i] = usable[i]
-            left -= usable[i]
-            free.remove(i)
+    share = {i: floor[i] for i in live}
+    left, free = float(total), list(live)
+    for _ in range(2 * len(live) + 2):               # 넘치는 몫 = 소스 길이로, 모자란 몫 = 최소로 묶고 남은 것을 다시 나눔
         if not free:
             break
-    out = []
-    for i, a in enumerate(share):
-        if a < CUT_MIN * 0.6 and usable[i] >= CUT_MIN:  # 아주 작은 몫 = 5초 1개(대신 다른 소스가 조금 줄어듦)
-            a = CUT_MIN
-        if a < 1.0:
-            out.append([])
-            continue
-        k = max(1, math.ceil(a / cm[i] - 0.15))           # 마디 단위 길이를 조금 넘는 것은 1개로
-        out.append([max(min(a / k, usable[i]), min(CUT_MIN, usable[i]))] * k)
+        if left <= sum(floor[i] for i in free) + 1e-9:   # 최소만으로도 다 참(넘침) = 모두 최소
+            for i in free:
+                share[i] = floor[i]
+            break
+        ws = sum(w[i] for i in free)
+        for i in free:
+            share[i] = float(left * w[i] / ws)
+        over = [i for i in free if share[i] > usable[i]]
+        under = [i for i in free if share[i] < floor[i]]
+        if not over and not under:
+            break
+        for i in (over or under):
+            share[i] = usable[i] if over else floor[i]
+            left -= share[i]
+            free.remove(i)
+    out = [[] for _ in range(n)]
+    for i in live:
+        a = share[i]
+        k = max(cnt[i], math.ceil(a / cm[i] - 0.15))      # 마디 단위 길이를 조금 넘는 것은 1개로
+        while k > 1 and a / k < mn[i] - 1e-6:
+            k -= 1
+        out[i] = [float(a / k)] * k
     return out
 
 
@@ -197,11 +251,12 @@ BLUR_CONTRAST = 0.035               # v0.16.91 클립 화면 대비(밝기 표�
 SHAKE_MOTION = 0.09                 # 0.5초 사이 화면 차(중간값)가 이보다 큼 = 심하게 흔들림
 
 
-def trim_picks(project, picks: list[dict], minutes: float) -> tuple[list[dict], list[tuple[str, str]]]:
+def trim_picks(project, picks: list[dict], minutes: float, total: float | None = None) -> tuple[list[dict], list[tuple[str, str]]]:
     """v0.16.91 클립이 너무 많아 정한 길이에 다 못 넣을 때: 가능한 많이 넣고, 넘치면 흐린(대비 아주 낮음)·심하게 흔들린 클립 먼저 뺌,
-    그다음 하이라이트 점수가 낮은 클립. 클립마다 최소 = 컷 1개(5초, LOG 다이빙 = 15초) − 전환 겹침.
+    그다음 하이라이트 점수가 낮은 클립. 클립마다 최소 = 컷 1개(5초, LOG 다이빙 = 12초) − 전환 겹침.
+    total(v0.17.1) = 본문 길이(초) — 주면 minutes 대신.
     → (남길 것(촬영순 그대로), [(이름, 'blur'|'shake'|'time')])."""
-    total = float(minutes) * 60.0
+    total = float(total) if total is not None else float(minutes) * 60.0
 
     def need(pk):
         return (DIVE_MIN if dive_src(project, pk["src"]) else CUT_MIN) - TRANS_SEC
@@ -229,18 +284,23 @@ def trim_picks(project, picks: list[dict], minutes: float) -> tuple[list[dict], 
             [(display_name(picks[i]["src"].path), why[bad(picks[i])[0]]) for i in sorted(drop)])
 
 
-def fit_total(cuts: list[list[float]], total: float, n_trans: int) -> list[list[float]]:
-    """전환 겹침(경계마다 0.5초)만큼 컷을 늘려 결과 길이 = total (5~60초 안에서)."""
-    cur = sum(sum(c) for c in cuts) - n_trans * TRANS_SEC
-    if cur <= 0:
-        return cuts
-    k = total / cur
-    return [[float(np.clip(x * k, CUT_MIN, CUT_MAX)) if x >= CUT_MIN else x for x in c] for c in cuts]
-
-
 ROT_MAX = 2                         # v0.16.84 회전 줌 전환 최대 횟수(한 영상) · v0.16.91 사각 파동도 같은 수
 FADE_IN_SEC, FADE_OUT_SEC = 1.0, 1.5   # v0.16.91 첫 컷 검정에서 · 마지막 컷 검정으로(영상 끝)
-DIVE_MIN = 15.0                     # v0.16.88 LOG 켠 자동 편집 컷 최소 길이(전환 겹침 포함, 사용자) = dive_draw.MIN_CUT
+DIVE_MIN = 12.0                     # v0.17.1 15 → 12초(사용자 11/17): LOG 켠 자동 편집 컷 최소 길이(전환 겹침 포함)
+DIVE_FLOOR = 10.0                   # 마디로 환산해도 이 아래로는 안 감
+EXTRA_MAX = 3                       # v0.17.1 긴 소스: 더 잡는 컷까지 클립당 3컷(나뉘어 이미 더 많으면 그대로)
+
+
+def unit_len(bar: float, dive: bool) -> float:
+    """v0.17.1 컷 최소 단위(초): LOG 다이빙 = 12초에 가장 가까운 마디 수(10초 아래로는 안 감) · 그 밖 = 5초에 가장 가까운 마디 수.
+    마디를 모르면(음악 없음·리듬 흐림) 12초 · 5초."""
+    base = DIVE_MIN if dive else CUT_MIN
+    if bar <= 0:
+        return base
+    k = max(1, int(math.floor(base / bar + 0.5)))
+    while dive and k * bar < DIVE_FLOOR - 1e-6:
+        k += 1
+    return k * bar
 
 
 def dive_src(project, src) -> bool:
@@ -253,30 +313,61 @@ def dive_src(project, src) -> bool:
     return dive_draw.match(project.dives, src, src.frames / float(src.fps) / 2, project.off_of(src)) is not None
 
 
-def dive_lens(lens: list, dur: float) -> list:
-    """수심 그래프 컷: 같은 시간을 15초 넘는 컷으로 다시 나눔(개수 줄임). 원본이 15초보다 짧으면 통째로."""
-    if not lens:
-        return lens
-    tot = sum(lens)
-    if min(lens) >= DIVE_MIN:
-        return lens
-    if dur <= DIVE_MIN:
-        return [dur]
-    k = max(1, int(max(tot, DIVE_MIN) // DIVE_MIN))
-    return [min(dur, max(DIVE_MIN, tot / k))] * k
+def long_extra(picks: list[dict], durs: list[float], cuts: list[list[float]], mins: list[float]) -> tuple[list[int], list]:
+    """v0.17.1 아주 긴 소스(사용자 11/18): 쓰는 클립 평균 길이의 2배 이상 = 컷 하나 더, 3배 이상 = 둘 더(클립당 EXTRA_MAX 컷까지),
+    한 컷을 길게가 아니라 최소 단위 길이 컷을 더. 더 잡은 컷의 하이라이트 점수가 전체 컷 점수의 중간값보다 낮으면 뺌.
+    점수 = window_q(클립 안에서 고른 구간이 그 클립 평균보다 얼마나 좋은가 — 클립끼리 견줄 수 있는 값).
+    → (소스마다 꼭 넣을 '더 넣는 컷' 수(allot extra — 지금 컷 수 − 1 + 남긴 것), 로그용 [(이름, 길이, 후보 점수들, 중간값, 남긴 수)])."""
+    n = len(picks)
+    live = [d for d, c in zip(durs, cuts) if c]
+    out, note = [0] * n, []
+    if len(live) < 2:
+        return out, note
+    avg = float(np.mean(live))
+    base_q = []
+    for p, c, m in zip(picks, cuts, mins):
+        sc = p.get("score")
+        if c and sc is not None and len(sc):
+            base_q += [window_q(sc, st, m) for st in ranked_windows(sc, m, len(c))]
+    med = float(np.median(base_q)) if base_q else None
+    for i, (p, d, c, m) in enumerate(zip(picks, durs, cuts, mins)):
+        if not c or d < 2 * avg:
+            continue
+        add = min(2 if d >= 3 * avg else 1, EXTRA_MAX - len(c), int((d - 0.2) // max(m, 0.1)) - len(c))
+        if add <= 0:
+            continue
+        sc = p.get("score")
+        if sc is None or med is None or not len(sc):
+            keep, qs = add, []
+        else:
+            qs = [window_q(sc, st, m) for st in ranked_windows(sc, m, len(c) + add)[len(c):]]
+            keep = sum(1 for q in qs if q >= med)
+        out[i] = len(c) - 1 + keep if keep else 0
+        note.append((display_name(p["src"].path), round(d, 1), [round(q, 2) for q in qs], None if med is None else round(med, 2), keep))
+    return out, note
 
 
 def build(project, picks: list[dict], minutes: int, seed: int = 0, titles: bool = True, cut_max: list | None = None,
-          date_mode: str = "clip", first_fade: bool = True) -> dict:
+          date_mode: str = "clip", first_fade: bool = True, total: float | None = None, bars: list | None = None) -> dict:
     """picks = [{"src": Source, "scene": str, "score": ndarray, "surface": bool 배열(칸마다 물 밖)}] (촬영순).
     date_mode(v0.16.91 날짜 바): 'clip' = 원본 클립마다(그 클립 첫 컷) · 'gap' = 첫 컷 + 마지막으로 보인 것보다 1시간 넘게 뒤 클립만(전부 자동).
-    → {"segs": [Segment], "titles": [dict], "scenes": {컷 id: scene | 'surface'}}"""
-    total = float(minutes) * 60.0
+    v0.17.1: total = 본문 길이(초, 전환 겹침 뺀 결과 — 주면 minutes 대신) · bars = 소스마다 그 자리 곡의 한 마디(초, 모르면 0)
+    → 컷 최소 단위(unit_len). LOG 다이빙 최소 길이는 길이 맞추기 **안에서** 같이 풂(결과가 설정 길이를 안 넘음).
+    → {"segs": [Segment], "titles": [dict], "scenes": {컷 id: scene | 'surface'}, "extra": 긴 소스 로그}"""
+    total = float(total) if total is not None else float(minutes) * 60.0
     durs = [p["src"].frames / float(p["src"].fps) for p in picks]
-    cuts = allot(durs, total, cut_max)
-    n = sum(len(c) for c in cuts)
-    cuts = fit_total(cuts, total, max(0, n - 1))
-    cuts = [dive_lens(c, d) if c and dive_src(project, p["src"]) else c for c, d, p in zip(cuts, durs, picks)]
+    mins = [unit_len(float(b or 0.0), dive_src(project, p["src"])) for b, p in zip(bars or [0.0] * len(picks), picks)]
+
+    def run(extra):
+        cuts = allot(durs, total, cut_max, mins, extra)
+        for _ in range(2):                              # 전환 겹침(경계마다 0.5초)만큼 더 → 결과 길이 = total
+            n = sum(len(c) for c in cuts)
+            cuts = allot(durs, total + max(0, n - 1) * TRANS_SEC, cut_max, mins, extra)
+        return cuts
+    cuts = run(None)
+    extra, extra_note = long_extra(picks, durs, cuts, mins)
+    if any(extra):
+        cuts = run(extra)
     rnd = random.Random(seed)
     # v0.16.91 컷 사이 = 검정·흰색 페이드 안 씀(첫 컷 시작·마지막 컷 끝만, 사용자) · 회전 줌·사각 파동 = 각각 한 영상 2번까지, 연달아 안 씀
     kinds = [k for k, _ in TRANSITIONS if k not in ("none", "fadeblack", "fadewhite")]
@@ -353,7 +444,7 @@ def build(project, picks: list[dict], minutes: int, seed: int = 0, titles: bool 
                 last_shown = when
             else:
                 tts += title_pair(display_name(s.path), t0, wh)
-    return {"segs": segs, "titles": tts, "scenes": scene_of, "end_fade": FADE_OUT_SEC}
+    return {"segs": segs, "titles": tts, "scenes": scene_of, "end_fade": FADE_OUT_SEC, "extra": extra_note}
 
 
 TITLE_SIZE = 52
@@ -558,7 +649,7 @@ def snap_to_bars(project, music_info: dict, tol_bar: float = 0.5) -> int:
         fps = float(s.fps)
         cur = (g.fout - g.fin) / fps
         want = float(np.clip(cur + best, CUT_MIN, CUT_MAX))
-        if want < DIVE_MIN <= cur and dive_src(p, s):     # v0.16.84 수심 그래프 컷 = 15초 아래로 줄이지 않음
+        if want < DIVE_MIN <= cur and dive_src(p, s):     # v0.16.84 수심 그래프 컷 = 최소(12초) 아래로 줄이지 않음
             continue
         fout = min(s.frames, g.fin + int(round(want * fps)))
         if fout == g.fout:
@@ -623,9 +714,6 @@ def beat_lock(project, music_info: dict) -> dict:
         s = p.source(g.src)
         fps = float(s.fps)
         cur = (g.fout - g.fin) / fps
-        lo = DIVE_MIN if dive_src(p, s) else CUT_MIN
-        lo = min(lo, cur)
-        hi = max(cur, min(CUT_MAX, s.frames / fps))
         bars, beats, per = [], [], 0.0
         for m in p.music:
             inf = music_info.get(m["path"])
@@ -634,6 +722,15 @@ def beat_lock(project, music_info: dict) -> dict:
             bars += beats_on_timeline(m, inf, bars=True)
             beats += beats_on_timeline(m, inf)
             per = max(per, bar_len(inf) or float(np.median(np.diff(inf["bars"]))))
+        lo = min(unit_len(per, dive_src(p, s)), cur)     # v0.17.1 최소 단위 = 12초(LOG)·5초에 가장 가까운 마디 수
+        # v0.17.1 같은 소스의 앞뒤 컷과 원본에서 안 겹치게(사용자 로그 11/17: 0164 두 컷 0.6초 겹침 — 늘린 아웃이 다음 컷 인을 넘음)
+        nx = p.segments[i]
+        pv = p.segments[i - 2] if i >= 2 else None
+        cap_hi = nx.fin if (nx.src == g.src and nx.fin >= g.fin) else s.frames
+        cap_lo = pv.fout if (pv is not None and pv.src == g.src and pv.fout <= g.fin) else 0
+        room = (cap_hi - cap_lo) / fps
+        hi = max(cur, min(CUT_MAX, s.frames / fps))
+        hi = min(hi, room) if room >= cur - 1e-6 else cur
         best, kind = None, ""
         # v0.16.96 목표 시각(Tw)에 가장 가까운 것 · 너무 먼 것(마디 2개 넘게 = 곡 도입부처럼 마디가 안 잡힌 곳)은 안 씀
         for pts, k, far in ((bars, "bar", 2.0 * per), (beats, "beat", 0.5 * per)):
@@ -651,12 +748,71 @@ def beat_lock(project, music_info: dict) -> dict:
             continue
         anc = follow_anchors(p)
         fout = g.fin + nfr
-        if fout > s.frames:                              # 원본 끝 → 컷인을 앞으로
-            g.fin, g.fout = max(0, s.frames - nfr), s.frames
+        if fout > cap_hi:                                # 원본 끝(또는 같은 소스 다음 컷) → 컷인을 앞으로
+            g.fin, g.fout = max(cap_lo, cap_hi - nfr), cap_hi
         else:
             g.fout = fout
         follow_apply(p, anc)
     return out
+
+
+def cut_bounds(project, scenes: dict | None = None) -> list[tuple[float, int]]:
+    """v0.17.1 컷 경계(전환 가운데) → [(시각, 장면 바뀜 등급)] — 0 여행 바뀜(7일+) · 1 날짜 바뀜 · 2 물 밖 컷이 시작·끝 · 3 그 밖.
+    곡이 넘어갈 자리를 고를 때 씀(music.handover)."""
+    from .project import cut_spans
+    p = project
+    spans = cut_spans(p)
+    seg_of = {g.id: g for g in p.segments}
+    scenes = scenes or {}
+    out, prev_when, prev_sf = [], None, None
+    for i, (cid, t, _ln) in enumerate(spans):
+        g = seg_of[cid]
+        when = cut_when(p.source(g.src), g)
+        sf = scenes.get(cid) == "surface"
+        if i > 0:
+            d = float((g.trans or {}).get("dur", 0) or 0) if g.trans else 0.0
+            rank = 3
+            if when is not None and prev_when is not None:
+                if when - prev_when >= TRIP_GAP:
+                    rank = 0
+                elif _ymd(when).date() != _ymd(prev_when).date():
+                    rank = 1
+            if rank == 3 and prev_sf is not None and sf != prev_sf:
+                rank = 2
+            out.append((t + d / 2, rank))
+        prev_when = when if when is not None else prev_when
+        prev_sf = sf
+    return out
+
+
+def end_at(project, target: float) -> float:
+    """v0.17.1 마지막 컷 길이를 고쳐 영상 끝(끝 화면 앞)을 target 초에: 아웃을 늘리거나 줄임, 원본 끝에 막히면 컷인을 앞으로.
+    컷 최소 5초(원래 더 짧으면 그대로) · 원본이 모자라면 원본 길이에서 끝. 따라감 항목(글자·끝 화면)은 같이 움직임. → 실제 끝(초)."""
+    from .project import cut_spans, follow_anchors, follow_apply
+    p = project
+    spans = cut_spans(p)
+    if not spans:
+        return 0.0
+    vend = max(t + ln for _c, t, ln in spans)
+    g = p.segments[-1]
+    s = p.source(g.src)
+    if s is None or not s.frames or abs(target - vend) < 0.5 / float(s.fps):
+        return vend
+    fps = float(s.fps)
+    cur = (g.fout - g.fin) / fps
+    pv = p.segments[-2] if len(p.segments) >= 2 else None
+    cap_lo = pv.fout if (pv is not None and pv.src == g.src and pv.fout <= g.fin) else 0
+    want = float(np.clip(cur + (target - vend), min(cur, CUT_MIN), (s.frames - cap_lo) / fps))
+    nfr = max(1, int(round(want * fps)))
+    if nfr == g.fout - g.fin:
+        return vend
+    anc = follow_anchors(p)
+    if g.fin + nfr > s.frames:
+        g.fin, g.fout = max(cap_lo, s.frames - nfr), s.frames
+    else:
+        g.fout = g.fin + nfr
+    follow_apply(p, anc)
+    return max(t + ln for _c, t, ln in cut_spans(p))
 
 
 # ------------------------------------------------------------------ v0.16.92 시작·끝 화면(자동 편집, 사용자 11/14 16:14)
@@ -667,8 +823,8 @@ START_SEC = 5.0                     # v0.16.95 6 → 5초(사용자 11/15): 글�
 START_DARK = 2.0                    # 시작 화면 끝 2초 = 흰 화면·글자 같이 검게
 START_PLACE, START_PERIOD = 160, 80  # v0.16.96 지명 · 기간 글자(1080 기준, 사용자 11/16: 카톡 재생 버튼 너머로도 읽히게)
 START_PERIOD_CY = 0.80              # 기간 = 화면 높이 80%(재생 버튼·길이 표시에 안 가림) · 지명 = 가운데 그대로
-END_TAG = "See You Underwater"      # v0.16.96 끝 화면 맨 아래 한 줄(직접 쓴 문구 없을 때, LOG 있든 없든 · 'DTME' 줄 뺌)
-END_TAG_COLOR, END_TAG_SIZE, END_TAG_CY = "#4FB3E8", 84, 0.88      # v0.16.97 28 → 84(3배, 사용자 11/17) · 높이 88%
+NO_PLACE = "DTME"                   # v0.17.1 지명이 없으면(기록 없음 + 지명 칸 빈칸) 시작·끝 화면 지명 자리에 이 글자(사용자 11/17)
+END_DIVE, END_LINE = 80, 64         # v0.17.1 끝 화면 가운데 줄: 다이빙 요약 80 · 지명·기간 64(예전 52·36·36) · 줄이 하나뿐이면 80
 PLACE_MIN, PLACE_LINES = 100, 3     # v0.16.97 지명이 한 줄에 이 크기 아래로 줄면 줄바꿈(구분 기호에서, 3줄까지) · 기간 = 지명의 절반 크기
 CARD_FIT = 0.85                     # 글자 줄 폭 = 화면 폭의 85% 넘으면 줄임
 WHITE_SEC = 1.0                     # 끝: 마지막 컷 → 흰색(1초)
@@ -782,19 +938,12 @@ def start_card(place: str, period: str, lead: float = START_SEC, out_wh: tuple[i
     return out
 
 
-def end_card(video_end: float, lines: list[tuple[str, int, bool]], out_wh: tuple[int, int] = (1920, 1080),
-             tag: bool = False) -> list[dict]:
+def end_card(video_end: float, lines: list[tuple[str, int, bool]], out_wh: tuple[int, int] = (1920, 1080)) -> list[dict]:
     """끝 화면: [흰 사각형(영상 끝 1초 전부터 페이드 인, 끝까지), 글자…(+2초부터 1초 디졸브)] · 페이드 아웃 없음.
-    tag = 맨 아래 하늘색 'See You Underwater' 한 줄(가운데 글자와 같이 디졸브 인)."""
+    (v0.17.1 맨 아래 'See You Underwater' 한 줄 없앰 — 사용자 11/17.)"""
     t0, t1 = video_end + END_TEXT_AT, video_end + END_SEC
-    out = [_white(video_end - WHITE_SEC, video_end + END_SEC, "end", WHITE_SEC, "fade", "cut")] + \
+    return [_white(video_end - WHITE_SEC, video_end + END_SEC, "end", WHITE_SEC, "fade", "cut")] + \
         card_texts(fit_lines(lines, out_wh), t0, t1, "end", END_TEXT_FADE, "fade", "cut", out_wh)
-    if tag:
-        (text, size, _b), = fit_lines([(END_TAG, END_TAG_SIZE, True)], out_wh)
-        tx = _card_text(text, size, END_TAG_CY, t0, t1, "end", END_TEXT_FADE, "fade", "cut")
-        tx.update(color=END_TAG_COLOR, tag=True)
-        out.append(tx)
-    return out
 
 
 def _ymd(t: float):
@@ -937,10 +1086,10 @@ def dive_line(dives: list) -> str:
 
 def end_lines(log: bool, dives: list, place: str, period: str, text: str = "") -> list[tuple[str, int, bool]]:
     """끝 화면 가운데 줄: 직접 쓴 문구(줄바꿈 = 줄) · LOG = 다이빙 요약 / 지명 / 기간(3줄) · LOG 없음 = 지명 / 기간.
-    (v0.16.96 'See You Underwater' = 맨 아래 따로 → end_card(tag=True), 직접 쓴 문구가 있으면 없음.)"""
+    v0.17.1 크기 = 다이빙 요약 80 · 지명 64 · 기간 64, 줄이 하나뿐이면 80(사용자 11/17 — 숫자는 PC 에서 보고 조정)."""
     if text.strip():
         import re as _re
         ls = [x.strip() for x in _re.split(r"\n| / ", text.strip()) if x.strip()]     # 한 줄 칸 = ' / ' 가 줄바꿈
         return [(ls[0], 64, True)] + [(x, 40, True) for x in ls[1:]]
-    top = [(dive_line(dives), 52, True)] if log and dives else []
-    return top + [(x, 36, True) for x in (place, period) if x]
+    ls = ([(dive_line(dives), END_DIVE, True)] if log and dives else []) + [(x, END_LINE, True) for x in (place, period) if x]
+    return [(ls[0][0], END_DIVE, True)] if len(ls) == 1 else ls

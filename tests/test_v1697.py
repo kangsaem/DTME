@@ -41,14 +41,12 @@ one = [x for x in A.start_card("보홀주, 필리핀", "2026.10.25 ~ 10.27") if 
 assert [(x["size"], x["cy"]) for x in one] == [(160, 0.5), (80, 0.8)]
 
 # ---------------------------------------------------------------- 2) 끝 문구 3배 · 세로 줄 간격
-assert (A.END_TAG_SIZE, A.END_TAG_CY) == (84, 0.88)
 ls = [("14 DIVES · MAX 35.7m · 9h 20m", 52, True), (LONG, 36, True), ("2025.10.20 ~ 2026.03.21", 36, True)]
-eh = [x for x in A.end_card(100.0, ls, (1920, 1080), tag=True) if x["kind"] == "text"]
-ev = [x for x in A.end_card(100.0, ls, (1080, 1920), tag=True) if x["kind"] == "text"]
-assert eh[-1]["size"] == 84 and ev[-1]["size"] <= 84 and eh[-1]["cy"] == ev[-1]["cy"] == 0.88
+eh = [x for x in A.end_card(100.0, ls, (1920, 1080)) if x["kind"] == "text"]      # v0.17.1 맨 아래 문구(84) 없앰
+ev = [x for x in A.end_card(100.0, ls, (1080, 1920)) if x["kind"] == "text"]
+assert len(eh) == len(ev) == 3
 gap_h, gap_v = eh[1]["cy"] - eh[0]["cy"], ev[1]["cy"] - ev[0]["cy"]
 assert gap_v < gap_h, (gap_h, gap_v)                       # 세로 = 화면이 길어 비율로는 줄 간격이 더 좁음(예전 = 가로와 같은 비율 → 벌어짐)
-assert max(x["cy"] for x in eh[:-1]) + 0.05 < 0.88 - 84 * 0.7 / 1080, "가운데 줄과 아래 줄이 겹치지 않음"
 assert not hasattr(A, "TYPE_DELAY") and "typing" not in A.card_texts.__code__.co_varnames
 
 # ---------------------------------------------------------------- 3) LOG 시각 맞춤 = 클립마다

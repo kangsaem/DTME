@@ -3173,6 +3173,11 @@ class EditTab(QWidget):
             self.state.add_default_music()
         use_builtin = not user_auds or st.get("mix_default")
         auds = [a for a in p.audios if Path(a["path"]).exists() and (use_builtin or not a.get("builtin"))] if st.get("music") else []
+        # v0.17.1 전체 길이 [곡에 맞춤] = 올린 곡이 1~2개일 때만(기본 음악은 안 섞음) · 아니면 직접 지정
+        up_ok = [a for a in user_auds if Path(a["path"]).exists()]
+        song_mode = bool(st.get("music")) and st.get("len_mode") == "song" and 1 <= len(up_ok) <= 2
+        if song_mode:
+            auds = up_ok
         need_auto = [s for s in srcs if st.get("grade") and not (s.auto or {}).get("preset") and is_plain(s)]
         bases = {}
         for s in need_auto:
@@ -3187,6 +3192,8 @@ class EditTab(QWidget):
         if not st.get("full"):
             dlg.rejected.connect(lambda: solo.leave(dlg))
         n_steps = len(need_auto) + len(srcs) + (1 if auds else 0)
+        luts = {s.id: p.grade_for_source(s.id, off=False).get("lut", "") for s in srcs}      # v0.17.1 화면 읽기 = 프록시와 같은 색
+        scan_log: list[str] = []
 
         def work(prog, cancel):
             import numpy as np
@@ -3217,7 +3224,9 @@ class EditTab(QWidget):
                 scene = auto.normalize_key((res.get(s.id) or {}).get("preset", "") or (s.auto or {}).get("preset", ""))
                 sf = None
                 try:
-                    fr = autoedit.scan(s, cancel)
+                    t_s = _tm.monotonic()
+                    fr, how = autoedit.scan_src(s, cancel, luts.get(s.id, ""))
+                    scan_log.append(f"{Path(s.path).name} {how} {_tm.monotonic() - t_s:.1f}초")
                     fe = autoedit.features(fr)
                     sc = autoedit.scores(fe, scene)
                     qual = {"contrast": float(np.median(fe["contrast"])), "motion": float(np.median(fe["motion"]))}
@@ -3234,6 +3243,7 @@ class EditTab(QWidget):
             # v0.16.97 느린 곳 측정(로그): 단계별 걸린 시간
             ff.log_info(f"자동 편집 시간(준비): AUTO {len(need_auto)}개 {t_auto:.1f}초 · 화면 읽기 {len(srcs)}개 {t_scan:.1f}초 · "
                         f"음악 분석 {len(auds)}곡 {lap():.1f}초")
+            ff.log_info("화면 읽기: " + " · ".join(scan_log))      # v0.17.1 클립마다 무엇으로(프록시/LRF/원본) 몇 초
             return res, picks, infos, (set(cards_on) if picks else set())
         # v0.16.92 시작·끝 화면 = 흰 화면 + 글자(스틸 없음) · 켬 = 'auto'(예전 'pick' 도 켬)
         cards_on = {k for k in ("start", "end") if st.get(k, "none") in ("auto", "pick", "on")}
@@ -3266,41 +3276,58 @@ class EditTab(QWidget):
             if p.dives:                                      # v0.16.84 수심 그래프 체크 = 프로젝트 설정(컷 최소 10초)
                 p.dive_on = bool(st.get("dive"))
             self.state.auto_dive_off()                     # v0.16.91 시간대 차이(LOG 시각 0일 때만)
-            picks, dropped = autoedit.trim_picks(p, picks, st["minutes"])     # v0.16.91 클립이 너무 많음 = 흐림·흔들림 먼저 뺌
             has_start = "start" in cards                                 # v0.16.91 시작·끝 화면
             p.lead = autoedit.START_SEC if has_start else 0.0
+            xf = float(p.mix.get("xfade", 2.0))
+            # v0.17.1 전체 길이: 직접 지정(초) = 시작(5초)·끝(8초) 화면 포함 = 파일 전체 길이 / 곡에 맞춤 = 올린 곡(1~2개)을 이은 길이
+            #   (예전 st["minutes"] = 본문 길이 — 그 값만 온 경우 그대로)
+            if song_mode:
+                body = music.music_end(music.plan_whole(auds, infos, 1e9, xf)) - p.lead
+            elif st.get("seconds"):
+                body = float(st["seconds"]) - p.lead - (autoedit.END_SEC if "end" in cards else 0.0)
+            else:
+                body = float(st.get("minutes", 3)) * 60.0
+            body = max(autoedit.CUT_MIN, body)
+            picks, dropped = autoedit.trim_picks(p, picks, 0, total=body)     # v0.16.91 클립이 너무 많음 = 흐림·흔들림 먼저 뺌
             dm = "gap" if st.get("full") else "clip"
-            plan = autoedit.build(p, picks, st["minutes"], seed=seed, titles=st.get("title", True), date_mode=dm, first_fade=True)
+            plan = autoedit.build(p, picks, 0, seed=seed, titles=st.get("title", True), date_mode=dm, first_fade=True, total=body)
             p.segments = plan["segs"]
+
+            def tl_end():
+                return max((t + ln for _c, t, ln in cut_spans(p)), default=0.0)
 
             def music_for(plan):
                 runs = autoedit.music_runs(cut_spans(p), plan["scenes"])
                 if runs and has_start:                      # 시작 화면 동안에도 음악(끝 화면 = 무음, v0.16.96)
                     runs[0] = (0.0,) + tuple(runs[0][1:])
                 vm = sum((0.75 if g == "grand" else 0.25 if g == "calm" else 0.5) * (b - a) for a, b, g in runs) / max(1e-6, sum(b - a for a, b, _g in runs))
-                vend = max((t + ln for _c, t, ln in cut_spans(p)), default=0.0)
-                xf = float(p.mix.get("xfade", 2.0))
-                # v0.16.96 한 곡 = 처음부터 끝까지 한 번 · 다 쓰고 30초 넘게 남으면 디졸브로 다시(사용자 11/16~17)
-                items = music.plan_whole(auds, infos, vend, xf, runs=runs, targets=autoedit.RUN_TARGET, video=vm)
-                return music.fill_tail(items, auds, infos, vend, xf)
+                # v0.16.96 한 곡 = 처음부터 끝까지 한 번 · v0.17.1 곡에 맞춤 = 올린 곡 전부
+                return music.plan_whole(auds, infos, 1e9 if song_mode else tl_end(), xf, runs=runs, targets=autoedit.RUN_TARGET, video=vm)
             if auds:                                         # v0.16.73 컷 길이 = 그 자리 곡의 마디 단위 → 다시 나눔
                 items = music_for(plan)
                 starts = {c: t for c, t, _l in cut_spans(p)}
-                cmax = []
+                cmax, bars = [], []
                 for pk in picks:
                     t = next((starts[g.id] for g in plan["segs"] if g.src == pk["src"].id), None)
                     x = next((x for x in items if t is not None and x["t0"] <= t < x["t0"] + x["len"]), items[0] if items else None)
                     cmax.append(autoedit.cut_len_for(infos.get(x["path"]) if x else None))
-                plan = autoedit.build(p, picks, st["minutes"], seed=seed, titles=st.get("title", True), cut_max=cmax, date_mode=dm,
-                                     first_fade=True)       # v0.16.92 시작 화면 뒤에도 첫 컷 = 검정에서 1초
+                    bars.append(autoedit.bar_len(infos.get(x["path"])) if x else 0.0)      # v0.17.1 컷 최소 단위 = 마디 수
+                plan = autoedit.build(p, picks, 0, seed=seed, titles=st.get("title", True), cut_max=cmax, date_mode=dm,
+                                     first_fade=True, total=body, bars=bars)       # v0.16.92 시작 화면 뒤에도 첫 컷 = 검정에서 1초
                 p.segments = plan["segs"]
             p.titles = list(plan["titles"])                 # v0.16.92 자동 편집 = 타임라인 싹 지움(직접 놓은 글자·이미지·음악도)
             p.music = []
             p.end_fade = float(plan.get("end_fade", 0.0))
             snapped = 0
             beat_txt = ""
+            want_end = p.lead + body                         # 영상 끝(끝 화면 앞) 목표
+            autoedit.end_at(p, want_end)                     # 음악을 놓기 전에 한 번(사각 파동 전환 1초 등으로 조금 어긋난 것) → 곡 끝 = 영상 끝
             if auds:
-                items = music_for(plan)
+                vend = tl_end()
+                # v0.17.1 곡 넘어가는 자리 = 장면이 바뀌는 컷 경계 · 마지막 곡 = 끝이 영상 끝에 · 다 쓰고 15초 넘게 남으면 다시
+                items = music.handover(music_for(plan), infos, vend, xf, autoedit.cut_bounds(p, plan["scenes"]))
+                if not song_mode:
+                    items = music.fill_tail(items, auds, infos, vend, xf)
                 # 박자 맞추는 동안 음악 = 제자리(따라감 끔) → 컷 경계만 마디로 옮김. 끝나고 따라감 켬.
                 p.music = [{**new_music(x["path"], x["t0"], x["dur"]), "off": x["off"], "len": x["len"], "follow": False,
                             "gain": music.norm_gain(infos.get(x["path"])), "boost": 1.0} for x in items]
@@ -3315,12 +3342,18 @@ class EditTab(QWidget):
                     ff.log_info(f"자동 편집 박자우선: {bl}")
                 else:
                     snapped = autoedit.snap_to_bars(p, infos)
+                if song_mode:                                # 곡에 맞춤 = 마지막 컷이 곡 끝에서 끝남(영상이 모자라면 영상 길이에서)
+                    want_end = music.music_end(p.music)
+            got_end = autoedit.end_at(p, want_end)           # v0.17.1 마지막 컷만 길이를 고쳐 정한 시각에 끝냄
+            ff.log_info(f"자동 편집 길이: {'곡에 맞춤' if song_mode else '직접 지정'} · 본문 목표 {body:.1f}초 · 영상 끝 목표 {want_end:.1f} → "
+                        f"{got_end:.1f}초" + (f" · 긴 소스 {plan['extra']}" if plan.get("extra") else ""))
+            if auds:
                 spans_ = cut_spans(p)
                 vend = max((t + ln for _c, t, ln in spans_), default=0.0)
                 p.music = music.clip_end(p.music, vend)      # v0.16.96 음악 = 영상 끝까지(끝 화면 = 무음)
                 mend = music.music_end(p.music)
                 quiet = 0
-                if vend - mend > 0.5:                        # 곡이 모자란 뒤(30초 이하) = 음악 없이 원본 소리
+                if vend - mend > 0.5:                        # 곡이 모자란 뒤(15초 이하) = 음악 없이 원본 소리
                     seg_of = {g.id: g for g in p.segments}
                     for cid, t, ln in spans_:
                         if t + ln / 2 >= mend:
@@ -3394,7 +3427,7 @@ class EditTab(QWidget):
             if w is not None:
                 cs.append((w, w + ln))
         trips = autoedit.trips_of(cs)
-        place = st.get("place") or autoedit.trips_place(p.dives, trips)
+        place = st.get("place") or autoedit.trips_place(p.dives, trips) or autoedit.NO_PLACE     # v0.17.1 지명 없음 = 'DTME'
         period = autoedit.trips_period(trips)
         s0 = p.tl_source()                             # v0.17.0 많은 쪽 방향
         ow, oh = ff.out_size(p.out_of(s0)) if s0 is not None else (1920, 1080)
@@ -3404,8 +3437,7 @@ class EditTab(QWidget):
         if "end" in cards:
             vend = max(t + ln for _c, t, ln in spans)
             ds = autoedit.trips_dives(p.dives, trips) if st.get("dive") and p.dives else []
-            p.titles += autoedit.end_card(vend, autoedit.end_lines(bool(ds), ds, place, period, st.get("end_text", "")), wh,
-                                          tag=not st.get("end_text", "").strip())
+            p.titles += autoedit.end_card(vend, autoedit.end_lines(bool(ds), ds, place, period, st.get("end_text", "")), wh)
         p.end_fade = 0.0 if "end" in cards else max(float(p.end_fade or 0.0), autoedit.FADE_OUT_SEC)   # 끝 화면 = 페이드 없이 끝
         ff.log_info(f"시작·끝 화면: {sorted(cards)} · 지명 {place!r} · 기간 {period!r}")
 
