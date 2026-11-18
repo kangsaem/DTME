@@ -1,5 +1,6 @@
 """렌더 작업 창(v0.16.91 A안, 사용자 11/14): [렌더] 누르면 편집 창 숨김 · 재생·미리보기 멈춤 → 이 창만(작업 표시줄 DTME).
-항목마다 줄(이름 · 지금 단계 · 진행) + 전체 막대 · 남은 시간 · 저장폴더 · [취소] · [−]. 끝·취소 = 편집 창으로."""
+항목마다 줄(이름 · 지금 단계 + 가는 선 2px — v0.17.1 자동 창 작업 팝업과 같은 모양) + 전체 막대 한 줄 · 남은 시간 · 저장폴더 · [취소] · [−].
+끝·취소 = 편집 창으로."""
 from __future__ import annotations
 
 from PySide6.QtCore import QRectF, Qt
@@ -14,7 +15,10 @@ from .ui_render import DragMove, file_name, out_dir
 BG, FG, _N = STAGE["render"]
 
 
-class _Row(QWidget):
+class ItemRow(QWidget):
+    """렌더 파일 한 줄(v0.17.1, 사용자 11/17): 이름 · 상태 글자 + 아래 가는 선(2px) — 두꺼운 줄(26px 채움) 없앰. 자동 창 작업 팝업도 같은 줄."""
+    LINE = 2
+
     def __init__(self, name):
         super().__init__()
         self.name, self.v, self.text, self.done = name, 0.0, "대기", False
@@ -26,24 +30,28 @@ class _Row(QWidget):
 
     def paintEvent(self, _e):
         p = QPainter(self)
-        r = QRectF(self.rect()).adjusted(0, 1, 0, -1)
-        p.setPen(Qt.NoPen)
-        p.setBrush(QColor("#2e2e2e"))
-        p.drawRoundedRect(r, 3, 3)
-        if self.v > 0:
-            p.setBrush(QColor(BG))
-            p.drawRoundedRect(QRectF(r.left(), r.top(), r.width() * min(1.0, self.v), r.height()), 3, 3)
+        r = QRectF(self.rect())
+        tr = r.adjusted(2, 0, -2, -self.LINE - 3)
         f = p.font()
         f.setPixelSize(12)
         f.setBold(True)
         p.setFont(f)
-        p.setPen(QColor("white"))
-        p.drawText(r.adjusted(10, 0, -150, 0), Qt.AlignVCenter | Qt.AlignLeft, self.name)
+        p.setPen(QColor("#9a9a9a" if self.done else "#ffffff"))
+        p.drawText(tr.adjusted(0, 0, -110, 0), Qt.AlignVCenter | Qt.AlignLeft,
+                   p.fontMetrics().elidedText(self.name, Qt.ElideMiddle, int(tr.width() - 110)))
         f.setBold(False)
         p.setFont(f)
         p.setPen(QColor("#9a9a9a" if self.done else FG))
-        p.drawText(r.adjusted(10, 0, -10, 0), Qt.AlignVCenter | Qt.AlignRight, self.text)
+        p.drawText(tr, Qt.AlignVCenter | Qt.AlignRight, self.text)
+        p.setPen(Qt.NoPen)
+        y = r.bottom() - self.LINE - 1
+        p.fillRect(QRectF(0, y, r.width(), self.LINE), QColor("#333333"))
+        if self.v > 0:
+            p.fillRect(QRectF(0, y, r.width() * min(1.0, self.v), self.LINE), QColor("#6a6a6a" if self.done else FG))
         p.end()
+
+
+_Row = ItemRow
 
 
 class _Bar(QWidget):

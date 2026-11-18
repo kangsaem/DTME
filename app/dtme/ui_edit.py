@@ -1146,6 +1146,8 @@ class EditTab(QWidget):
         t_req = time.monotonic()
 
         def work():
+            if gen != self.pgen:                  # v0.17.1 이미 다른 화면을 요청함 = 안 만듦
+                return None
             t0 = time.monotonic()
             c = ff.cached_frame_preview(s, frame, pv)
             t1 = time.monotonic()
@@ -1155,7 +1157,7 @@ class EditTab(QWidget):
             return out, before
 
         def done(data, g=gen, fr=frame, t=tok):
-            if self._full_shown == g:             # 원본이 이미 나옴
+            if data is None or self._full_shown == g:      # 건너뜀 · 원본이 이미 나옴
                 return
             self._on_preview(g, fr, t, data, quick=True)
         job = jobs.Job(work)
@@ -1165,7 +1167,8 @@ class EditTab(QWidget):
 
     def _prefetch_range(self, s, frame):
         """멈춘 곳 앞뒤 1초 원본을 뒤에서 한 번에 디코딩(근처 프레임 보정 화면이 빨라짐). 미리보기보다 낮은 우선순위."""
-        job = jobs.Job(lambda: ff.prefetch_range(s, frame))
+        gen = self.pgen                      # v0.17.1 기다리는 사이 다른 화면을 요청함 = 안 읽음(컷을 빠르게 옮겨 누를 때 요청이 밀리던 것)
+        job = jobs.Job(lambda: ff.prefetch_range(s, frame) if gen == self.pgen else None)
         jobs.submit(jobs.PREVIEW_POOL, job, priority=-5)
 
     def _on_preview(self, gen, frame, tok, data, quick: bool = False):
@@ -1775,9 +1778,11 @@ class EditTab(QWidget):
         def work(prog, cancel):
             import time as _tm
             t0 = _tm.monotonic()
+            took = []
             for k, sp in enumerate(todo):
                 if cancel.is_set():
                     raise ff.Cancelled()
+                t1 = _tm.monotonic()
                 tmp = sp["out"].with_suffix(".part.mp4")
                 try:
                     ff.render_video(p, sp["pick"], str(tmp), lambda v, k=k: prog((k + v) / n), cancel, sp["orient"], False,
@@ -1789,7 +1794,9 @@ class EditTab(QWidget):
                     ff.log_error("편집 준비 전환", str(ex)[-300:])
                 cnt[0] = k + 1
                 prog((k + 1) / n)
-            ff.log_info(f"편집 준비: 전환 미리보기 {n}개 {_tm.monotonic() - t0:.1f}초")
+                # v0.17.1 어느 전환이 느린지(사용자 로그 11/17: 5개 중 2개가 2분씩 — 원인 미확인 → 종류·걸린 시간을 남김)
+                took.append(f"{(sp['pick'][-1].trans or {}).get('type', '-')} {_tm.monotonic() - t1:.0f}초")
+            ff.log_info(f"편집 준비: 전환 미리보기 {n}개 {_tm.monotonic() - t0:.1f}초 — " + " · ".join(took))
             return n
         job = jobs.Job(work, with_progress=True)
         self._prep_job = job

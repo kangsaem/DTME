@@ -90,7 +90,7 @@ d.rows[2].checked = True; d._row_changed()
 for k in ("grade", "edit", "music", "render"):
     d.stages[k].set_on(True)
 d.length.setValue(1); d.folder.setText(OUT); d.save_on.setChecked(True); d.quality.set_value("normal"); d._sync()
-assert d.stages["render"].summary.startswith("1080 · 보통"), d.stages["render"].summary
+assert d.stages["render"].summary.startswith("타임라인 1편 · 1:00 · 1080 · 보통"), d.stages["render"].summary   # v0.17.1 무엇을 렌더하나 표시
 seen = {"mw": False, "steps": [], "rw": False}
 _show = d._show
 d._show = lambda key, v, text="": (seen["steps"].append(key) if not seen["steps"] or seen["steps"][-1] != key else None,
@@ -98,6 +98,7 @@ d._show = lambda key, v, text="": (seen["steps"].append(key) if not seen["steps"
 os.environ["DTME_DONE_CHOICE"] = "close"
 d.b_start.click()
 assert d.running and d.run_w.isVisible() and not d.rw.isVisible() and not d.b_start.isVisible() and d.b_min.isVisible()
+assert not d.lw.isVisible() and d.width() == d.SMALL_W and d.height() < 260, (d.width(), d.height())     # v0.17.1 작업 중 = 작은 팝업
 assert d.step_bar.steps == ["grade", "edit", "music", "render"], d.step_bar.steps
 ok = wait(600, lambda: d.outcome == "close")
 files = sorted(os.listdir(OUT))
@@ -113,13 +114,13 @@ assert not getattr(w, "_rwin", None), "렌더 작업 창은 안 뜸(자동 창 �
 it = p.render_items[-1]
 assert it.orientation == "horizontal", it.orientation        # 가로 3 · 세로 1 → 많은 쪽 = 가로
 cfg = get_setting("autowin", {})
-assert cfg["on"] == {"grade": True, "edit": True, "music": True, "render": True} and cfg["minutes"] == 1, cfg
+assert cfg["on"] == {"grade": True, "edit": True, "music": True, "render": True} and cfg["len_sec"] == 60 and cfg["len_mode"] == "manual", cfg
 import json  # noqa: E402
 mp4 = os.path.join(OUT, [f for f in files if f.endswith(".mp4")][0])
 info = json.loads(subprocess.run([paths.ffprobe(), "-v", "error", "-show_entries", "stream=codec_type,width,height:format=duration",
                                   "-of", "json", mp4], capture_output=True, text=True).stdout)
 vs = next(x for x in info["streams"] if x["codec_type"] == "video")
-assert (vs["width"], vs["height"]) == (1920, 1080) and float(info["format"]["duration"]) > 20, info
+assert (vs["width"], vs["height"]) == (1920, 1080) and 20 < float(info["format"]["duration"]) <= 60.6, info   # v0.17.1 직접 지정 1:00 = 파일 길이 상한(영상 32초뿐 = 영상 길이에서 끝)
 print("결과 영상:", vs["width"], "x", vs["height"], round(float(info["format"]["duration"]), 1), "초")
 
 # ---------------------------------------------------------------- 4) 렌더 끔 = 편집 준비 → 편집 화면(편집 창에서 다시 열기 = 설정 기억)
@@ -149,17 +150,17 @@ assert steps2 == ["edit", "music", "prep"] and ncut >= 2 and have == ncut
 cfg = get_setting("autowin", {})
 assert cfg["on"]["render"] is False and cfg["on"]["grade"] is False
 
-# ---------------------------------------------------------------- 5) 편집 끔 + 음악만(타임라인 있음) · 아무 단계도 안 켬 = 그냥 편집 화면
-st.project.music = []
+# ---------------------------------------------------------------- 5) v0.17.1 편집 끔 = 음악 단계 못 켬(타임라인이 있어도) · 아무 단계도 안 켬 = 그냥 편집 화면
 d3 = e.make_auto_window(from_edit=True); d3.show(); wait(0.2)
+assert d3.width() == d3.BIG[0], "다시 열면 설정 화면 크기"
 for k in ("grade", "edit", "render"):
     d3.stages[k].set_on(False)
 d3.stages["music"].set_on(True); d3._sync()
-assert d3.stages["music"].can and d3.b_start.isEnabled()
-d3.b_start.click()
-assert d3.step_bar.steps == ["music", "prep"], d3.step_bar.steps
-assert wait(300, lambda: d3.outcome == "edit"), d3._step
-assert st.project.music, "음악만"
+assert d3.has_timeline() and not d3.stages["music"].can and not d3.stages["music"].active()
+assert d3.stages["music"].summary == "편집을 켜야 함"
+d3.stages["render"].set_on(True); d3._sync()
+assert d3.stages["render"].summary.startswith("클립마다 4개 · 0:32"), d3.stages["render"].summary      # 편집 끔 + 렌더 = 소스마다
+d3.reject()
 d4 = e.make_auto_window(from_edit=True); d4.show(); wait(0.2)
 for k in ("grade", "edit", "music", "render"):
     d4.stages[k].set_on(False)
@@ -171,7 +172,7 @@ d5 = e.make_auto_window(from_edit=True); d5.show(); wait(0.2)
 d5.stages["edit"].set_on(False); d5._sync()
 assert d5.stages["music"].summary == "편집을 켜야 함" and not d5.stages["music"].active()
 d5.reject()
-print("음악만 · 단계 없음 = 편집 화면 · '편집을 켜야 함'")
+print("편집 끔 = 음악 못 켬 · 단계 없음 = 편집 화면 · '편집을 켜야 함'")
 
 # ---------------------------------------------------------------- 6) 편집 끔 + 보정 + 렌더 = 클립마다 따로(예전 [보정+렌더])
 for f in glob.glob(os.path.join(OUT, "*")):
@@ -183,7 +184,7 @@ assert wait(60, lambda: len(st.project.sources) == 2 and all(s.frames for s in s
 for k, on in (("grade", True), ("edit", False), ("music", False), ("render", True)):
     d6.stages[k].set_on(on)
 d6.folder.setText(OUT); d6._sync()
-assert not d6.stages["music"].active()
+assert not d6.stages["music"].active() and d6.stages["render"].summary.startswith("클립마다 2개"), d6.stages["render"].summary
 d6.b_start.click()
 assert d6.step_bar.steps == ["grade", "render"] and d6._plan["per_clip"], (d6.step_bar.steps, d6._plan)
 assert wait(300, lambda: d6.outcome == "close"), (d6._step, d6.state_lab.text())

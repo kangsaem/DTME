@@ -5,6 +5,8 @@
 아래 = [취소][AUTO]. AUTO 전 = 파일 정보만(미리 분석 없음). AUTO 뒤 = 이 창 안에서 단계별 진행(막대 하나 · [취소] · [−]).
 렌더 켬 = 편집 창·프록시·미리보기 없이 끝까지 → 완료 팝업 [폴더 열기][편집 화면][닫기]. 렌더 끔 = 편집 준비(프록시·전환) 뒤 편집 화면.
 작업 자체(값 넣기·자동 편집·렌더)는 EditTab 의 함수를 부름.
+v0.17.1: 작업 중 = 목록·설정을 다 숨긴 작은 팝업(폭 640 — 단계 이름 + 막대 한 줄(새 색 앞 10px 그림자) + 왼쪽 아래 글자 + [취소]·[−],
+렌더 때만 파일 줄) · 전체 길이 = [곡에 맞춤 | 직접 지정(분:초)] · 편집 끔 = 음악 단계 못 켬, 렌더는 늘 소스마다 따로.
 """
 from __future__ import annotations
 
@@ -22,6 +24,7 @@ from .project import (ROT, ROT_BACK, VIDEO_EXT, RenderItem, Segment, auto_lut, c
                       get_setting, has_clip_grade, is_portrait, outputs_for, set_setting, short_name, source_out_h, source_vw)
 from .ui_auto import OUT_BTNS, Grip, PresetGrid, Seg, cached_samples, choice_args, grab_job, labeled, main_button
 from .ui_render import DragMove, Popup, file_name, open_file, out_dir, took_text, unique
+from .ui_renderwin import ItemRow
 
 ROW_ON = "#2b3a4a"            # 켠 줄 남색(사용자 11/17 시안)
 SUB = "#c4cad1"
@@ -49,6 +52,94 @@ def is_project_file(f: str) -> bool:
 def mmss(sec: float) -> str:
     sec = max(0.0, float(sec))
     return f"{int(sec // 60)}:{int(sec % 60):02d}"
+
+
+def parse_mmss(text: str) -> int | None:
+    """'1:30' · '90'(초) · '1.5'(분) → 초. 못 읽으면 None."""
+    t = (text or "").strip().replace("：", ":")
+    try:
+        if ":" in t:
+            m, sec = t.split(":", 1)
+            return int(m or 0) * 60 + int(float(sec or 0))
+        if "." in t:
+            return int(round(float(t) * 60))
+        return int(t) if t else None
+    except ValueError:
+        return None
+
+
+LEN_MIN, LEN_MAX = 20, 3600          # 직접 지정 길이(초) 범위 — 시작 5초 + 끝 8초 + 컷 하나는 들어가게
+
+
+class LengthBox(QWidget):
+    """v0.17.1 전체 길이(사용자 11/17 시안 ①): [곡에 맞춤 | 직접 지정] + 분:초 칸.
+    곡에 맞춤 = 올린 곡이 1~2개이고 음악 단계가 켜졌을 때만(아니면 흐림 → 직접 지정으로 동작, 고른 것은 기억).
+    직접 지정 = 시작·끝 화면까지 넣은 파일 전체 길이."""
+    changed = Signal()
+
+    def __init__(self, mode: str, sec: int, parent=None):
+        super().__init__(parent)
+        self.seg = Seg([("song", "곡에 맞춤"), ("manual", "직접 지정")], mode if mode in ("song", "manual") else "manual", 28)
+        self.edit = QLineEdit()
+        self.edit.setFixedSize(64, 28)
+        self.edit.setAlignment(Qt.AlignCenter)
+        self.sec = int(max(LEN_MIN, min(LEN_MAX, sec or 180)))
+        self.edit.setText(mmss(self.sec))
+        self.song_ok = False
+        self.user = False                 # 이 창에서 직접 골랐나(아니면 기본 규칙: 올린 곡 있으면 곡에 맞춤)
+        self.seg.changed.connect(self._picked)
+        self.edit.editingFinished.connect(self._typed)
+        h = QHBoxLayout(self)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(8)
+        h.addWidget(self.seg, 1)
+        h.addWidget(self.edit)
+        self._paint()
+
+    def _picked(self, _k):
+        self.user = True
+        self._paint()
+        self.changed.emit()
+
+    def _typed(self):
+        v = parse_mmss(self.edit.text())
+        if v is not None:
+            self.sec = int(max(LEN_MIN, min(LEN_MAX, v)))
+        self.edit.setText(mmss(self.sec))
+        self.changed.emit()
+
+    def _paint(self):
+        self.seg.btns["song"].setEnabled(self.song_ok)
+        self.edit.setEnabled(self.mode() == "manual")
+
+    def set_song_ok(self, ok: bool, prefer: bool = False):
+        """prefer = 직접 고른 적이 없으면 곡에 맞춤으로(올린 곡이 있을 때의 기본)."""
+        self.song_ok = bool(ok)
+        if ok and prefer and not self.user:
+            self.seg.set_value("song")
+        self._paint()
+
+    def picked(self) -> str:
+        return self.seg.value() or "manual"
+
+    def mode(self) -> str:
+        return "song" if (self.song_ok and self.picked() == "song") else "manual"
+
+    def seconds(self) -> int:
+        return self.sec
+
+    # 예전 '분' 슬라이드바와 같은 이름(시험·다른 코드): 분 단위로 넣고 읽기 = 직접 지정
+    def setValue(self, minutes: float):
+        self.sec = int(max(LEN_MIN, min(LEN_MAX, round(float(minutes) * 60))))
+        self.edit.setText(mmss(self.sec))
+        self.seg.set_value("manual")
+        self.user = True
+        self._paint()
+        self.changed.emit()
+
+    def value(self):
+        m = self.sec / 60.0
+        return int(m) if abs(m - int(m)) < 1e-9 else m
 
 
 class AutoRow:
@@ -279,6 +370,7 @@ class StageRow(QFrame):
 
 class StepBar(QWidget):
     """막대 하나: 켠 단계마다 그 단계 색으로 왼쪽부터 다시 차오름(앞 단계 색 = 꽉 찬 채로 아래에). 위 = 단계 이름(끝남 ✓)."""
+    SHADOW = 10
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -336,49 +428,23 @@ class StepBar(QWidget):
         bar(w, "#2a2a2a")
         if self.k > 0:
             bar(w, self.color(self.steps[self.k - 1]))
-        bar(int(w * self.v), self.color(key))
-        p.end()
-
-
-class ItemRow(QWidget):
-    """렌더 항목 한 줄(렌더 작업 창과 같은 모양)."""
-
-    def __init__(self, name):
-        super().__init__()
-        self.name, self.v, self.text, self.done = name, 0.0, "대기", False
-        self.setFixedHeight(26)
-
-    def set(self, v, text, done=False):
-        self.v, self.text, self.done = v, text, done
-        self.update()
-
-    def paintEvent(self, _e):
-        bg, fg, _n = SG.STAGE["render"]
-        p = QPainter(self)
-        r = QRectF(self.rect()).adjusted(0, 1, 0, -1)
-        p.setPen(Qt.NoPen)
-        p.setBrush(QColor("#2e2e2e"))
-        p.drawRoundedRect(r, 3, 3)
-        if self.v > 0:
-            p.setBrush(QColor(bg))
-            p.drawRoundedRect(QRectF(r.left(), r.top(), r.width() * min(1.0, self.v), r.height()), 3, 3)
-        f = p.font()
-        f.setPixelSize(12)
-        f.setBold(True)
-        p.setFont(f)
-        p.setPen(QColor("white"))
-        p.drawText(r.adjusted(10, 0, -110, 0), Qt.AlignVCenter | Qt.AlignLeft,
-                   p.fontMetrics().elidedText(self.name, Qt.ElideMiddle, int(r.width() - 120)))
-        f.setBold(False)
-        p.setFont(f)
-        p.setPen(QColor("#9a9a9a" if self.done else fg))
-        p.drawText(r.adjusted(10, 0, -10, 0), Qt.AlignVCenter | Qt.AlignRight, self.text)
+        x1 = int(w * self.v)
+        bar(x1, self.color(key))
+        if self.k > 0 and 0 < x1 < w:                    # v0.17.1 새 색 끝에서 오른쪽으로 10px 그림자(검정 150 → 0, 사용자 11/17)
+            from PySide6.QtGui import QLinearGradient
+            g = QLinearGradient(x1, 0, x1 + self.SHADOW, 0)
+            g.setColorAt(0.0, QColor(0, 0, 0, 150))
+            g.setColorAt(1.0, QColor(0, 0, 0, 0))
+            p.setBrush(g)
+            p.drawRect(QRectF(x1, y, min(self.SHADOW, w - x1), h))
         p.end()
 
 
 # ------------------------------------------------------------------ 자동 창
 class AutoWindow(DragMove, QDialog):
     """outcome: 'edit'(편집 화면으로) | 'close'(닫음 — 렌더 끝 [닫기]) | ''(취소)."""
+    BIG = (1040, 720)             # 설정 화면
+    SMALL_W = 640                 # 작업 팝업 폭(렌더 작업 창과 같음)
 
     def __init__(self, edit, parent=None, from_edit: bool = False):
         flags = (Qt.Dialog if from_edit else Qt.Window | Qt.WindowMinimizeButtonHint) | Qt.FramelessWindowHint
@@ -443,8 +509,11 @@ class AutoWindow(DragMove, QDialog):
         self.note.setVisible(False)
         lcol = QVBoxLayout()
         lcol.setSpacing(4)
+        lcol.setContentsMargins(0, 0, 0, 0)
         lcol.addWidget(self.list, 1)
         lcol.addWidget(self.note)
+        self.lw = QWidget()                                  # 왼쪽 묶음(작업 중 = 숨김)
+        self.lw.setLayout(lcol)
         # ---- 오른쪽 위: 음악 · 사진(넣었을 때만) · 요약
         self.music_box = QLabel("")
         self.music_box.setStyleSheet("QLabel{background:#1e1e1e; border:1px solid #333; border-radius:3px; padding:6px 8px; color:#d8d8d8;}")
@@ -483,22 +552,20 @@ class AutoWindow(DragMove, QDialog):
         self.run_lab.setWordWrap(True)
         self.rows_box = QVBoxLayout()
         self.rows_box.setSpacing(5)
+        self.run_lab.setVisible(False)                       # (v0.17.1 왼쪽 아래 글자 = state_lab 자리)
         runl = QVBoxLayout()
         runl.setContentsMargins(0, 0, 0, 0)
-        runl.setSpacing(10)
-        runl.addStretch(1)
+        runl.setSpacing(8)
         runl.addLayout(self.rows_box)
-        runl.addWidget(self.run_lab)
         runl.addWidget(self.step_bar)
         self.run_w = QWidget()
         self.run_w.setLayout(runl)
-        self.run_w.setFixedWidth(470)
         self.run_w.setVisible(False)
         mid = QHBoxLayout()
         mid.setSpacing(16)
-        mid.addLayout(lcol, 1)
+        mid.addWidget(self.lw, 1)
         mid.addWidget(self.rw)
-        mid.addWidget(self.run_w)
+        mid.addWidget(self.run_w, 1)
         # ---- 아래
         from . import __version__
         self.ver_lab = QLabel(f"DTME {__version__}")
@@ -526,7 +593,7 @@ class AutoWindow(DragMove, QDialog):
         lay.addLayout(top)
         lay.addLayout(mid, 1)
         lay.addLayout(bot)
-        self.resize(1040, 720)
+        self.resize(*self.BIG)
         op = cfg.get("open", "")
         if op in self.stages:
             self.stages[op].set_open(True)
@@ -604,14 +671,18 @@ class AutoWindow(DragMove, QDialog):
         return s
 
     def _edit_body(self, cfg):
-        self.length = self._slider(cfg.get("minutes", 3), 1, 10, "분")
-        self.length.valueChanged.connect(lambda _v: self._sync())
+        # v0.17.1 전체 길이 = [곡에 맞춤 | 직접 지정] + 분:초(시작·끝 화면 포함 = 파일 전체 길이). 예전 기억(분) = 그 분 수
+        self.length = LengthBox(cfg.get("len_mode", ""), int(cfg.get("len_sec") or float(cfg.get("minutes", 3)) * 60))
+        self.length.user = cfg.get("len_mode") in ("song", "manual")
+        self.length.changed.connect(self._sync)
         self.title_on = QCheckBox("날짜 바")
         self.title_on.setChecked(bool(cfg.get("title", True)))
         self.dive_on = QCheckBox("LOG 수심 그래프")
-        self.dive_on.setChecked(bool(cfg.get("dive", True)))
-        for cb in (self.title_on, self.dive_on):
-            cb.toggled.connect(lambda _v: self._sync())
+        self._dive_want = bool(cfg.get("dive", True))        # 기억한 선택 — 기록이 없으면 칸은 체크 없이 흐림(v0.17.1)
+        self.dive_on.setChecked(False)
+        self.dive_on.setEnabled(False)
+        self.title_on.toggled.connect(lambda _v: self._sync())
+        self.dive_on.toggled.connect(self._dive_toggled)
         cbs = QHBoxLayout()
         cbs.setSpacing(18)
         cbs.addWidget(self.title_on)
@@ -623,15 +694,20 @@ class AutoWindow(DragMove, QDialog):
         cards.addLayout(labeled("시작 화면", self._card_row("start", cfg.get("start", "auto")), 64), 1)
         cards.addLayout(labeled("끝 화면", self._card_row("end", cfg.get("end", "auto")), 52), 1)
         self.place = QLineEdit()
-        self.place.setPlaceholderText("지명")
+        self.place.setPlaceholderText(autoedit.NO_PLACE)      # v0.17.1 비워 두면 시작·끝 화면에 'DTME'(글자를 치면 그 지명)
         self._place_auto = True
         self.place.textEdited.connect(lambda _t: setattr(self, "_place_auto", False))
         self.end_text = QLineEdit()
         self._end_auto = True
         self.end_text.textEdited.connect(lambda _t: setattr(self, "_end_auto", False))
         self.end_text.editingFinished.connect(self._end_done)
-        return self._body([labeled("전체 길이", self.length.box, 64), labeled("", cbs, 64), cards,
+        return self._body([labeled("전체 길이", self.length, 64), labeled("", cbs, 64), cards,
                            labeled("지명", self.place, 64), labeled("끝 문구", self.end_text, 64)])
+
+    def _dive_toggled(self, v):
+        if self.dive_on.isEnabled():                      # 기록이 있을 때 바꾼 것만 기억
+            self._dive_want = bool(v)
+        self._sync()
 
     def _end_done(self):
         if not self.end_text.text().strip():              # 다 지움 = 자동 문구로
@@ -1074,7 +1150,7 @@ class AutoWindow(DragMove, QDialog):
         self.photo_box.setVisible(bool(p.images))
         self._sync()
 
-    def has_timeline(self) -> bool:
+    def has_timeline(self) -> bool:      # (v0.17.1 자동 창은 타임라인만으로는 일하지 않음 — 남겨 둠)
         return self.from_edit and bool(self.state.project.segments)
 
     def _trips(self):
@@ -1088,6 +1164,37 @@ class AutoWindow(DragMove, QDialog):
                 if w is not None:
                     cs.append((w, w + (b - a) / float(s.fps)))
         return autoedit.trips_of(cs)
+
+    def _user_songs(self) -> list:
+        return [a for a in self.state.project.audios if not a.get("builtin")]
+
+    def song_seconds(self) -> float:
+        """올린 곡(1~2개)을 이은 길이 어림(초): 곡 길이 합 − 앞 조용한 곳 − 겹침 2초. 길이를 아직 못 읽은 곡이 있으면 0."""
+        from . import music
+        p = self.state.project
+        xf = float(p.mix.get("xfade", 2.0))
+        tot, n = 0.0, 0
+        for a in self._user_songs():
+            d = float(a.get("dur") or 0.0)
+            if d <= 0 or d == 600.0:
+                return 0.0
+            inf = music.cached(a["path"]) or {}
+            tot += d - min(float(inf.get("lead", 0.0)), max(0.0, d - 1.0))
+            n += 1
+        return max(0.0, tot - xf * max(0, n - 1))
+
+    def target_seconds(self) -> float:
+        """파일 전체 길이 어림(초) — 곡에 맞춤 = 곡 길이 + 끝 화면 8초(곡 길이를 모르면 0) / 직접 지정 = 그 값."""
+        if self.length.mode() == "song":
+            sg = self.song_seconds()
+            return sg + (autoedit.END_SEC if self.card["end"].value() == "auto" else 0.0) if sg > 0 else 0.0
+        return float(self.length.seconds())
+
+    def length_text(self) -> str:
+        if self.length.mode() == "song":
+            t = self.target_seconds()
+            return f"{mmss(t)}(곡)" if t > 0 else "곡에 맞춤"
+        return mmss(self.length.seconds())
 
     def _sync(self):
         """요약 줄 · 단계 요약 · 켬/끔 가능 · [AUTO] 켜짐."""
@@ -1103,39 +1210,13 @@ class AutoWindow(DragMove, QDialog):
                 tot += (b - a) / float(s.fps)
         st = self.stages
         e_on = st["edit"].active()
-        parts = []
-        if p.dives:
-            parts.append(f"다이빙 기록 {len(p.dives)}개")
-        if rows:
-            parts.append(f"영상 {len(rows)}개 {mmss(tot)}" + (f" → {self.length.value()}분" if e_on else ""))
-        self.sum.setText(" · ".join(parts))
-        # 보정
-        ch = {r.choice for r in rows} or {"auto"}
-        pre = "프리셋 자동" if ch == {"auto"} else (auto.preset_label(next(iter(ch))) if len(ch) == 1 else "프리셋 섞음")
-        st["grade"].set_summary(" · ".join([pre, {"weak": "약", "mid": "중", "strong": "강"}.get(self.strength.value(), "중"),
-                                            "기존 보정 유지" if self.keep.value() == "keep" else "기존 보정 무시"]))
-        # 편집
-        self.dive_on.setEnabled(bool(p.dives))
-        self.dive_on.setToolTip(f"다이빙 {len(p.dives)}개 · 컷 최소 15초" if p.dives else "다이빙 기록 없음 — FIT·DTMD 파일을 이 창에 끌어다 놓기")
-        trips = self._trips()
-        if self._place_auto and not self.place.hasFocus():
-            self.place.setText(autoedit.trips_place(p.dives, trips) if p.dives else "")
-        if self._end_auto and not self.end_text.hasFocus():       # 자동 문구를 실제 글로(커서로 바로 고침, ' / ' = 줄바꿈)
-            ds = autoedit.trips_dives(p.dives, trips) if self.dive_on.isChecked() and p.dives else []
-            ls = autoedit.end_lines(bool(ds), ds, self.place.text().strip(), autoedit.trips_period(trips))
-            self.end_text.setText(" / ".join(x[0] for x in ls) if rows else "")
-        cards = [n for k, n in (("start", "시작"), ("end", "끝")) if self.card[k].value() == "auto"]
-        st["edit"].set_summary(" · ".join(x for x in (f"{self.length.value()}분", "날짜 바" if self.title_on.isChecked() else "",
-                                                       "LOG" if self.dive_on.isChecked() and p.dives else "",
-                                                       ("/".join(cards) + " 화면") if cards else "") if x))
-        # 음악
-        user = [a for a in p.audios if not a.get("builtin")]
+        # 음악(편집보다 먼저 — 전체 길이 [곡에 맞춤]이 음악 단계에 달림). v0.17.1 편집을 끄면 음악 단계 = 못 켬(타임라인이 있어도)
+        user = self._user_songs()
         n_def = len(self.state.default_music())
         self.mix_default.setVisible(bool(user) and bool(n_def))
         self.mix_default.setText(f"기본 음악도 같이 쓰기 ({n_def}곡)")
-        m_can = (e_on or self.has_timeline()) and bool(user or n_def)
-        st["music"].set_can(m_can)
-        if not (e_on or self.has_timeline()):
+        st["music"].set_can(e_on and bool(user or n_def))
+        if not e_on:
             st["music"].set_summary("편집을 켜야 함")
         elif not (user or n_def):
             st["music"].set_summary("음악 없음")
@@ -1143,18 +1224,49 @@ class AutoWindow(DragMove, QDialog):
             st["music"].set_summary(" · ".join(x for x in ("박자우선" if self.beat_on.isChecked() else "",
                                                             f"올린 곡 {len(user)}곡" if user else f"기본 음악 {n_def}곡",
                                                             "기본 음악도" if user and self.mix_default.isChecked() else "") if x))
-        # 렌더
+        # 전체 길이: 곡에 맞춤 = 올린 곡 1~2개 + 음악 켬일 때만(기본 음악만 · 3곡 이상 · 음악 끔 = 흐림 → 직접 지정)
+        self.length.set_song_ok(st["music"].active() and 1 <= len(user) <= 2, prefer=True)
+        ltxt = self.length_text()
+        parts = []
+        if p.dives:
+            parts.append(f"다이빙 기록 {len(p.dives)}개")
+        if rows:
+            parts.append(f"영상 {len(rows)}개 {mmss(tot)}" + (f" → {ltxt}" if e_on else ""))
+        self.sum.setText(" · ".join(parts))
+        # 보정
+        ch = {r.choice for r in rows} or {"auto"}
+        pre = "프리셋 자동" if ch == {"auto"} else (auto.preset_label(next(iter(ch))) if len(ch) == 1 else "프리셋 섞음")
+        st["grade"].set_summary(" · ".join([pre, {"weak": "약", "mid": "중", "strong": "강"}.get(self.strength.value(), "중"),
+                                            "기존 보정 유지" if self.keep.value() == "keep" else "기존 보정 무시"]))
+        # 편집 — LOG 칸: 기록 없음 = 체크 없이 흐림, 기록이 들어오면 기억한 선택대로(v0.17.1)
+        self.dive_on.blockSignals(True)
+        self.dive_on.setEnabled(bool(p.dives))
+        self.dive_on.setChecked(bool(p.dives) and self._dive_want)
+        self.dive_on.blockSignals(False)
+        self.dive_on.setToolTip(f"다이빙 {len(p.dives)}개 · 컷 최소 12초" if p.dives else "다이빙 기록 없음 — FIT·DTMD 파일을 이 창에 끌어다 놓기")
+        trips = self._trips()
+        if self._place_auto and not self.place.hasFocus():
+            self.place.setText(autoedit.trips_place(p.dives, trips) if p.dives else "")
+        if self._end_auto and not self.end_text.hasFocus():       # 자동 문구를 실제 글로(커서로 바로 고침, ' / ' = 줄바꿈)
+            ds = autoedit.trips_dives(p.dives, trips) if self.dive_on.isChecked() and p.dives else []
+            ls = autoedit.end_lines(bool(ds), ds, self.place.text().strip() or autoedit.NO_PLACE, autoedit.trips_period(trips))
+            self.end_text.setText(" / ".join(x[0] for x in ls) if rows else "")
+        cards = [n for k, n in (("start", "시작"), ("end", "끝")) if self.card[k].value() == "auto"]
+        st["edit"].set_summary(" · ".join(x for x in (ltxt, "날짜 바" if self.title_on.isChecked() else "",
+                                                       "LOG" if self.dive_on.isChecked() and p.dives else "",
+                                                       ("/".join(cards) + " 화면") if cards else "") if x))
+        # 렌더 — 편집 켬 = 타임라인 1편 / 편집 끔 = 늘 소스마다 따로(타임라인이 있어도, 보정 여부와 관계없이 — v0.17.1)
         okey = self.out.value() or "horizontal"
         olab = dict(OUT_BTNS).get(okey, "1080")
         fol = self.folder.text().strip()
         q = self.quality.value() or "normal"
-        st["render"].set_summary(" · ".join([olab, ff.QUALITY[q]["label"], Path(fol).name or fol if fol else "저장 폴더 —"]))
-        secs = self.length.value() * 60.0 if e_on else (p.out_seconds() if self.has_timeline() and not st["grade"].active() else tot)
+        secs = self.target_seconds() if e_on else tot
+        what = (f"타임라인 1편 · {ltxt}" if e_on else f"클립마다 {len(rows)}개 · {mmss(tot)}") if rows else ""
+        st["render"].set_summary(" · ".join(x for x in (what, olab, ff.QUALITY[q]["label"],
+                                                         Path(fol).name or fol if fol else "저장 폴더 —") if x))
         self.mb_lab.setText(f"약 {ff.est_mb(q, secs, okey):,.0f}MB" if secs > 0 else "")
         # [AUTO]
-        ok = bool(rows) or (self.has_timeline() and (st["music"].active() or st["render"].active())
-                            and not st["grade"].active() and not e_on)
-        self.b_start.setEnabled(ok and not self.running)
+        self.b_start.setEnabled(bool(rows) and not self.running)
 
     def _open_stage(self, key):
         """줄 누름 = 펼침(한 번에 하나)."""
@@ -1183,7 +1295,8 @@ class AutoWindow(DragMove, QDialog):
                 "open": next((k for k, sr in self.stages.items() if sr.open_), ""),
                 "strength": self.strength.value(), "lut": self.lut_combo.currentData(),
                 "lens": self.lens_s.value(), "stab": self.stab_s.value(),
-                "minutes": self.length.value(), "title": self.title_on.isChecked(), "dive": self.dive_on.isChecked(),
+                "len_mode": self.length.picked() if self.length.user else "", "len_sec": self.length.seconds(),
+                "title": self.title_on.isChecked(), "dive": self._dive_want,
                 "start": self.card["start"].value(), "end": self.card["end"].value(),
                 "beat": self.beat_on.isChecked(), "mix_default": self.mix_default.isChecked(),
                 "save": self.save_on.isChecked()}
@@ -1198,7 +1311,8 @@ class AutoWindow(DragMove, QDialog):
     def edit_settings(self, sids: list[str]) -> dict:
         """run_autoedit 에 넘길 값."""
         p = self.state.project
-        return {"sids": sids, "minutes": self.length.value(), "title": self.title_on.isChecked(),
+        return {"sids": sids, "minutes": self.length.value(), "seconds": self.length.seconds(), "len_mode": self.length.mode(),
+                "title": self.title_on.isChecked(),
                 "music": self.stages["music"].active(), "beat": self.beat_on.isChecked(),
                 "mix_default": self.mix_default.isChecked() and bool([a for a in p.audios if not a.get("builtin")]),
                 "grade": False, "save": self.save_on.isChecked(), "dive": self.dive_on.isChecked() and bool(p.dives),
@@ -1231,6 +1345,8 @@ class AutoWindow(DragMove, QDialog):
         r.result["grade"]["lens"] = self.lens_s.value()
         r.result["grade"]["stab"] = self.stab_s.value()
         r.rec = auto.recommend(smp, base)["preset"]
+        if self.running and self._step == "grade":         # v0.17.1 작업 팝업 왼쪽 아래 = 방금 판정한 클립
+            self._say(f"{display_name(s.path)}  {auto.preset_label(r.result['preset'])}", "grade")
 
     def pending(self):
         return [r for r in self.rows if r.checked and r.result is None and not r.error
@@ -1326,15 +1442,22 @@ class AutoWindow(DragMove, QDialog):
 
     # ================================================================ 실행
     def set_running(self, on: bool):
-        """작업 중 = 설정 칸 숨김, 막대·글자·[취소]·[−]만."""
+        """작업 중 = 목록·설정 칸을 다 숨긴 작은 팝업(막대·글자·[취소]·[−]만, v0.17.1) / 끝 = 설정 화면 크기로."""
+        was = self.running
         self.running = self.busy = bool(on)
+        self.lw.setVisible(not on)
         self.rw.setVisible(not on)
         self.run_w.setVisible(on)
         self.b_start.setVisible(not on)
+        self.ver_lab.setVisible(not on)
         self.list.setEnabled(True)
         self.b_cancel.setEnabled(True)
         if not self.from_edit:
             self.b_min.setVisible(on)
+        if on and not was:
+            self._big_geo = self.geometry()
+            self.state_lab.setText("")
+            self._fit_small()
         if not on:
             self._step = ""
             self.waiting = None
@@ -1343,8 +1466,26 @@ class AutoWindow(DragMove, QDialog):
             from . import taskbar
             taskbar.clear(self)
             self.setWindowTitle(self.windowTitle().split(" — ")[0])
+            if was:
+                self._fit_big()
         self.list.viewport().update()
         self._sync()
+
+    def _fit_small(self):
+        """작업 팝업 크기(폭 640, 높이 = 내용) — 설정 화면이 있던 자리 가운데에."""
+        g = getattr(self, "_big_geo", None) or self.geometry()
+        self.setMinimumSize(0, 0)
+        self.layout().activate()
+        h = max(118, self.layout().minimumSize().height())
+        c = g.center()
+        self.setGeometry(c.x() - self.SMALL_W // 2, c.y() - h // 2, self.SMALL_W, h)
+
+    def _fit_big(self):
+        g = getattr(self, "_big_geo", None)
+        if g is not None:
+            self.setGeometry(g)
+        else:
+            self.resize(*self.BIG)
 
     def set_progress(self, v: float, text: str = ""):
         """run_autoedit 이 부름(편집 단계 진행)."""
@@ -1359,9 +1500,11 @@ class AutoWindow(DragMove, QDialog):
         self.setWindowTitle(f"{base} — {STEP_NAME.get(key, '')} {int(frac * 100)}%")
 
     def _say(self, text: str, key: str = ""):
+        """작업 팝업 왼쪽 아래 글자(보정 = 방금 판정한 클립 · 렌더 = 저장 폴더)."""
         self.run_lab.setText(text)
         col = self.step_bar.color(key) if key else SUB
-        self.run_lab.setStyleSheet(f"color:{col};")
+        self.state_lab.setText(self.state_lab.fontMetrics().elidedText(text, Qt.ElideMiddle, 420))
+        self.state_lab.setStyleSheet(f"color:{col};")
 
     def start(self):
         """[AUTO]."""
@@ -1371,8 +1514,7 @@ class AutoWindow(DragMove, QDialog):
         st = self.stages
         g_on, e_on, m_on, r_on = (st[k].active() for k in ("grade", "edit", "music", "render"))
         rows = [r for r in self.rows if r.checked]
-        tl_only = not rows or (self.has_timeline() and not g_on and not e_on)
-        if not rows and not self.has_timeline():
+        if not rows:
             return
         if not (g_on or e_on or m_on or r_on):             # 아무 단계도 안 켬 = 그냥 편집 화면으로
             self._save_config()
@@ -1394,13 +1536,12 @@ class AutoWindow(DragMove, QDialog):
         else:
             self._folder = ""
         self._save_config()
-        # 단계 목록: 보정 → 편집 → 음악 → 렌더 | 편집 준비
-        steps = [k for k, on in (("grade", g_on and not tl_only), ("edit", e_on and not tl_only), ("music", m_on),
-                                 ("render", r_on)) if on]
+        # 단계 목록: 보정 → 편집 → 음악 → 렌더 | 편집 준비. v0.17.1: 음악 = 편집 켬일 때만 · 편집 끔 + 렌더 = 늘 소스마다 따로
+        steps = [k for k, on in (("grade", g_on), ("edit", e_on), ("music", m_on and e_on), ("render", r_on)) if on]
         if not r_on:
             steps.append("prep")
         self._plan = {"grade": "grade" in steps, "edit": "edit" in steps, "music": "music" in steps, "render": r_on,
-                      "tl_only": tl_only, "per_clip": r_on and "edit" not in steps and not (self.has_timeline() and "grade" not in steps)}
+                      "tl_only": False, "per_clip": r_on and "edit" not in steps}
         self._cancelled = False
         self.step_bar.set_steps(steps)
         self._say("")
@@ -1464,12 +1605,7 @@ class AutoWindow(DragMove, QDialog):
             self._show("edit", 0.0)
             self.edit.run_autoedit(self, st, then=self._after_edit)
             return
-        if self._plan["music"] and p.segments:             # 편집 끔 + 음악 = 지금 타임라인에 음악만
-            self._step = "music"
-            self._show("music", 0.0)
-            self.edit.auto_music(ask=False, then=self._after_music)
-            return
-        self._step_out()
+        self._step_out()                                   # (v0.17.1 편집 끔 + 음악만 = 없앰)
 
     def _after_edit(self):
         if self._plan["music"]:
@@ -1534,6 +1670,7 @@ class AutoWindow(DragMove, QDialog):
             row = ItemRow(f"{file_name(p, it)}.mp4")
             self.item_rows[it.id] = row
             self.rows_box.addWidget(row)
+        self._fit_small()                                  # 파일 줄만큼 팝업이 길어짐
         self._show("render", 0.0)
         rp = ed.render_panel
         rp.itemProgress.connect(self._r_item)
