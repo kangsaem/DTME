@@ -2,8 +2,10 @@
 + 왼쪽 위 'DTME'·버전 + 오른쪽 위 ✕(종료) + 오른쪽 아래 세로 글자, 아래(#262626) = [AUTO] 160×48. 빈 곳을 끌어 옮김.
 [AUTO] = 빈 자동 창(ui_autowin) · 끌어다 놓기 = 그 파일이 들어간 자동 창 · 프로젝트 파일 = 바로 편집 화면.
 자동 창 [취소] = 넣은 영상 버리고 이 창으로 · 렌더 끝 [닫기] = 프로그램 종료 · 그 밖 = 편집 화면.
-v0.17.3: 그림 자리 = 시작 영상(assets/start.mp4, 4초 · 소리 없음). 처음 = 첫 장면(start.png)에 멈춤 → [AUTO] = 재생(버튼 흐림),
-끝나면 자동 창 · 재생 중 그림을 누르면 바로 자동 창 · 끌어다 놓기 = 재생 없이 바로 · [취소]로 돌아오면 다시 첫 장면."""
+v0.17.3: 그림 자리 = 시작 영상(assets/start.mp4, 4초 · 소리 없음). 처음 = 첫 장면(start.png)에 멈춤 → [AUTO] = 재생,
+끝나면 자동 창 · 끌어다 놓기 = 재생 없이 바로 · [취소]로 돌아오면 다시 첫 장면.
+v0.17.4 = MOSCO v0.8.3 시작 창과 같게(사용자 11/19): 재생 중 [AUTO] 버튼 색 그대로 · 재생 중 [AUTO] 한 번 더 = 바로 자동 창 ·
+그림 누름 건너뛰기 없앰."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -158,7 +160,8 @@ class Launcher(QWidget):
     def play_intro(self):
         """[AUTO] = 시작 영상 재생 → 끝나면 자동 창. 영상이 없거나 재생이 안 되면 바로 자동 창."""
         import os
-        if self.playing:
+        if self.playing:                                # 재생 중 한 번 더 = 건너뛰고 바로 자동 창(MOSCO 와 같음)
+            self._intro_done()
             return
         clip = paths.asset("start.mp4")
         if not clip.exists() or os.environ.get("DTME_NO_INTRO"):
@@ -170,7 +173,6 @@ class Launcher(QWidget):
             self.run_auto([])
             return
         self.playing = True
-        self.b_auto.setEnabled(False)
         self.player = QMediaPlayer(self)
         self.sink = QVideoSink(self)
         self.player.setVideoSink(self.sink)            # 소리 출력 없음(영상에 소리도 없음)
@@ -193,7 +195,7 @@ class Launcher(QWidget):
             self._set_pix(QPixmap.fromImage(im))
 
     def _intro_done(self):
-        """재생 끝 · 그림 누름 · 오류 · 시간 넘음 → (한 번만) 자동 창."""
+        """재생 끝 · [AUTO] 한 번 더 · 오류 · 시간 넘음 → (한 번만) 자동 창."""
         if not self.playing:
             return
         self.playing = False
@@ -211,7 +213,6 @@ class Launcher(QWidget):
         self.run_auto([])
         if self.isVisible():                            # [취소]로 돌아옴 = 다시 첫 장면에 멈춤
             self._show_still()
-            self.b_auto.setEnabled(True)
 
     def _style(self, hot):
         self.setStyleSheet("#Launcher{background:#262626; border:none;}" if not hot else
@@ -219,9 +220,6 @@ class Launcher(QWidget):
 
     # ------------------------------------------------------------ 빈 곳을 끌어 옮김(제목 표시줄이 없음)
     def mousePressEvent(self, e):
-        if self.playing and e.button() == Qt.LeftButton and self.img.geometry().contains(e.position().toPoint()):
-            self._intro_done()                          # 재생 중 그림 누름 = 바로 자동 창
-            return
         if e.button() == Qt.LeftButton:
             self._drag = e.globalPosition().toPoint() - self.frameGeometry().topLeft()
         super().mousePressEvent(e)
