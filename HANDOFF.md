@@ -5,7 +5,16 @@
 ## 0-118. 혼자 업데이트하기(사용자 11/19 14:32~ 상의 중)
 - 물음: 유료 구독 없이 나중에 업데이트 · GitHub 업로드 방법 · 지금 단순화할 것. MOSCO 답을 받아 DTME 안으로 정리 → **`docs/SOLO_UPDATE_PLAN.md`**(MOSCO 세션에 전달해 상의 — 사용자 14:42).
 - DTME 안 = A 빌드 고정(numpy 2.5.5 · pyinstaller 6.22.3 · windows-2025 · ffmpeg 를 내 Releases 보관본에서) · C `UPDATE_GUIDE.md`(값은 파일+이름) · E HANDOFF 한 쪽 요약 · F 1분 문법 검사 · G 실패 요약 · H run_ok 를 화면 시험 전부에. **B(완성본 Releases) = 사용자가 뺌(로컬 zip 보관)** · D(설정 파일 분리) = 안 함.
-- **아직 코드 안 건드림 — MOSCO 답을 받은 뒤 사용자 'ㄱㄱ' 로 진행.**
+- **MOSCO 답 = `kangsaem/MOSCO` `docs/SOLO_UPDATE_REPLY.md`(11/19 14:47 읽음). MOSCO 쪽 사용자 결정(14:45) = '지금은 구현 안 함 — 의견만 정리·메모'.** DTME 안에 전부 동의 + 더한 것(받아들임):
+  - 패키지 = **간접 의존성까지 전부 `==`**(빌드 로그 'Successfully installed' 줄 전체) · Python 패치(3.12.x)·pip 도 · 설치 뒤 `pip freeze` 를 로그에.
+  - ffmpeg 보관 릴리스: 태그는 `v` 로 시작하면 안 됨(`tags: ["v*"]` 에 걸림) → `ffmpeg-keep` · pre-release · **SHA256 을 build.yml 에 적어 비교** · `gh release download` + `GH_TOKEN`(비공개로 돌려도 동작) · 캐시 단계 삭제. (라이선스 = DTME 는 이미 LICENSES 폴더를 만듦 — 확인함.)
+  - **액션 노후(DTME 안에 빠졌던 것)**: checkout@v4·setup-python@v5·cache@v4·upload-artifact@v4 = Node 20 폐기 경고 → 할 때 새 메이저로. softprops/action-gh-release = SHA 고정 또는 `gh release create` 로.
+  - 러너 고정(`windows-2025`)은 효과가 적음(내용물은 계속 바뀜 · 폐기되면 시작도 안 함) → 고정하되 "러너 오류면 windows-latest 로" 주석.
+  - **`paths-ignore: ["**.md"]` 문제(DTME 도 해당 — 확인함)**: 빌드가 README.md 를 앱 안 `사용법.md` 로 복사하는데 README 만 고쳐 올리면 빌드가 안 돎 → 제외 범위를 HANDOFF·UPDATE_GUIDE·`docs/**` 로 좁히기.
+  - UPDATE_GUIDE 에 추가: 잘못 올린 커밋 되돌리기(Revert) · 오프라인 보관 3종(완성본 zip · 저장소 zip · ffmpeg zip) · 무료 AI 에 붙여 넣는 순서(파일 지도 → 고칠 파일 하나 → 실패 로그 끝 50줄).
+  - 참고: MOSCO 최근 30번 = 성공 29 · 평균 7~8분(DTME = 성공 13 · 45~55분 → H·시험 시간이 DTME 쪽 숙제).
+  - 할 때 순서(공통): ① 패키지 전부 고정 ② ffmpeg-keep ③ 문서 제외 범위 · F · G · H ④ 액션 새 메이저 · 러너 주석 ⑤ UPDATE_GUIDE · HANDOFF 요약.
+- **아직 코드 안 건드림 — DTME 에서도 지금 할지/메모만 할지 사용자 답 대기(14:5x 물음).** DTMC 도 같은 기준으로 할지 미정.
 
 ## 0-117. v0.17.3 시작 창 영상 (사용자 11/18 22:44 요청 · 22:46 'ㄱㄱ')
 - 시작 창 그림 자리(400×400) = **시작 영상 `assets/start.mp4`**(사용자가 준 DomoAI 영상 640×640 · 4초 · 24fps — 왼쪽 위 'DomoAI' 워터마크를 `delogo=x=54:y=56:w=166:h=52` 로 지움 · H.264 CRF 20 · **소리 뺌** · 780KB). `start.png` = 그 영상 첫 장면(800×800, 예전 사진을 바꿈).
