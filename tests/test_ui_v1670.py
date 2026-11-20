@@ -44,7 +44,7 @@ assert out_label("vertical", sl, short=True) == "인스타" and out_label("verti
 # AUTO 창: 4K → 가로 3840×2160 / 세로 촬영 2160×3840
 print("단계: AUTO 창", flush=True)
 from dtme.project import set_setting as _ss; _ss("autowin", {})      # 자동 창 기억한 선택 지움(시험끼리 영향 없게)
-dlg = e.make_auto_window(); dlg.show(); dlg._open_stage("render"); wait(0.3)      # v0.17.0 자동 창 렌더 단계
+dlg = e.make_auto_window(); dlg.show(); dlg.stages["render"].set_open(True); wait(0.3)      # v0.17.0 자동 창 렌더 단계
 assert dlg.out.btns["vertical"].text() == "인스타" and "릴스" in dlg.out.btns["vertical"].toolTip()
 assert not dlg._picked
 dlg._out("horizontal2160"); wait(0.1)

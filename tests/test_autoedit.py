@@ -109,7 +109,7 @@ st.touch("segments"); wait(0.2)
 for s in p.sources:
     s.out = "vertical"                                # 세로 출력에서 글자 사각형 확인(v0.16.69)
 from dtme.project import set_setting as _ss; _ss("autowin", {})      # 자동 창 기억한 선택 지움(시험끼리 영향 없게)
-dlg = e.make_auto_window()                           # v0.17.0 자동 창(자동 편집만 따로 = autoedit_settings)
+dlg = e.make_auto_window(); [dlg.stages[_k].set_on(True) for _k in ("grade", "edit", "music")]; dlg._sync()      # v0.17.5 처음 = 모두 끔 → 예전 기본
 dlg.length.setValue(1); dlg.title_on.setChecked(True)
 dlg.stages["music"].set_on(True); dlg._sync()
 dlg.card["start"].set_value("none"); dlg.card["end"].set_value("none")      # v0.16.91 시작·끝 화면은 test_ui_v1691 에서

@@ -508,11 +508,13 @@ def sound_traits(y: np.ndarray) -> dict:
             "speech": bool(speech), "breath": bool(breath)}
 
 
-def _look(path: str, t: float):
-    """t 의 화면(320×180 RGB 0~1) 또는 None."""
-    r = subprocess.run([paths.ffmpeg(), "-v", "error", "-ss", f"{max(0.0, t):.3f}", "-i", str(path), "-an", "-frames:v", "1",
-                        "-vf", "scale=320:180,format=rgb24", "-f", "rawvideo", "-"],
-                       capture_output=True, **({"creationflags": 0x08000000} if os.name == "nt" else {}))
+def _look(path: str, t: float, lut_ref=None):
+    """t 의 화면(320×180 RGB 0~1) 또는 None. lut_ref = ff.lut_ref() 결과 → 줄인 뒤 LUT 입힘(v0.17.5)."""
+    color = f"format=gbrp16le,lut3d=file={lut_ref[1]}," if lut_ref else ""
+    r = subprocess.run([paths.ffmpeg(), "-v", "error", "-ss", f"{max(0.0, t):.3f}", "-i", str(Path(path).resolve()), "-an", "-frames:v", "1",
+                        "-vf", f"scale=320:180,{color}format=rgb24", "-f", "rawvideo", "-"],
+                       capture_output=True, cwd=lut_ref[0] if lut_ref else None,
+                       **({"creationflags": 0x08000000} if os.name == "nt" else {}))
     if len(r.stdout) < 320 * 180 * 3:
         return None
     return np.frombuffer(r.stdout[:320 * 180 * 3], np.uint8).reshape(180, 320, 3).astype(np.float32) / 255.0
@@ -529,19 +531,64 @@ def above_water(a: np.ndarray) -> tuple[bool, float, float]:
     return bool((rg > 0.85 and water < 0.6) or rg >= 0.9), round(rg, 3), round(water, 3)
 
 
-def cut_scene(src, seg) -> dict:
-    """컷 1개 → {"up": 원본 키움?, "why": 말소리|호흡기|수면 위|물속, ...}. 소리가 화면보다 먼저(사용자)."""
+LOG_DEEP = 1.0                    # v0.17.5 다이빙 기록 수심 이만큼(m) 넘으면 무조건 물속(사용자 11/20 A)
+
+
+def log_depth(src, seg, dives: list | None, off: float = 0.0) -> float | None:
+    """컷 30%·70% 시각의 다이빙 기록 수심 중 작은 값(m) — 두 시각 모두 다이빙 안일 때만, 아니면 None."""
+    if not dives or not getattr(src, "fps", None):
+        return None
+    from . import dive_draw, divelog
+    fps = float(src.fps)
+    ds = []
+    for k in (0.3, 0.7):
+        m = dive_draw.match(dives, src, (seg.fin + (seg.fout - seg.fin) * k) / fps, off)
+        if not m:
+            return None
+        ds.append(divelog.depth_at(m[0], m[1]))
+    return round(min(ds), 2)
+
+
+def _look_src(src, lut: str = ""):
+    """판정 화면 = LUT 입힌 화면(v0.17.5): 프록시(LUT 입혀 있음) → 카메라 프리뷰(LRF, 판정 저장된 것만) → 원본 + LUT.
+    → (경로, lut_ref, 원본 프레임 → 그 파일 초 함수, 종류)."""
+    fps = float(src.fps)
+    if getattr(src, "proxy", "") and Path(src.proxy).exists():
+        return src.proxy, None, (lambda f: f / fps), "프록시"
+    from . import ff
+    ref = None
+    try:
+        pv = ff.preview_info(src, lut or "", judge=False)
+        if pv:
+            ref = ff.lut_ref(lut) if (lut and pv.get("color") == "lut") else None
+            pf = float(ff.preview_fps(pv))
+            return pv["path"], ref, (lambda f: ff.preview_pos(pv, int(f)) / pf), "LRF"
+        ref = ff.lut_ref(lut) if lut else None
+    except Exception:  # noqa: BLE001 — LUT 없음 등 = 색 그대로
+        ref = None
+    return src.path, ref, (lambda f: f / fps), "원본"
+
+
+def cut_scene(src, seg, dives: list | None = None, off: float = 0.0, lut: str = "") -> dict:
+    """컷 1개 → {"up": 원본 키움?, "why": 말소리|호흡기|수면 위|물속, ...}.
+    v0.17.5 다이빙 기록 수심 ≥ LOG_DEEP = 무조건 물속(소리·색 안 봄) → 소리(호흡기·말소리) → 화면 색(LUT 입힌 화면)."""
     fps = float(src.fps)
     t0, t1 = seg.fin / fps, seg.fout / fps
     dur = max(0.1, t1 - t0)
     out = {}
+    dep = log_depth(src, seg, dives, off)
+    if dep is not None:
+        out["depth"] = dep
+        if dep >= LOG_DEEP:
+            return {**out, "up": False, "why": "물속"}
     if getattr(src, "has_audio", True):
         tr = sound_traits(_cut_audio(src.path, t0, min(dur, 30.0)))
         out.update(tr)
         if tr["breath"]:                                   # 호흡기 소리 = 빨강이 많아도 안 키움(사용자)
             return {**out, "up": False, "why": "호흡기"}
-    vid = src.proxy if getattr(src, "proxy", "") and Path(src.proxy).exists() else src.path
-    looks = [above_water(a) for a in (_look(vid, t0 + dur * k) for k in (0.3, 0.7)) if a is not None]
+    vid, ref, at, kind = _look_src(src, lut)
+    out["look"] = kind
+    looks = [above_water(a) for a in (_look(vid, at(seg.fin + (seg.fout - seg.fin) * k), ref) for k in (0.3, 0.7)) if a is not None]
     above = bool(looks) and sum(x[0] for x in looks) * 2 > len(looks)
     if looks:
         out.update(rg=looks[0][1], water=looks[0][2])

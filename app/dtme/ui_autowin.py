@@ -32,7 +32,9 @@ HEAD_TXT = "#9fb4cc"          # 여행 머리줄 글자
 PREP = ("#2f3a4a", "#4a8fe0", "편집 준비")
 STEP_NAME = {"grade": "보정", "edit": "편집", "music": "음악", "render": "렌더", "prep": "편집 준비"}
 STEP_KIND = {"grade": "analyze", "edit": "edit", "music": "music", "render": "render", "prep": "proxy"}
-EMPTY_HINT = ("영상 · 폴더를 여기에 끌어다 놓기", "우클릭 = 파일 추가 · 폴더 추가 · 프로젝트 열기")
+EMPTY_HINT = ("여기에 끌어다 놓기", "우클릭 = 파일 추가 · 폴더 추가 · 프로젝트 열기")
+KIND_HINT = (("영상", "MP4 · MOV · 폴더"), ("다이빙 기록", "FIT · DTMD 백업"), ("음악", "MP3 · WAV · M4A 등"))   # v0.17.5
+FOOT_HINT = "+ 영상 · 다이빙 기록 · 음악 끌어다 놓기"
 PROJ_EXT = (".dtme.json",)
 
 
@@ -265,37 +267,126 @@ class RowDelegate(QStyledItemDelegate):
 
 
 class SourceList(QListWidget):
-    """빈 목록 = 가운데 안내 두 줄."""
+    """v0.17.5 끌어다 놓기 안내(사용자 11/20): 빈 목록 = 점선 상자 + 종류 3줄 + 우클릭 안내 ·
+    파일이 있으면 맨 아래 점선 한 줄(늘 보임) · 끌어다 놓는 중 = 파란 실선."""
+    FOOT_H = 34
+    STYLE = "QListWidget{background:#1e1e1e; border:1px solid %s; border-radius:3px; padding:4px;}"
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.dragging = False
+        self.foot = QWidget(self)
+        self.foot.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.foot.installEventFilter(self)
+        self.setStyleSheet(self.STYLE % "#333")
+        self._place_foot()
+
+    def set_drag(self, on: bool):
+        if bool(on) != self.dragging:
+            self.dragging = bool(on)
+            self.setStyleSheet(self.STYLE % ("#4a8fe0" if self.dragging else "#333"))
+            self.viewport().update()
+            self.foot.update()
+
+    def _place_foot(self):
+        has = self.count() > 0
+        self.setViewportMargins(0, 0, 0, self.FOOT_H if has else 0)
+        self.foot.setVisible(has)
+        fw = self.frameWidth()
+        self.foot.setGeometry(fw + 4, self.height() - fw - self.FOOT_H, max(10, self.width() - 2 * fw - 8), self.FOOT_H - 4)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._place_foot()
+
+    def rowsInserted(self, parent, start, end):
+        super().rowsInserted(parent, start, end)
+        self._place_foot()
+
+    def rowsAboutToBeRemoved(self, parent, start, end):
+        super().rowsAboutToBeRemoved(parent, start, end)
+        QTimer.singleShot(0, self._place_foot)
+
+    def _pen(self):
+        pen = QPen(QColor("#4a8fe0" if self.dragging else "#555555"), 1.5 if self.dragging else 1.2)
+        pen.setStyle(Qt.SolidLine if self.dragging else Qt.DashLine)
+        return pen
+
+    def eventFilter(self, obj, e):
+        if obj is self.foot and e.type() == QEvent.Paint:
+            p = QPainter(self.foot)
+            p.setRenderHint(QPainter.Antialiasing)
+            p.setPen(self._pen())
+            p.setBrush(Qt.NoBrush)
+            r = QRectF(self.foot.rect()).adjusted(1, 3, -1, -1)
+            p.drawRoundedRect(r, 3, 3)
+            f = QFont(self.font())
+            f.setPixelSize(12)
+            p.setFont(f)
+            p.setPen(QColor("#9a9a9a" if not self.dragging else "#cfe0f5"))
+            p.drawText(r, Qt.AlignCenter, FOOT_HINT)
+            p.end()
+            return True
+        return super().eventFilter(obj, e)
 
     def paintEvent(self, e):
         super().paintEvent(e)
         if self.count():
             return
         p = QPainter(self.viewport())
-        r = self.viewport().rect()
+        p.setRenderHint(QPainter.Antialiasing)
+        r = QRectF(self.viewport().rect()).adjusted(14, 14, -14, -14)
+        p.setPen(self._pen())
+        p.setBrush(QColor(74, 143, 224, 24) if self.dragging else Qt.NoBrush)
+        p.drawRoundedRect(r, 6, 6)
         f = QFont(self.font())
-        f.setPixelSize(14)
+        lh = 22
+        top = r.center().y() - (lh * (len(KIND_HINT) + 2) + 16) / 2
+        f.setPixelSize(15)
+        f.setBold(True)
         p.setFont(f)
-        p.setPen(QColor("#9a9a9a"))
-        p.drawText(r.adjusted(0, -14, 0, -14), Qt.AlignCenter, EMPTY_HINT[0])
+        p.setPen(QColor("#cfe0f5" if self.dragging else "#b8b8b8"))
+        p.drawText(QRectF(r.left(), top, r.width(), lh + 4), Qt.AlignCenter, EMPTY_HINT[0])
+        f.setBold(False)
         f.setPixelSize(12)
         p.setFont(f)
+        fm = p.fontMetrics()
+        kw = max(fm.horizontalAdvance(k) for k, _v in KIND_HINT) + 16
+        vw = max(fm.horizontalAdvance(v) for _k, v in KIND_HINT)
+        x0 = r.center().x() - (kw + vw) / 2
+        y = top + lh + 12
+        for k, v in KIND_HINT:
+            p.setPen(QColor("#d8d8d8"))
+            p.drawText(QRectF(x0, y, kw, lh), Qt.AlignVCenter | Qt.AlignLeft, k)
+            p.setPen(QColor("#8a8a8a"))
+            p.drawText(QRectF(x0 + kw, y, vw + 4, lh), Qt.AlignVCenter | Qt.AlignLeft, v)
+            y += lh
         p.setPen(QColor("#6f6f6f"))
-        p.drawText(r.adjusted(0, 14, 0, 14), Qt.AlignCenter, EMPTY_HINT[1])
+        p.drawText(QRectF(r.left(), y + 8, r.width(), lh), Qt.AlignCenter, EMPTY_HINT[1])
         p.end()
 
 
 # ------------------------------------------------------------------ 단계 줄
 class StageRow(QFrame):
-    """[✓] 이름  요약 — 머리 줄 아무 데나 누름 = 켬/끔. v0.17.2 설정 칸 = 늘 펼침(사용자 11/18 B안), 끈 단계 = 설정 흐림."""
+    """[✓] 이름  요약  ▸ — v0.17.5 접힘 메뉴(사용자 11/20): 처음 = 접힘(머리 줄만).
+    체크 칸 누름 = 켬/끔(켬 = 펼침 · 끔 = 접음) · 머리 줄 나머지 누름 = 펼치기/접기만(체크 그대로).
+    꺼져(접혀) 있어도 흐리게 하지 않음 · 못 켜는 단계(편집 끔 → 음악)를 누르면 요약 자리에 말풍선(BUBBLE_MS)."""
     toggled = Signal(str, bool)
     clicked = Signal(str)
+    blocked = Signal(str)
+    CHECK_W = 36                  # 머리 줄 왼쪽 이 폭까지 = 체크 칸
+    BUBBLE_MS = 2500
 
     def __init__(self, key: str, body: QWidget, parent=None):
         super().__init__(parent)
         self.key, self.body = key, body
-        self.on, self.open_, self.can = True, False, True
+        self.on, self.open_, self.can = False, False, True
         self.summary = ""
+        self.block_text = ""          # 못 켤 때 말풍선 글
+        self.bubble = ""
+        self._bt = QTimer(self)
+        self._bt.setSingleShot(True)
+        self._bt.timeout.connect(lambda: self.show_bubble(""))
         self.setObjectName("StageRow")
         self.setStyleSheet("#StageRow{background:#2a2a2a; border:1px solid #3a3a3a; border-radius:3px;}")
         self.head = QWidget(self)
@@ -307,40 +398,60 @@ class StageRow(QFrame):
         v.setSpacing(0)
         v.addWidget(self.head)
         v.addWidget(body)
-        self.open_ = True
+        body.setVisible(False)
 
     def set_on(self, on: bool):
+        """켬 = 펼침 · 끔 = 접음(v0.17.5)."""
         self.on = bool(on)
-        self._dim()
+        self.set_open(self.on)
 
     def set_can(self, can: bool):
         self.can = bool(can)
-        self._dim()
+        if not self.can and self.open_:
+            self.set_open(False)
+        self.head.update()
 
     def _dim(self):
-        self.body.setEnabled(self.active())
+        """(v0.17.5 흐림 없음 — 예전 이름만 남김)"""
         self.head.update()
 
     def set_open(self, on: bool):
-        """(v0.17.2 늘 펼침 — 예전 이름만 남김)"""
-        self.open_ = True
-        self.body.setVisible(True)
+        self.open_ = bool(on) and self.can
+        self.body.setVisible(self.open_)
+        self.head.update()
 
     def set_summary(self, text: str):
         if text != self.summary:
             self.summary = text
             self.head.update()
 
+    def show_bubble(self, text: str):
+        self.bubble = text
+        if text:
+            self._bt.start(self.BUBBLE_MS)
+        self.head.update()
+
     def active(self) -> bool:
         return self.on and self.can
+
+    def press(self, x: float):
+        """머리 줄 누름(x = 머리 줄 안 가로 위치) — 시험에서도 씀."""
+        if not self.can:
+            self.show_bubble(self.block_text)
+            self.blocked.emit(self.key)
+            return
+        if x < self.CHECK_W:
+            self.on = not self.on
+            self.set_open(self.on)
+            self.toggled.emit(self.key, self.on)
+        else:
+            self.set_open(not self.open_)
+            self.clicked.emit(self.key)
 
     def eventFilter(self, obj, e):
         if obj is self.head:
             if e.type() == QEvent.MouseButtonPress and e.button() == Qt.LeftButton:
-                if self.can:
-                    self.on = not self.on
-                    self._dim()
-                    self.toggled.emit(self.key, self.on)
+                self.press(e.position().x())
                 return True
             if e.type() == QEvent.Paint:
                 self._paint_head()
@@ -364,14 +475,26 @@ class StageRow(QFrame):
         f = QFont(self.font())
         f.setBold(True)
         p.setFont(f)
-        p.setPen(QColor(col if act else "#6f6f6f"))
+        p.setPen(QColor(col))                                  # v0.17.5 꺼져도 단계 색(흐림 없음)
         p.drawText(QRectF(40, 0, 44, r.height()), Qt.AlignVCenter | Qt.AlignLeft, STEP_NAME[self.key])
         f.setBold(False)
         p.setFont(f)
-        p.setPen(QColor(SUB if act else "#6f6f6f"))
-        w = r.width() - 88 - 10
-        p.drawText(QRectF(88, 0, w, r.height()), Qt.AlignVCenter | Qt.AlignLeft,
-                   p.fontMetrics().elidedText(self.summary, Qt.ElideRight, int(w)))
+        w = r.width() - 88 - 30
+        if self.bubble:                                        # 말풍선 = 요약 자리
+            fm = p.fontMetrics()
+            bw = min(w, fm.horizontalAdvance(self.bubble) + 20)
+            br = QRectF(88, 5, bw, r.height() - 10)
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor("#4a4030"))
+            p.drawRoundedRect(br, 4, 4)
+            p.setPen(QColor("#f2c94c"))
+            p.drawText(br, Qt.AlignCenter, fm.elidedText(self.bubble, Qt.ElideRight, int(bw - 12)))
+        else:
+            p.setPen(QColor(SUB))
+            p.drawText(QRectF(88, 0, w, r.height()), Qt.AlignVCenter | Qt.AlignLeft,
+                       p.fontMetrics().elidedText(self.summary, Qt.ElideRight, int(w)))
+        p.setPen(QColor("#d8d8d8"))
+        p.drawText(QRectF(r.width() - 26, 0, 16, r.height()), Qt.AlignCenter, "▾" if self.open_ else "▸")
         p.end()
 
 
@@ -505,7 +628,6 @@ class AutoWindow(DragMove, QDialog):
         self.list.setSelectionMode(QListWidget.ExtendedSelection)
         self.list.setFocusPolicy(Qt.NoFocus)
         self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.list.setStyleSheet("QListWidget{background:#1e1e1e; border:1px solid #333; border-radius:3px; padding:4px;}")
         self.list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.list.customContextMenuRequested.connect(lambda pos: self._menu(self.list.viewport().mapToGlobal(pos)))
         self.list.itemSelectionChanged.connect(self._sel_changed)
@@ -538,7 +660,7 @@ class AutoWindow(DragMove, QDialog):
         for key, body in (("grade", self._grade_body(cfg)), ("edit", self._edit_body(cfg)),
                           ("music", self._music_body(cfg)), ("render", self._render_body(cfg))):
             sr = StageRow(key, body)
-            sr.set_on(bool(cfg.get("on", {}).get(key, key != "render")))        # 렌더 기본 = 끔(켜면 기억)
+            sr.set_on(False)                                 # v0.17.5 처음 = 모두 끔·접힘(단계 체크는 기억 안 함, 사용자 11/20)
             sr.toggled.connect(lambda _k, _v: self._sync())
             sr.clicked.connect(self._open_stage)
             self.stages[key] = sr
@@ -548,7 +670,6 @@ class AutoWindow(DragMove, QDialog):
         right.addWidget(self.music_box)
         right.addWidget(self.photo_box)
         right.addWidget(self.sum)
-        right.addStretch(1)
         two = QHBoxLayout()                                  # v0.17.2 B안: 왼쪽 보정·편집 · 오른쪽 음악·렌더(다 펼침, 사용자 11/18)
         two.setSpacing(10)
         for keys in (("grade", "edit"), ("music", "render")):
@@ -559,6 +680,7 @@ class AutoWindow(DragMove, QDialog):
             col.addStretch(1)
             two.addLayout(col, 1)
         right.addLayout(two)
+        right.addStretch(1)                                  # v0.17.5 단계 줄 = 위로 붙임(요약 줄 바로 아래)
         self.rw = QWidget()
         self.rw.setLayout(right)
         self.rw.setFixedWidth(self.COL_W * 2 + 10)
@@ -751,6 +873,7 @@ class AutoWindow(DragMove, QDialog):
         self.folder = QLineEdit(p.output.folder or get_setting("last_folder", "") or "")
         self.folder.setFixedHeight(28)
         self.folder.textChanged.connect(lambda _t: self._sync())
+        self.folder.textEdited.connect(lambda _t: self._render_on())      # v0.17.5 손으로 고쳐 써도 렌더 켬
         b = QPushButton("…")
         b.setFixedSize(34, 28)
         b.setFocusPolicy(Qt.NoFocus)
@@ -820,6 +943,7 @@ class AutoWindow(DragMove, QDialog):
                 if s.id in keep_sel:
                     it.setSelected(True)
         self.list.blockSignals(False)
+        self.list._place_foot()
         note = autoedit.mix_note([s for s in srcs if self.row_by[s.id].checked])
         self.note.setText(note)
         self.note.setVisible(bool(note))
@@ -1094,8 +1218,13 @@ class AutoWindow(DragMove, QDialog):
     def dragEnterEvent(self, e):
         if not self.running and e.mimeData().hasUrls():
             e.acceptProposedAction()
+            self.list.set_drag(True)                      # v0.17.5 끌어다 놓는 중 = 목록 테두리 파랑
+
+    def dragLeaveEvent(self, e):
+        self.list.set_drag(False)
 
     def dropEvent(self, e):
+        self.list.set_drag(False)
         self.add_paths([u.toLocalFile() for u in e.mimeData().urls()])
 
     def add_paths(self, paths: list[str]):
@@ -1228,6 +1357,7 @@ class AutoWindow(DragMove, QDialog):
         self.mix_default.setVisible(bool(user) and bool(n_def))
         self.mix_default.setText(f"기본 음악도 같이 쓰기 ({n_def}곡)")
         st["music"].set_can(e_on and bool(user or n_def))
+        st["music"].block_text = "편집을 켜야 음악을 쓸 수 있습니다" if not e_on else "음악 파일이 없습니다"
         if not e_on:
             st["music"].set_summary("편집을 켜야 함")
         elif not (user or n_def):
@@ -1285,10 +1415,18 @@ class AutoWindow(DragMove, QDialog):
     def _open_stage(self, key):
         """(v0.17.2 늘 펼침 — 예전 이름만 남김)"""
 
+    def _render_on(self):
+        """v0.17.5 저장 폴더를 고르거나 고쳐 쓰면 렌더 체크가 켜짐(사용자 11/20 — 편집을 꺼도 렌더는 켤 수 있음)."""
+        sr = self.stages.get("render") if hasattr(self, "stages") else None
+        if sr is not None and not sr.on:
+            sr.set_on(True)
+            self._sync()
+
     def _pick_folder(self):
         d = QFileDialog.getExistingDirectory(self, "저장 폴더", self.folder.text().strip() or get_setting("last_folder", "") or "")
         if d:
             self.folder.setText(d)
+            self._render_on()
             try:
                 set_setting("last_folder", d)
             except Exception:  # noqa: BLE001
@@ -1301,9 +1439,8 @@ class AutoWindow(DragMove, QDialog):
                 "after": "each", "lens": self.lens_s.value(), "stab": self.stab_s.value(), "lut": self.lut_combo.currentData()}
 
     def config(self) -> dict:
-        """마지막 선택 기억(단계 체크 + 각 단계 설정)."""
-        return {"on": {k: sr.on for k, sr in self.stages.items()},
-                "strength": self.strength.value(), "lut": self.lut_combo.currentData(),
+        """마지막 선택 기억(각 단계 설정 — v0.17.5 단계 체크는 기억 안 함)."""
+        return {"strength": self.strength.value(), "lut": self.lut_combo.currentData(),
                 "lens": self.lens_s.value(), "stab": self.stab_s.value(),
                 "len_sec": self.length.seconds(),
                 "title": self.title_on.isChecked(), "dive": self._dive_want,

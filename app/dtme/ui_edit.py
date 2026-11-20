@@ -3784,13 +3784,23 @@ class EditTab(QWidget):
         """판단 안 된 컷(loud None)을 뒤에서 판단: 소리(호흡기 → 안 키움 / 말소리 → 키움) 먼저, 아니면 화면(수면 위 → 키움)."""
         from . import music
         p = self.state.project
+        for g in p.segments:                                   # v0.17.5 색으로 '수면 위'였는데 다이빙 기록 수심 ≥ 1m = 물속(기록을 나중에 넣었을 때)
+            src = p.source(g.src)
+            if g.loud and g.why == "수면 위" and src is not None and p.dives:
+                dep = music.log_depth(src, g, p.dives, p.off_of(src))
+                if dep is not None and dep >= music.LOG_DEEP:
+                    g.loud, g.why = False, "물속"
+                    self.state.dirty = True
+                    ff.log_info(f"컷 소리·장면 {Path(src.path).name} {g.fin}~{g.fout}: 안 키움(물속) — LOG 수심 {dep}m")
         for g in p.segments:
             src = p.source(g.src)
             key = (g.src, g.fin, g.fout)
             if g.loud is not None or src is None or not src.frames or key in self._loud_jobs:
                 continue
             self._loud_jobs.add(key)
-            job = jobs.Job(lambda src=src, g=g.copy(): music.cut_scene(src, g))
+            lut = p.grade_for_source(src.id, off=False).get("lut", "")
+            job = jobs.Job(lambda src=src, g=g.copy(), dv=list(p.dives or []), off=p.off_of(src), lut=lut:
+                           music.cut_scene(src, g, dv, off, lut))
 
             def done(r, key=key):
                 self._loud_jobs.discard(key)

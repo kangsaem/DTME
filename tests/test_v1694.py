@@ -116,7 +116,7 @@ d = AutoWindow(_Ed(st), None, from_edit=True)
 assert d.beat_on.text() == "박자우선"
 assert d.beat_on.isChecked(), "v0.16.96 기본 = 늘 켬(v0.17.0 기본 음악만이어도)"
 st.project.audios.append({"path": "/x/song.mp3", "dur": 300.0})
-d = AutoWindow(_Ed(st), None, from_edit=True)
+d = AutoWindow(_Ed(st), None, from_edit=True); [d.stages[_k].set_on(True) for _k in ("grade", "edit", "music")]; d._sync()      # v0.17.5 처음 = 모두 끔 → 예전 기본
 assert d.beat_on.isChecked() and d.autoedit_settings()["beat"] and d.autoedit_settings()["music"]
 d.stages["music"].set_on(False); d._sync()            # 음악 단계 끔 = 음악 없음
 assert not d.autoedit_settings()["music"]

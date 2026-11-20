@@ -30,7 +30,7 @@ st, e = w.state, w.edit
 e.import_files(vids); wait(60, lambda: len(st.project.sources) == 5 and all(st.status.get(x.id) == "준비" for x in st.project.sources))
 print("소스", len(st.project.sources), [st.status.get(x.id) for x in st.project.sources], flush=True)
 from dtme.project import set_setting as _ss; _ss("autowin", {})      # 자동 창 기억한 선택 지움(시험끼리 영향 없게)
-dlg = e.make_auto_window(); dlg.show(); wait(1)      # v0.17.0 자동 창(AUTO 전 = 분석 없음)
+dlg = e.make_auto_window(); dlg.show(); wait(1); [dlg.stages[_k].set_on(True) for _k in ("grade", "edit", "music")]; dlg._sync()      # v0.17.5 처음 = 모두 끔 → 예전 기본
 IT = dlg._src_items()                                # 머리줄을 뺀 소스 줄
 print("창", dlg.list.count(), flush=True)
 assert dlg.ver_lab.text() == f"DTME {__version__}"

@@ -108,7 +108,7 @@ w.undo(); wait(0.2)
 assert len(st.project.music) == 3
 # 자동 편집 창 Ctrl+A
 from dtme.project import set_setting as _ss; _ss("autowin", {})      # 자동 창 기억한 선택 지움(시험끼리 영향 없게)
-d = e.make_auto_window()                             # v0.17.0 자동 창
+d = e.make_auto_window(); [d.stages[_k].set_on(True) for _k in ("grade", "edit", "music")]; d._sync()      # v0.17.5 처음 = 모두 끔 → 예전 기본
 for r_ in d.rows:
     r_.checked = False
 d._row_changed()
@@ -121,7 +121,7 @@ import shutil  # noqa: E402
 mine = os.path.join(W, "my song.mp3")
 shutil.copy(st.default_music()[0], mine)
 st.import_audios([mine]); wait(3, lambda: all(a.get("dur") for a in st.project.audios))
-d2 = e.make_auto_window(); d2.mix_default.setChecked(False); d2._sync()
+d2 = e.make_auto_window(); d2.mix_default.setChecked(False); d2._sync(); [d2.stages[_k].set_on(True) for _k in ("grade", "edit", "music")]; d2._sync()      # v0.17.5 처음 = 모두 끔 → 예전 기본
 assert not d2.mix_default.isHidden() and not d2.autoedit_settings()["mix_default"] and d2.stages["music"].summary.endswith("올린 곡 1곡")
 d2.reject()
 n = st.add_default_music(); wait(0.3)

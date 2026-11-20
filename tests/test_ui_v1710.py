@@ -63,6 +63,9 @@ lb.setValue(2); assert lb.mode() == "manual" and lb.value() == 2
 st.set_project(Project()); st.defer_proxy = True
 set_setting("autowin", {})
 d = e.make_auto_window(from_edit=False); d.show(); wait(0.3)
+for k in ("grade", "edit", "music"):                                    # v0.17.5 처음 = 모두 끔 → 예전 기본(보정·편집·음악)을 켬
+    d.stages[k].set_on(True)
+d._sync()
 assert not d.dive_on.isChecked() and not d.dive_on.isEnabled(), "기록 없음 = 체크 없이 흐림"
 assert d.place.placeholderText() == "DTME" and d.place.text() == ""
 d.add_paths(vids)
@@ -101,7 +104,7 @@ for k, on in (("grade", True), ("edit", True), ("music", True), ("render", False
 d._sync()
 assert d.length.mode() == "song"
 big = d.size()
-assert big.width() == d.BIG[0] and all(d.stages[k].body.isVisible() for k in d.stages)
+assert big.width() == d.BIG[0] and all(d.stages[k].body.isVisible() == (k != "render") for k in d.stages)     # v0.17.5 켠 단계 = 펼침
 d.b_start.click()
 assert d.running and d.width() == d.SMALL_W and d.height() < 200 and not d.lw.isVisible() and not d.rw.isVisible() and not d.ver_lab.isVisible()
 said = []

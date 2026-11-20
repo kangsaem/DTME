@@ -39,30 +39,70 @@ st.set_project(Project()); st.defer_proxy = True
 set_setting("autowin", {"len_mode": "song", "len_sec": 120})       # 예전(v0.17.1) 기억 = 곡에 맞춤 → 이제는 안 따름
 d = e.make_auto_window(from_edit=False); d.show(); wait(0.3)
 
-# ---------------------------------------------------------------- 1) B안: 두 줄 다 펼침
+# ---------------------------------------------------------------- 1) B안 두 줄 · v0.17.5 접힘 메뉴(처음 = 모두 끔·접힘, 단계 줄 위로 붙음)
 assert (d.width(), d.height()) == (1400, 720), (d.width(), d.height())
-assert all(d.stages[k].body.isVisible() for k in d.stages)
+assert not any(d.stages[k].on or d.stages[k].body.isVisible() for k in d.stages)
 xs = {k: d.stages[k].mapTo(d, d.stages[k].rect().topLeft()) for k in d.stages}
 assert xs["grade"].x() == xs["edit"].x() < xs["music"].x() == xs["render"].x(), xs          # 왼쪽 보정·편집 · 오른쪽 음악·렌더
 assert xs["grade"].y() < xs["edit"].y() and xs["music"].y() < xs["render"].y()
-assert d.stages["edit"].geometry().bottom() < d.height() - 40, "스크롤 없이 들어감"
+assert xs["grade"].y() == xs["music"].y() < d.sum.mapTo(d, d.sum.rect().topLeft()).y() + 60, xs   # 위로 붙음(요약 줄 바로 아래)
 d.add_paths(vids + [song])
 assert wait(60, lambda: len(st.project.sources) == 3 and all(s.frames for s in st.project.sources))
 assert wait(30, lambda: any(float(a.get("dur") or 0) not in (0.0, 600.0) for a in st.project.audios if not a.get("builtin")))
 wait(0.6); d._sync()
-d.stages["render"].set_on(False); d._sync()
-assert not d.stages["render"].body.isEnabled() and d.stages["edit"].body.isEnabled()       # 끈 단계 = 설정 흐림
-d.stages["edit"].set_on(False); d._sync()
-assert not d.stages["music"].body.isEnabled(), "편집 끔 = 음악 못 켬 → 설정도 흐림"
-d.stages["edit"].set_on(True); d._sync()
-assert d.stages["music"].body.isEnabled()
-# 머리 줄 아무 데나 누름 = 켬/끔
 from PySide6.QtCore import QPoint, Qt  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
-QTest.mouseClick(d.stages["render"].head, Qt.LeftButton, Qt.NoModifier, QPoint(200, 10)); wait(0.1)
+
+
+def click(key, x):
+    QTest.mouseClick(d.stages[key].head, Qt.LeftButton, Qt.NoModifier, QPoint(x, 17)); wait(0.1)
+
+
+# 편집 끔 = 음악 누름 → 말풍선(펼침·켬 없음), 흐리지 않음
+click("music", 20)
+assert not d.stages["music"].on and not d.stages["music"].body.isVisible()
+assert d.stages["music"].bubble == "편집을 켜야 음악을 쓸 수 있습니다", d.stages["music"].bubble
+click("music", 200)
+assert not d.stages["music"].open_ and d.stages["music"].bubble
+d.stages["music"].show_bubble("")
+# 체크 칸 = 켬 + 펼침 · 다시 = 끔 + 접음 · 여러 단계 동시에 펼침
+click("edit", 20)
+assert d.stages["edit"].on and d.stages["edit"].body.isVisible()
+click("music", 20)
+assert d.stages["music"].on and d.stages["music"].body.isVisible() and d.stages["edit"].body.isVisible()
+click("music", 20)
+assert not d.stages["music"].on and not d.stages["music"].body.isVisible()
+# 머리 줄(체크 칸 밖) = 펼치기/접기만(체크 그대로)
+click("grade", 200)
+assert d.stages["grade"].body.isVisible() and not d.stages["grade"].on
+assert d.stages["grade"].body.isEnabled(), "꺼져 있어도 흐리지 않음"
+click("grade", 200)
+assert not d.stages["grade"].body.isVisible() and not d.stages["grade"].on
+click("edit", 200)
+assert not d.stages["edit"].body.isVisible() and d.stages["edit"].on
+click("edit", 200)
+assert d.stages["edit"].body.isVisible()
+# 편집 끔 = 음악 접힘
+d.stages["music"].set_on(True); d._sync()
+d.stages["edit"].set_on(False); d._sync()
+assert not d.stages["music"].active() and not d.stages["music"].body.isVisible()
+d.stages["edit"].set_on(True); d._sync()
+d.stages["music"].set_on(True); d._sync()
+assert d.stages["music"].active()
+# 렌더 접힘 → 펼쳐 저장 폴더 고르기 = 렌더 켜짐(편집을 꺼도)
+from PySide6.QtWidgets import QFileDialog  # noqa: E402
+_gd = QFileDialog.getExistingDirectory
+QFileDialog.getExistingDirectory = staticmethod(lambda *a, **k: WORK)
+click("render", 200)
+assert d.stages["render"].body.isVisible() and not d.stages["render"].on
+d._pick_folder()
+assert d.stages["render"].on and d.folder.text() == WORK and d.stages["render"].body.isVisible()
+d.stages["render"].set_on(False); d.stages["edit"].set_on(False); d._sync()
+d.folder.setFocus(); QTest.keyClick(d.folder, Qt.Key_A); wait(0.1)                         # 손으로 고쳐 써도 켜짐
 assert d.stages["render"].on
-QTest.mouseClick(d.stages["render"].head, Qt.LeftButton, Qt.NoModifier, QPoint(200, 10)); wait(0.1)
-assert not d.stages["render"].on
+d.folder.setText(WORK); d.stages["render"].set_on(False); d.stages["edit"].set_on(True); d._sync()
+d.stages["music"].set_on(True); d._sync()
+QFileDialog.getExistingDirectory = _gd
 d.grab().save(os.path.join(WORK, "autowin_b.png"))
 
 # ---------------------------------------------------------------- 2) 길이: 기억된 '곡에 맞춤'은 안 따름 · 체크 = 칸 숫자가 곡 길이

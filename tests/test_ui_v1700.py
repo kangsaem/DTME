@@ -57,8 +57,8 @@ d = e.make_auto_window(from_edit=False); d.show(); wait(0.3)
 assert d.list.count() == 0 and not d.b_start.isEnabled() and d.sum.text() == ""
 assert all(d.stages[k].isVisible() for k in ("grade", "edit", "music", "render"))
 assert not d.music_box.isVisible() and not d.photo_box.isVisible() and not d.note.isVisible()
-assert all(d.stages[k].body.isVisible() for k in d.stages), "v0.17.2 늘 다 펼침(B안)"
-print("빈 창: 단계 4줄 다 펼침 · [AUTO] 흐림")
+assert not any(d.stages[k].body.isVisible() or d.stages[k].on for k in d.stages), "v0.17.5 처음 = 모두 끔·접힘"
+print("빈 창: 단계 4줄 접힘·끔 · [AUTO] 흐림")
 
 # ---------------------------------------------------------------- 2) 넣기 = 파일 정보만
 d.add_paths(vids + [song])
@@ -112,7 +112,7 @@ assert not getattr(w, "_rwin", None), "렌더 작업 창은 안 뜸(자동 창 �
 it = p.render_items[-1]
 assert it.orientation == "horizontal", it.orientation        # 가로 3 · 세로 1 → 많은 쪽 = 가로
 cfg = get_setting("autowin", {})
-assert cfg["on"] == {"grade": True, "edit": True, "music": True, "render": True} and cfg["len_sec"] == 60 and "len_mode" not in cfg, cfg
+assert "on" not in cfg and cfg["len_sec"] == 60 and "len_mode" not in cfg, cfg
 import json  # noqa: E402
 mp4 = os.path.join(OUT, [f for f in files if f.endswith(".mp4")][0])
 info = json.loads(subprocess.run([paths.ffprobe(), "-v", "error", "-show_entries", "stream=codec_type,width,height:format=duration",
@@ -125,9 +125,9 @@ print("결과 영상:", vs["width"], "x", vs["height"], round(float(info["format
 st.resume_proxies()
 w.show(); wait(0.5)
 d2 = e.make_auto_window(from_edit=True); d2.show(); wait(0.3)
-assert d2.stages["render"].on and d2.length.value() == 1, "마지막 선택 기억"
+assert not any(sr.on for sr in d2.stages.values()) and d2.length.value() == 1, "v0.17.5 단계 체크 = 기억 안 함 · 설정값 = 기억"
 assert len(d2.rows) == 4 and d2.has_timeline()
-d2.stages["render"].set_on(False); d2.stages["grade"].set_on(False); d2._sync()
+d2.stages["edit"].set_on(True); d2.stages["music"].set_on(True); d2._sync()
 steps2 = []
 _show2 = d2._show
 d2._show = lambda key, v, text="": (steps2.append(key) if not steps2 or steps2[-1] != key else None, _show2(key, v, text))[-1]
@@ -145,8 +145,6 @@ ncut = sum(1 for g in st.project.segments if e._trans_spec(g.id) is not None)
 have = sum(1 for g in st.project.segments if (sp := e._trans_spec(g.id)) is not None and sp["out"].exists())
 print("편집 준비: 단계", steps2, "· 전환 파일", have, "/", ncut, "(폴더", len(tr), ")")
 assert steps2 == ["edit", "music", "prep"] and ncut >= 2 and have == ncut
-cfg = get_setting("autowin", {})
-assert cfg["on"]["render"] is False and cfg["on"]["grade"] is False
 
 # ---------------------------------------------------------------- 5) v0.17.1 편집 끔 = 음악 단계 못 켬(타임라인이 있어도) · 아무 단계도 안 켬 = 그냥 편집 화면
 d3 = e.make_auto_window(from_edit=True); d3.show(); wait(0.2)

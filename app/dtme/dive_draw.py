@@ -555,6 +555,15 @@ def _off_for(off, src) -> float:
     return float(off or 0.0)
 
 
+def draw_workers() -> int:
+    """v0.17.5 그림 그리기·저장 스레드 수 = 코어 수(2~16)."""
+    return max(2, min(16, os.cpu_count() or 2))
+
+
+def _make_save(make, name: str):
+    make().save(name, "PNG", 80)                          # 80 = 가벼운 압축(빠름 · 작은 파일)
+
+
 def render_layers(project, dives: list, off, spans: list, total: float, W: int, H: int, folder, cancel=None):
     """출력 시간축(0~total) 그림 → concat 목록 {txt, gr, mul, add} + 위치. 다이빙 컷이 없으면 None.
     spans = [(시작 초, 끝 초, Segment, 끝 전환 초)] (lead 포함, 전환 겹침이면 뒤 컷).
@@ -618,7 +627,9 @@ def render_layers(project, dives: list, off, spans: list, total: float, W: int, 
     files: dict = {}
     lists = {"txt": [], "gr": [], "mul": [], "add": []}
     from concurrent.futures import ThreadPoolExecutor
-    pool = ThreadPoolExecutor(max_workers=max(2, min(6, (os.cpu_count() or 2))))
+    # v0.17.5 그리기(QPainter·띠 계산)도 저장과 같이 스레드 풀에서(예전 = 본 스레드에서 차례로 그리고 저장만 스레드 6개 — 사용자 로그 46초 거의 전부 그리기).
+    #   그림 이름(키)은 지금처럼 본 스레드에서 정함 → 결과 파일 같음. QImage 에 QPainter = 다른 스레드에서도 됨(창 위젯 아님).
+    pool = ThreadPoolExecutor(max_workers=draw_workers())
     futs = []
 
     def blank(w, h):
@@ -630,12 +641,13 @@ def render_layers(project, dives: list, off, spans: list, total: float, W: int, 
         name = files.get((kind, key))
         if name is None:
             name = folder / f"{kind}_{len(files):05d}.png"
-            futs.append(pool.submit(make().save, str(name), "PNG", 80))     # 80 = 가벼운 압축(빠름 · 작은 파일)
+            futs.append(pool.submit(_make_save, make, str(name)))
             files[(kind, key)] = name
         lists[kind].append((name, dur))
 
     for i, (T, st) in enumerate(times):
         if cancel is not None and cancel.is_set():
+            pool.shutdown(wait=False, cancel_futures=True)
             return None
         dur = (times[i + 1][0] if i + 1 < len(times) else total + 1 / RATE) - T
         if st is None:
@@ -675,18 +687,22 @@ def render_layers(project, dives: list, off, spans: list, total: float, W: int, 
         fa = fill_in(rv)
         on = ga > 0.002 and fa > 0.002
         fk = (dive["id"], round(xp), mode, round(fa * 100), round(ga * 100))
-        need = on and (("mul", fk) not in files or ("add", fk) not in files)
-        t_f = _tm.monotonic()
-        a_ = fill_alpha(W // fs, H // fs, dive, t, rv, ga)[0] if need else None
-        t_fill[0] += _tm.monotonic() - t_f
-        if a_ is not None and a_.shape != (fh, fw):
-            a_ = np.ascontiguousarray(np.pad(a_, ((0, max(0, fh - a_.shape[0])), (0, max(0, fw - a_.shape[1]))))[:fh, :fw])
-        if a_ is not None:
+        def mk_fill(md, dive=dive, t=t, rv=rv, ga=ga):           # v0.17.5 띠 계산도 스레드에서(같은 키 = 한 번만)
+            t_f = _tm.monotonic()
+            a_ = fill_alpha(W // fs, H // fs, dive, t, rv, ga)[0]
+            if a_.shape != (fh, fw):
+                a_ = np.ascontiguousarray(np.pad(a_, ((0, max(0, fh - a_.shape[0])), (0, max(0, fw - a_.shape[1]))))[:fh, :fw])
             a_ = np.ascontiguousarray(a_[:, :fwc])
-        put("mul", fk if on and mode == "multiply" else "white",
-            lambda a_=a_: to_qimage(fill_rgb(a_, "multiply")) if a_ is not None else to_qimage(np.full((fh, fwc, 3), 255, np.uint8)), dur)
-        put("add", fk if on and mode == "add" else "black",
-            lambda a_=a_: to_qimage(fill_rgb(a_, "add")) if a_ is not None else to_qimage(np.zeros((fh, fwc, 3), np.uint8)), dur)
+            t_fill[0] += _tm.monotonic() - t_f
+            return to_qimage(fill_rgb(a_, md))
+        if on and mode == "multiply":
+            put("mul", fk, lambda f=mk_fill: f("multiply"), dur)
+        else:
+            put("mul", "white", lambda: to_qimage(np.full((fh, fwc, 3), 255, np.uint8)), dur)
+        if on and mode == "add":
+            put("add", fk, lambda f=mk_fill: f("add"), dur)
+        else:
+            put("add", "black", lambda: to_qimage(np.zeros((fh, fwc, 3), np.uint8)), dur)
     # v0.16.91 점 깜빡임 = 작은 그림 따로(1.5초 주기 반복) + 위치는 0.5초마다(sendcmd) · 그래프가 다 보일 때만
     k = k_of(W, H)
     S = int(PULSE_BOX * k) // 2 * 2 + 2
@@ -728,8 +744,8 @@ def render_layers(project, dives: list, off, spans: list, total: float, W: int, 
     # v0.17.2 어디가 오래 걸리나(사용자 로그 11/18: 5:32 영상 · 그림 만들기 115초)
     out["stat"] = (f"시점 {len(times)}개(애니 {sum(1 for _T, st in times if st is not None and anim_busy(st[5], st[6], st[7]))}) · "
                    f"그림 {len(files)}장(" + " ".join(f"{k} {sum(1 for kk in files if kk[0] == k)}" for k in lists) + ") · "
-                   f"시점 계산 {t_1 - t_0:.1f}초 · 그리기(본 스레드) {t_2 - t_1:.1f}초(띠 계산 {t_fill[0]:.1f}) · 점 {t_3 - t_2:.1f}초 · "
-                   f"저장 기다림 {t_4 - t_3:.1f}초")
+                   f"시점 계산 {t_1 - t_0:.1f}초 · 시점 나눔(본 스레드) {t_2 - t_1:.1f}초 · 점 {t_3 - t_2:.1f}초 · "
+                   f"그리기·저장 기다림(스레드 {draw_workers()}개) {t_4 - t_3:.1f}초(띠 계산 합 {t_fill[0]:.1f})")
     if wins:
         txt = ["ffconcat version 1.0"]
         n_loop = int(np.ceil(total / PULSE_SEC)) + 1

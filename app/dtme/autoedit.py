@@ -422,6 +422,10 @@ def build(project, picks: list[dict], minutes: int, seed: int = 0, titles: bool 
             sf = p.get("surface")
             a_, b_ = int(st / STEP), max(int(st / STEP) + 1, int((st + ln) / STEP))
             on = (sf is not None and len(sf) and float(np.mean(sf[a_:b_] if b_ <= len(sf) else sf[a_:] if a_ < len(sf) else [0])) > 0.5)
+            if on and getattr(project, "dives", None):          # v0.17.5 다이빙 기록 수심 ≥ 1m = 물속(색보다 먼저)
+                from . import music
+                dep = music.log_depth(s, g, project.dives, project.off_of(s))
+                on = not (dep is not None and dep >= music.LOG_DEEP)
             scene_of[g.id] = "surface" if on else p.get("scene", "")        # v0.16.73 물 밖(배·수면 위) = 발랄한 곡 자리
             segs.append(g)
     tts = []
